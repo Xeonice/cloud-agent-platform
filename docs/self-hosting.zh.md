@@ -129,16 +129,23 @@
   `release-assets` 会下载并校验
   `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`（或其有序分片），解压到
   `CAP_SANDBOX_ASSET_DIR` 下，写入 `BOXLITE_ROOTFS_PATH`，清空 image env，并要求原生
-  BoxLite 协议（`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。
+  BoxLite 协议（`BOXLITE_PROTOCOL_MODE=native`）。有 prefix 的服务使用
+  `BOXLITE_PATH_PREFIX=default`；BoxLite 0.9.7 本地 `boxlite serve` 要持久化为空值
+  `BOXLITE_PATH_PREFIX=`。
   registry 模式才默认把 `BOXLITE_IMAGE` 写成同版本的
   `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}`，除非你显式设置
   `BOXLITE_IMAGE` 或带 default 的 `BOXLITE_IMAGE_MAP`。就绪检查会验证
   endpoint/token，不带不兼容的 create-time 字段创建短生命周期 probe sandbox，通过原生
   BoxLite API 启动它，再确认 image、workspace 与 AIO sandbox runtime 对齐的工具集
   （默认 `bash`、`claude`、`codex`、`git`、`gzip`、`node`、`openspec`、
-  `sh`、`tar`、`tmux`），然后删除 probe sandbox。只有在明确使用更窄的自定义
+  `python3`、`sh`、`tar`、`tmux`），然后删除 probe sandbox。只有在明确使用更窄的自定义
   runtime image 时才覆盖 `BOXLITE_RUNTIME_REQUIRED_TOOLS`。官方 BoxLite 镜像使用
   `/home/gem/workspace`，与 AIO runtime 的启动路径一致。
+  原生交互终端还要求镜像提供可执行的
+  `/usr/local/bin/cap-pty-byte-bridge`。该 bridge 只把有界 ASCII 帧与 canonical
+  base64 child-PTY bytes 送过 BoxLite 外层终端，从而避开在 BoxLite 0.9.5 已观察到的
+  per-chunk lossy UTF-8 行为；每次 terminal open 仍必须完成独立的 generation-fenced
+  bridge-ready handshake。
   `v0.37.1` 之前的 API 不认识 AIO 分片资产。已有 AIO 部署如果显式使用
   `release-assets`，跨过该版本边界前需要先重跑最新版 quick-deploy，或者先切到
   `registry` 并重建 API，再使用控制台自更新。默认走 registry 的 AIO 部署以及仍为

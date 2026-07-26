@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { FRAME_CHANNEL } from './ws-frames.js';
+import { OpaqueTerminalInputBase64Schema } from './terminal-bytes.js';
 
 /**
  * Write-lock / takeover frames (write-lock-and-takeover spec, D7).
@@ -44,8 +45,8 @@ export const KeystrokeFrameSchema = z.object({
   channel: z.literal(FRAME_CHANNEL.CONTROL),
   type: z.literal('keystroke'),
   sessionId: z.string().min(1),
-  /** Base64-encoded raw input bytes destined for the PTY. */
-  data: z.string(),
+  /** Canonical base64 of opaque input bytes destined for the PTY. */
+  data: OpaqueTerminalInputBase64Schema,
 });
 export type KeystrokeFrame = z.infer<typeof KeystrokeFrameSchema>;
 

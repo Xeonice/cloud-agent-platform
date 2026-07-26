@@ -159,6 +159,7 @@ function response(status, body = { data: { exit_code: 0, output: '' } }) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    body,
     async json() {
       return body;
     },
@@ -171,25 +172,58 @@ function createProvider(options = {}) {
   const shellCommands = [];
   const fetch = async (input, init) => {
     const path = new URL(input).pathname;
+    const payload =
+      typeof init?.body === 'string' ? JSON.parse(init.body) : {};
     if (path === '/v1/docs') {
       if (options.readinessError !== undefined) throw options.readinessError;
       return response(options.readinessStatus ?? 200);
     }
+    if (path === '/v1/shell/sessions/create') {
+      return response(200, {
+        success: true,
+        data: { session_id: payload.id, working_dir: '/home/gem' },
+      });
+    }
+    if (init?.method === 'DELETE' && path.startsWith('/v1/shell/sessions/')) {
+      return response(200, {
+        success: true,
+        data: { session_id: path.slice('/v1/shell/sessions/'.length) },
+      });
+    }
     if (path === '/v1/shell/exec') {
       shellExecCalls += 1;
-      if (typeof init?.body === 'string') {
-        const payload = JSON.parse(init.body);
-        if (typeof payload.command === 'string') shellCommands.push(payload.command);
-      }
-      if (options.failSecretDelete && shellExecCalls >= 2) {
-        return response(200, {
+      if (typeof payload.command === 'string') shellCommands.push(payload.command);
+      let body;
+      if (
+        options.failSecretDelete &&
+        shellCommands.at(-1)?.includes('rm -f')
+      ) {
+        body = {
           data: { exit_code: 1, output: options.secretOutput ?? 'provider-private' },
-        });
+        };
+      } else {
+        body = options.shellExecBody ?? {
+          data: { exit_code: 0, output: '' },
+        };
       }
-      if (options.shellExecBody !== undefined) {
-        return response(200, options.shellExecBody);
+      if (
+        body &&
+        typeof body === 'object' &&
+        Object.prototype.hasOwnProperty.call(body, 'success')
+      ) {
+        return response(200, body);
       }
-      return response(200);
+      const data =
+        body?.data && typeof body.data === 'object' ? body.data : body;
+      return response(200, {
+        success: true,
+        data: {
+          session_id: payload.id,
+          command: payload.command,
+          status: 'completed',
+          ...data,
+        },
+      });
     }
     return response(404);
   };
@@ -746,9 +780,14 @@ await test('AIO atomic HTTP executor proves complete output without advertising 
       output: 'cap-aio-atomic-stdoutcap-aio-atomic-stderr',
       timedOut: false,
     });
-    assert.deepEqual(fixture.shellCommands, [
+    assert.equal(fixture.shellCommands.length, 1);
+    const wrappedCommand = fixture.shellCommands[0];
+    assert.equal(wrappedCommand.startsWith("sh -lc '"), true);
+    assert.equal(wrappedCommand.endsWith("'"), true);
+    assert.equal(
+      wrappedCommand.slice("sh -lc '".length, -1).replaceAll("'\\''", "'"),
       "cd '/home/gem/workspace' && printf cap-aio-atomic-output",
-    ]);
+    );
   } finally {
     await fixture.provider.teardownSandbox(taskId);
   }

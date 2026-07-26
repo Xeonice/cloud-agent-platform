@@ -47,7 +47,9 @@ function makeDocker(containers) {
       const c = containers.find((x) => x.Id === id);
       return {
         async inspect() {
-          if (!c) throw new Error('no such container');
+          if (!c || c.removed) {
+            throw Object.assign(new Error('no such container'), { statusCode: 404 });
+          }
           return { State: { FinishedAt: c.finishedAt }, Created: c.created };
         },
         async remove(opts) {
@@ -56,6 +58,7 @@ function makeDocker(containers) {
             throw new Error('cannot remove a running container');
           }
           removed.push(id);
+          if (c) c.removed = true;
         },
       };
     },
@@ -131,7 +134,7 @@ await test('docker retention store removes stopped sandboxes without force', asy
   assert.deepEqual(docker.removed, ['stopped-old']);
 });
 
-await test('docker retention store ignores remove failures', async () => {
+await test('docker retention store rejects an unconfirmed remove failure', async () => {
   const docker = makeDocker([{ Id: 'gone', state: 'exited', finishedAt: iso(DAY) }]);
   docker.getContainer = () => ({
     async inspect() {
@@ -143,8 +146,10 @@ await test('docker retention store ignores remove failures', async () => {
   });
   const store = new mod.AioDockerSandboxRetentionStore(docker, 'cap-aio-');
 
-  await assert.doesNotReject(() =>
-    store.removeStopped({ id: 'gone', name: 'gone', finishedAtMs: Date.now() }),
+  await assert.rejects(
+    () =>
+      store.removeStopped({ id: 'gone', name: 'gone', finishedAtMs: Date.now() }),
+    /already removed/,
   );
 });
 

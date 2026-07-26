@@ -186,16 +186,10 @@ export function startBoxLiteNativeExecutionDiagnosticSession(
 
   const flushCompletedNativeDiagnosticAggregates = (): void => {
     for (const aggregate of aggregates.values()) {
-      if (
-        aggregate.flushed ||
-        aggregate.lifecycles.length === 0 ||
-        aggregate.lifecycles.some((lifecycle) => lifecycle.terminal === undefined)
-      ) {
-        continue;
-      }
-      aggregate.flushed = true;
+      if (aggregate.flushed) continue;
       const selected = selectNativeAggregateTerminal(aggregate.lifecycles);
       if (selected === undefined) continue;
+      aggregate.flushed = true;
       let operationId: string;
       try {
         operationId = diagnostics.createOperationId();
@@ -483,7 +477,7 @@ export function classifyBoxLiteProvisioningDiagnosticHttpFailure(
         outcome: 'failed',
         cause: 'authentication_failed',
         retryable: false,
-        ...(httpStatusClass === undefined ? {} : { httpStatusClass }),
+        httpStatusClass,
       },
       defaults,
     );
@@ -494,7 +488,7 @@ export function classifyBoxLiteProvisioningDiagnosticHttpFailure(
         outcome: 'failed',
         cause: 'access_denied',
         retryable: false,
-        ...(httpStatusClass === undefined ? {} : { httpStatusClass }),
+        httpStatusClass,
       },
       defaults,
     );
@@ -505,7 +499,7 @@ export function classifyBoxLiteProvisioningDiagnosticHttpFailure(
         outcome: 'timed_out',
         cause: defaults.cause ?? 'settlement_unknown',
         retryable: defaults.retryable ?? true,
-        ...(httpStatusClass === undefined ? {} : { httpStatusClass }),
+        httpStatusClass,
       },
       defaults,
     );
@@ -516,7 +510,7 @@ export function classifyBoxLiteProvisioningDiagnosticHttpFailure(
         outcome: 'failed',
         cause: defaults.cause ?? 'provider_unavailable',
         retryable: defaults.retryable ?? true,
-        ...(httpStatusClass === undefined ? {} : { httpStatusClass }),
+        httpStatusClass,
       },
       defaults,
     );

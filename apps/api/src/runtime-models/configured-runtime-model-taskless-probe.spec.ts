@@ -124,8 +124,9 @@ function encodedResult(models: unknown): string {
 
 test('probe command uses bounded file material and parser keeps selector, not preset id', () => {
   const auth = '{"tokens":{"access_token":"do-not-echo"}}';
-  const command = buildCodexModelProbeCommand(auth, 5_000);
+  const command = buildCodexModelProbeCommand(5_000);
   assert.ok(!command.includes('do-not-echo'));
+  assert.ok(!command.includes(Buffer.from(auth).toString('base64')));
   assert.match(command, /^set -e;/);
   assert.doesNotMatch(
     command,
@@ -133,6 +134,7 @@ test('probe command uses bounded file material and parser keeps selector, not pr
     'AIO shell/exec reads $! after the command and is incompatible with nounset',
   );
   assert.match(command, /base64 -d/);
+  assert.match(command, /runtime-model-probe-auth\.json/u);
   assert.match(command, /CAP_MODEL_PROBE_TIMEOUT_MS='5000'/);
 
   const parsed = parseCodexModelProbeOutput(
@@ -158,6 +160,7 @@ test('probe command uses bounded file material and parser keeps selector, not pr
 
 test('AIO taskless lifecycle consumes the exact snapshot, labels, and strict teardown', async () => {
   const calls: Array<Record<string, unknown>> = [];
+  const privateArchives: Buffer[] = [];
   const aio = {
     async createAndStart(
       taskId: string,
@@ -185,8 +188,16 @@ test('AIO taskless lifecycle consumes the exact snapshot, labels, and strict tea
         ]),
       };
     },
-    async removeSandbox(taskId: string, options?: Record<string, unknown>) {
-      calls.push({ stage: 'remove', taskId, options });
+    async putPrivateArchive(
+      taskId: string,
+      directory: string,
+      archive: Uint8Array,
+    ) {
+      calls.push({ stage: 'private-archive', taskId, directory });
+      privateArchives.push(Buffer.from(archive));
+    },
+    async removeSandboxAndConfirm(taskId: string) {
+      calls.push({ stage: 'remove', taskId });
     },
   } as unknown as AioSandboxContainerController;
   const docker = {
@@ -231,12 +242,23 @@ test('AIO taskless lifecycle consumes the exact snapshot, labels, and strict tea
   assert.equal(labels['cap.resource-purpose'], 'runtime-model-catalog');
   assert.equal(labels['cap.owner-user-id'], OWNER);
   assert.equal(result.models[0]?.id, 'gpt-selector');
+  const serializedExec = JSON.stringify(
+    calls.filter((call) => call.stage === 'exec'),
+  );
+  assert.doesNotMatch(serializedExec, /\{"auth":"secret"\}/u);
+  assert.doesNotMatch(
+    serializedExec,
+    new RegExp(Buffer.from('{"auth":"secret"}').toString('base64'), 'u'),
+  );
+  assert.equal(privateArchives.length, 1);
+  assert(privateArchives[0].includes(Buffer.from('{"auth":"secret"}')));
   const remove = calls.find((call) => call.stage === 'remove');
-  assert.deepEqual(remove?.options, { bestEffort: false });
+  assert.equal(remove?.taskId, create?.taskId);
 });
 
 test('orphan reconciliation removes only old purpose-labeled AIO resources', async () => {
   const removed: string[] = [];
+  const absent = new Set<string>();
   const filters: unknown[] = [];
   const docker = {
     async listContainers(options: unknown) {
@@ -250,6 +272,13 @@ test('orphan reconciliation removes only old purpose-labeled AIO resources', asy
       return {
         async remove() {
           removed.push(id);
+          absent.add(id);
+        },
+        async inspect() {
+          if (absent.has(id)) {
+            throw Object.assign(new Error('missing'), { statusCode: 404 });
+          }
+          return { Id: id };
         },
       };
     },
@@ -282,7 +311,7 @@ test('destroy retries provider cleanup and removes state only after success', as
       };
     },
     async waitForReadiness() {},
-    async removeSandbox() {
+    async removeSandboxAndConfirm() {
       removeCalls += 1;
       if (removeCalls < 3) throw new Error('fixture cleanup failure');
     },
@@ -311,7 +340,7 @@ test('cleanup exhaustion retains the handle so a later destroy can retry', async
       };
     },
     async waitForReadiness() {},
-    async removeSandbox() {
+    async removeSandboxAndConfirm() {
       removeCalls += 1;
       if (failing) throw new Error('fixture cleanup failure');
     },
@@ -342,7 +371,7 @@ test('a readiness failure uses the same bounded cleanup path', async () => {
     async waitForReadiness() {
       throw new Error('fixture readiness failure');
     },
-    async removeSandbox() {
+    async removeSandboxAndConfirm() {
       removeCalls += 1;
       if (removeCalls < 3) throw new Error('fixture cleanup failure');
     },
@@ -360,23 +389,45 @@ test('a readiness failure uses the same bounded cleanup path', async () => {
 
 test('BoxLite taskless lifecycle tracks and deletes the provider-returned id', async () => {
   const createCalls: Array<Record<string, unknown>> = [];
+  const execCommands: string[] = [];
+  const privateArchives: Buffer[] = [];
   const deleted: string[] = [];
+  let sandboxPresent = true;
   const client = {
     async createSandbox(request: Record<string, unknown>) {
       createCalls.push(request);
       return { id: 'provider-generated-id', metadata: request.metadata };
     },
-    async exec() {
+    async exec(request: { command: string }) {
+      execCommands.push(request.command);
+      const output = request.command.includes('CAP_MODEL_PROBE_TIMEOUT_MS')
+        ? encodedResult([
+            {
+              model: 'boxlite-selector',
+              displayName: 'BoxLite selector',
+              isDefault: true,
+            },
+          ])
+        : '';
       return {
         exitCode: 0,
-        stdout: '',
+        stdout: output,
         stderr: '',
-        output: '',
+        output,
         timedOut: false,
       };
     },
+    async uploadArchive(request: { archive: Uint8Array }) {
+      privateArchives.push(Buffer.from(request.archive));
+    },
+    async getSandbox() {
+      return sandboxPresent
+        ? { id: 'provider-generated-id', status: 'running' }
+        : null;
+    },
     async deleteSandbox(id: string) {
       deleted.push(id);
+      sandboxPresent = false;
     },
   } as unknown as BoxLiteClient;
   const lifecycle = new ConfiguredRuntimeModelTasklessProbeLifecycle({
@@ -387,6 +438,9 @@ test('BoxLite taskless lifecycle tracks and deletes the provider-returned id', a
   });
 
   const handle = await lifecycle.create(createInput(boxLiteSnapshot()));
+  const discovered = await lifecycle.discover(handle, {
+    deadlineAt: Date.now() + 10_000,
+  });
   await lifecycle.destroy(handle);
 
   assert.equal(createCalls.length, 1);
@@ -406,6 +460,15 @@ test('BoxLite taskless lifecycle tracks and deletes the provider-returned id', a
     'runtime-model-catalog',
   );
   assert.deepEqual(deleted, ['provider-generated-id']);
+  assert.equal(discovered.defaultModel, 'boxlite-selector');
+  const serializedExec = JSON.stringify(execCommands);
+  assert.doesNotMatch(serializedExec, /\{"auth":"secret"\}/u);
+  assert.doesNotMatch(
+    serializedExec,
+    new RegExp(Buffer.from('{"auth":"secret"}').toString('base64'), 'u'),
+  );
+  assert.equal(privateArchives.length, 1);
+  assert(privateArchives[0].includes(Buffer.from('{"auth":"secret"}')));
 });
 
 test('BoxLite taskless lifecycle rejects unsupported disk before native create', async () => {
@@ -440,6 +503,8 @@ test('BoxLite taskless lifecycle rejects unsupported disk before native create',
 test('orphan reconciliation isolates failures and recognizes BoxLite metadata/task ids', async () => {
   const aioRemoved: string[] = [];
   const boxRemoved: string[] = [];
+  const aioAbsent = new Set<string>();
+  const boxAbsent = new Set<string>();
   const docker = {
     async listContainers() {
       return [
@@ -452,6 +517,13 @@ test('orphan reconciliation isolates failures and recognizes BoxLite metadata/ta
         async remove() {
           if (id === 'aio-fails') throw new Error('fixture remove failure');
           aioRemoved.push(id);
+          aioAbsent.add(id);
+        },
+        async inspect() {
+          if (aioAbsent.has(id)) {
+            throw Object.assign(new Error('missing'), { statusCode: 404 });
+          }
+          return { Id: id };
         },
       };
     },
@@ -481,6 +553,10 @@ test('orphan reconciliation isolates failures and recognizes BoxLite metadata/ta
     },
     async deleteSandbox(id: string) {
       boxRemoved.push(id);
+      boxAbsent.add(id);
+    },
+    async getSandbox(id: string) {
+      return boxAbsent.has(id) ? null : { id, status: 'running' };
     },
   } as unknown as BoxLiteClient;
   const lifecycle = new ConfiguredRuntimeModelTasklessProbeLifecycle({
@@ -510,7 +586,7 @@ test('bootstrap starts periodic orphan sweeps and shutdown clears live probes', 
       };
     },
     async waitForReadiness() {},
-    async removeSandbox(taskId: string) {
+    async removeSandboxAndConfirm(taskId: string) {
       removed.push(`live:${taskId}`);
     },
   } as unknown as AioSandboxContainerController;

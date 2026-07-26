@@ -33,6 +33,11 @@ import {
  *     its own observation/freshness provenance and degrades independently from
  *     both capacity and resource sampling.
  *
+ *  4. A terminal-diagnostics block — process-window, identifier-free gauges and
+ *     counters for native viewer admission, backpressure, and outer-PTY cleanup.
+ *     Its dimensions are closed enums only; task/session/provider identities are
+ *     intentionally absent.
+ *
  * The console renders these as the dashboard capacity tiles, the `SlotMeter`,
  * the free-slot pills, and the `ResourceMeter`, replacing the prototype's
  * hardcoded mock numbers (e.g. `RUNNERS 7/10`, `CPU 42% / 内存 64%`).
@@ -447,6 +452,138 @@ export type ProvisioningDiagnosticsMetrics = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// Native terminal diagnostics block (process-window, identifier-free)
+// ---------------------------------------------------------------------------
+
+/**
+ * Closed terminal-attach outcomes. `viewer_limit` and `attach_timeout` are
+ * explicit series so capacity pressure cannot disappear inside a generic error
+ * count. `cancelled` covers an accepted attempt that disconnects or is drained
+ * before reaching a wire-level terminal outcome.
+ */
+export const TERMINAL_ATTACH_OUTCOMES = [
+  'ready',
+  'protocol_mismatch',
+  'response_profile_mismatch',
+  'session_absent',
+  'session_indeterminate',
+  'viewer_limit',
+  'provider_unavailable',
+  'provider_failed',
+  'attach_timeout',
+  'transport_closed',
+  'internal_error',
+  'cancelled',
+] as const;
+export const TerminalAttachOutcomeSchema = z.enum(TERMINAL_ATTACH_OUTCOMES);
+export type TerminalAttachOutcome = z.infer<typeof TerminalAttachOutcomeSchema>;
+
+export const TERMINAL_CLEANUP_OUTCOMES = [
+  'confirmed',
+  'indeterminate',
+] as const;
+export const TerminalCleanupOutcomeSchema = z.enum(
+  TERMINAL_CLEANUP_OUTCOMES,
+);
+export type TerminalCleanupOutcome = z.infer<
+  typeof TerminalCleanupOutcomeSchema
+>;
+
+export const TerminalAttachOutcomeMetricSchema = z
+  .object({
+    outcome: TerminalAttachOutcomeSchema,
+    count: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type TerminalAttachOutcomeMetric = z.infer<
+  typeof TerminalAttachOutcomeMetricSchema
+>;
+
+export const TerminalCleanupOutcomeMetricSchema = z
+  .object({
+    outcome: TerminalCleanupOutcomeSchema,
+    count: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type TerminalCleanupOutcomeMetric = z.infer<
+  typeof TerminalCleanupOutcomeMetricSchema
+>;
+
+/**
+ * Current process-local viewer state. `activeViewers` includes accepted
+ * attaching and ready viewers; rejected attempts never enter the gauge.
+ */
+export const TerminalDiagnosticsGaugesSchema = z
+  .object({
+    activeViewers: NonnegativeSafeIntegerSchema,
+    pausedViewers: NonnegativeSafeIntegerSchema,
+  })
+  .strict()
+  .superRefine((gauges, context) => {
+    if (gauges.pausedViewers > gauges.activeViewers) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pausedViewers'],
+        message: 'pausedViewers cannot exceed activeViewers',
+      });
+    }
+  });
+export type TerminalDiagnosticsGauges = z.infer<
+  typeof TerminalDiagnosticsGaugesSchema
+>;
+
+export const TerminalFlowControlMetricsSchema = z
+  .object({
+    pauseCount: NonnegativeSafeIntegerSchema,
+    resumeCount: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type TerminalFlowControlMetrics = z.infer<
+  typeof TerminalFlowControlMetricsSchema
+>;
+
+/**
+ * Safe low-cardinality native-terminal metrics projection. All arrays use only
+ * closed enum dimensions and the entire block is strict, so task ids, terminal
+ * session ids, provider URLs/execution ids, credentials, and arbitrary labels
+ * cannot enter the public `/metrics` contract.
+ */
+export const TerminalDiagnosticsMetricsSchema = z
+  .object({
+    observedSince: MetricInstantSchema,
+    gauges: TerminalDiagnosticsGaugesSchema,
+    attachOutcomes: z
+      .array(TerminalAttachOutcomeMetricSchema)
+      .max(TERMINAL_ATTACH_OUTCOMES.length),
+    flowControl: TerminalFlowControlMetricsSchema,
+    cleanupOutcomes: z
+      .array(TerminalCleanupOutcomeMetricSchema)
+      .max(TERMINAL_CLEANUP_OUTCOMES.length),
+  })
+  .strict()
+  .superRefine((metrics, context) => {
+    for (const [path, entries] of [
+      ['attachOutcomes', metrics.attachOutcomes],
+      ['cleanupOutcomes', metrics.cleanupOutcomes],
+    ] as const) {
+      const seen = new Set<string>();
+      entries.forEach(({ outcome }, index) => {
+        if (seen.has(outcome)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [path, index, 'outcome'],
+            message: `duplicate terminal metric outcome: ${outcome}`,
+          });
+        }
+        seen.add(outcome);
+      });
+    }
+  });
+export type TerminalDiagnosticsMetrics = z.infer<
+  typeof TerminalDiagnosticsMetricsSchema
+>;
+
+// ---------------------------------------------------------------------------
 // Aggregation response
 // ---------------------------------------------------------------------------
 
@@ -455,9 +592,9 @@ export type ProvisioningDiagnosticsMetrics = z.infer<
  *
  * Composes the exact derived capacity block (`capacity`, `occupancy`,
  * `runnerMinutes`), cadence-bounded sampled resource block (`resources`), and
- * additive provisioning diagnostics block in one round trip. Each sampled or
- * hydrated block self-describes its own freshness, so one source can degrade
- * without rewriting the other blocks.
+ * additive provisioning and native-terminal diagnostics blocks in one round
+ * trip. Each sampled or hydrated block self-describes its own freshness, so one
+ * source can degrade without rewriting the other blocks.
  */
 export const MetricsResponseSchema = z.object({
   /** Exact, semaphore-derived scalar capacity figures. */
@@ -473,6 +610,11 @@ export const MetricsResponseSchema = z.object({
    * for rolling compatibility with an older API; a current API always emits it.
    */
   provisioningDiagnostics: ProvisioningDiagnosticsMetricsSchema.optional(),
+  /**
+   * Additive identifier-free native-terminal gauges and counters. Optional for
+   * rolling compatibility with an older API; a current fully wired API emits it.
+   */
+  terminalDiagnostics: TerminalDiagnosticsMetricsSchema.optional(),
 });
 export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;
 

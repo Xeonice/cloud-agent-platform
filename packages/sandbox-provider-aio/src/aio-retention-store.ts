@@ -66,10 +66,20 @@ export class AioDockerSandboxRetentionStore
   }
 
   async removeStopped(sandbox: RetainedAioSandbox): Promise<void> {
-    await this.docker
-      .getContainer(sandbox.id)
-      .remove({ force: false })
-      .catch(() => undefined);
+    const container = this.docker.getContainer(sandbox.id);
+    let removeError: unknown;
+    try {
+      await container.remove({ force: false });
+    } catch (error) {
+      removeError = error;
+    }
+    try {
+      await container.inspect();
+    } catch (error) {
+      if (isDockerNotFound(error)) return;
+      throw removeError ?? error;
+    }
+    throw removeError ?? new Error('AIO retained sandbox removal could not be confirmed');
   }
 
   private async finishedAtMs(id: string): Promise<number> {
@@ -84,4 +94,19 @@ export class AioDockerSandboxRetentionStore
       return 0;
     }
   }
+}
+
+function isDockerNotFound(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as {
+    readonly statusCode?: unknown;
+    readonly status?: unknown;
+    readonly response?: { readonly statusCode?: unknown; readonly status?: unknown };
+  };
+  return (
+    candidate.statusCode === 404 ||
+    candidate.status === 404 ||
+    candidate.response?.statusCode === 404 ||
+    candidate.response?.status === 404
+  );
 }

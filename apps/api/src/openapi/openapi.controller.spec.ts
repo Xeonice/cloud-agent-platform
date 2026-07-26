@@ -99,7 +99,10 @@ test('GET /v1/openapi.json is reachable unauthenticated and is OpenAPI 3.1', asy
     'served as JSON',
   );
 
-  const doc = await res.json();
+  const doc = (await res.json()) as {
+    readonly openapi?: unknown;
+    readonly paths?: unknown;
+  };
   assert.equal(doc.openapi, '3.1.0', 'is an OpenAPI 3.1 document');
   assert.ok(doc.paths && typeof doc.paths === 'object', 'has a paths object');
 

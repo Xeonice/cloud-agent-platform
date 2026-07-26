@@ -1,11 +1,11 @@
+import {
+  TERMINAL_PROTOCOL_VERSION,
+  XTERM_5_5_0_RESPONSE_PROFILE_ID,
+} from "@cap/contracts";
 import type { ProviderTerminalFixture } from "./provider-terminal-fixtures";
 
 type FixtureSocketFrame =
-  | {
-      readonly channel: "raw";
-      readonly data: string;
-      readonly seq: number;
-    }
+  | { readonly channel: "raw"; readonly data: string; readonly seq: number }
   | {
       readonly channel: "control";
       readonly type: string;
@@ -14,31 +14,39 @@ type FixtureSocketFrame =
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) {
-    binary += String.fromCharCode(bytes[i] as number);
-  }
+  for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+function base64ToBytes(data: string): Uint8Array {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function textToBase64(text: string): string {
   return bytesToBase64(new TextEncoder().encode(text));
 }
 
-function base64ToText(data: string): string {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new TextDecoder().decode(bytes);
-}
-
 type ProviderFixtureWindow = Window &
   typeof globalThis & {
-    __capProviderFixtureReconnectSeqs?: number[];
-    __capProviderFixtureTailSeqs?: number[];
-    __capProviderFixtureDriftSeqs?: number[];
+    __capProviderFixtureAttachFrames?: Array<Record<string, unknown>>;
+    __capProviderFixtureConnectionOrigins?: number[];
+    __capProviderFixtureAckSeqs?: number[];
+    __capProviderFixtureResponses?: number[][];
+    __capProviderFixtureQueries?: Array<{
+      readonly name: string;
+      readonly bytes: number[];
+    }>;
+    __capProviderFixtureProviderWrites?: Array<{
+      readonly type: "keystroke" | "terminal_response";
+      readonly bytes: number[];
+    }>;
     __capProviderFixtureCloseOpenSockets?: (code?: number) => void;
+    __capProviderFixtureEmitRaw?: (text: string) => void;
   };
 
 function taskIdFromUrl(raw: string): string {
@@ -55,15 +63,19 @@ export function installProviderFixtureWebSocket(
   const NativeWebSocket = window.WebSocket;
   const fixtureWindow = window as ProviderFixtureWindow;
   const sockets = new Set<FixtureWebSocket>();
-  const seqDrift = new URLSearchParams(window.location.search).get("seqDrift") === "1";
-  let sentSeqDrift = false;
-  fixtureWindow.__capProviderFixtureReconnectSeqs = [];
-  fixtureWindow.__capProviderFixtureTailSeqs = [];
-  fixtureWindow.__capProviderFixtureDriftSeqs = [];
+  const failure = new URLSearchParams(window.location.search).get("attachFailure");
+  let nextSocketId = 1;
+  fixtureWindow.__capProviderFixtureAttachFrames = [];
+  fixtureWindow.__capProviderFixtureConnectionOrigins = [];
+  fixtureWindow.__capProviderFixtureAckSeqs = [];
+  fixtureWindow.__capProviderFixtureResponses = [];
+  fixtureWindow.__capProviderFixtureQueries = [];
+  fixtureWindow.__capProviderFixtureProviderWrites = [];
   fixtureWindow.__capProviderFixtureCloseOpenSockets = (code = 1011) => {
-    for (const socket of [...sockets]) {
-      socket.close(code, "fixture forced reconnect");
-    }
+    for (const socket of [...sockets]) socket.close(code, "fixture reconnect");
+  };
+  fixtureWindow.__capProviderFixtureEmitRaw = (text) => {
+    for (const socket of [...sockets]) socket.emitRaw(text);
   };
 
   class FixtureWebSocket {
@@ -82,9 +94,12 @@ export function installProviderFixtureWebSocket(
     onclose: ((event: CloseEvent) => void) | null = null;
     onerror: ((event: Event) => void) | null = null;
     onmessage: ((event: MessageEvent) => void) | null = null;
-    private seq = 0;
-    private input = "";
+
+    private readonly socketId = nextSocketId++;
     private readonly taskId: string;
+    private seq = 0;
+    private attached = false;
+    private inputBytes: number[] = [];
 
     constructor(url: string | URL) {
       this.url = String(url);
@@ -101,14 +116,12 @@ export function installProviderFixtureWebSocket(
       if (this.readyState !== FixtureWebSocket.OPEN || typeof data !== "string") {
         return;
       }
-      let frame: FixtureSocketFrame | null = null;
       try {
-        frame = JSON.parse(data) as FixtureSocketFrame;
+        const frame = JSON.parse(data) as FixtureSocketFrame;
+        if (frame.channel === "control") this.handleClientControl(frame);
       } catch {
-        return;
+        // Ignore malformed fixture traffic exactly like the real gateway.
       }
-      if (!frame || frame.channel !== "control") return;
-      this.handleClientControl(frame);
     }
 
     close(code = 1000, reason = "fixture closed"): void {
@@ -133,12 +146,13 @@ export function installProviderFixtureWebSocket(
       if (type === "open") this.onopen = invoke;
       if (type === "close") this.onclose = invoke as (event: CloseEvent) => void;
       if (type === "error") this.onerror = invoke;
-      if (type === "message") this.onmessage = invoke as (event: MessageEvent) => void;
+      if (type === "message") {
+        this.onmessage = invoke as (event: MessageEvent) => void;
+      }
     }
 
     removeEventListener(): void {
-      // TerminalSocket uses property handlers. The fixture keeps this method only
-      // for WebSocket shape compatibility.
+      // TerminalSocket uses property handlers; retained for WebSocket parity.
     }
 
     dispatchEvent(event: Event): boolean {
@@ -149,84 +163,114 @@ export function installProviderFixtureWebSocket(
       return true;
     }
 
-    private handleClientControl(frame: FixtureSocketFrame): void {
-      if (frame.channel !== "control") return;
+    emitRaw(text: string): void {
+      if (this.attached) this.sendRaw(text);
+    }
+
+    private handleClientControl(frame: Extract<FixtureSocketFrame, { channel: "control" }>): void {
       switch (frame.type) {
-        case "reconnect":
-          this.sendReconnectFrames(frame);
+        case "terminal_attach":
+          this.attach(frame);
+          break;
+        case "ack":
+          if (typeof frame.seq === "number") {
+            fixtureWindow.__capProviderFixtureAckSeqs?.push(frame.seq);
+          }
+          break;
+        case "terminal_response":
+          if (typeof frame.data === "string") {
+            const bytes = [...base64ToBytes(frame.data)];
+            fixtureWindow.__capProviderFixtureResponses?.push(bytes);
+            fixtureWindow.__capProviderFixtureProviderWrites?.push({
+              type: "terminal_response",
+              bytes,
+            });
+          }
           break;
         case "resize":
-          if (
-            typeof frame.cols === "number" &&
-            Number.isFinite(frame.cols) &&
-            typeof frame.rows === "number" &&
-            Number.isFinite(frame.rows)
-          ) {
-            this.sendRaw(
-              `PROVIDER_FIXTURE_RESIZE:${Math.round(frame.cols)}x${Math.round(frame.rows)}\r\n`,
-            );
+          if (typeof frame.cols === "number" && typeof frame.rows === "number") {
+            const cols = Math.max(1, Math.round(frame.cols));
+            const rows = Math.max(1, Math.round(frame.rows));
+            this.dispatch({
+              channel: "control",
+              type: "terminal_geometry",
+              protocolVersion: TERMINAL_PROTOCOL_VERSION,
+              cols,
+              rows,
+            });
+            this.sendRaw(`PROVIDER_FIXTURE_RESIZE:${cols}x${rows}\r\n`);
           }
           break;
         case "takeover_request":
           this.sendLeaseState();
           break;
         case "keystroke":
-          if (typeof frame.data === "string") this.handleKeystroke(frame.data);
+          if (typeof frame.data === "string") {
+            fixtureWindow.__capProviderFixtureProviderWrites?.push({
+              type: "keystroke",
+              bytes: [...base64ToBytes(frame.data)],
+            });
+            this.handleKeystroke(frame.data);
+          }
           break;
         default:
           break;
       }
     }
 
-    private sendReconnectFrames(frame: FixtureSocketFrame): void {
-      fixtureWindow.__capProviderFixtureReconnectSeqs?.push(
-        frame.channel === "control" && typeof frame.lastSeq === "number"
-          ? frame.lastSeq
-          : 0,
-      );
-      const cols =
-        frame.channel === "control" && typeof frame.cols === "number"
-          ? Math.max(1, Math.round(frame.cols))
-          : 80;
-      const rows =
-        frame.channel === "control" && typeof frame.rows === "number"
-          ? Math.max(1, Math.round(frame.rows))
-          : 24;
-      this.seq += new TextEncoder().encode(fixture.frames.snapshot).byteLength;
+    private attach(frame: Extract<FixtureSocketFrame, { channel: "control" }>): void {
+      fixtureWindow.__capProviderFixtureAttachFrames?.push({ ...frame });
+      if (
+        this.attached ||
+        frame.protocolVersion !== TERMINAL_PROTOCOL_VERSION ||
+        frame.responseProfileId !== XTERM_5_5_0_RESPONSE_PROFILE_ID ||
+        failure === "profile"
+      ) {
+        this.dispatch({
+          channel: "control",
+          type: "terminal_attachment_state",
+          protocolVersion: TERMINAL_PROTOCOL_VERSION,
+          state: "failed",
+          reason: "response_profile_mismatch",
+          reloadRequired: true,
+          cols: typeof frame.cols === "number" ? frame.cols : 80,
+          rows: typeof frame.rows === "number" ? frame.rows : 24,
+        });
+        return;
+      }
+      this.attached = true;
+      const cols = typeof frame.cols === "number" ? Math.round(frame.cols) : 80;
+      const rows = typeof frame.rows === "number" ? Math.round(frame.rows) : 24;
+      fixtureWindow.__capProviderFixtureConnectionOrigins?.push(this.seq);
       this.dispatch({
         channel: "control",
-        type: "snapshot",
-        data: fixture.frames.snapshot,
+        type: "terminal_attachment_state",
+        protocolVersion: TERMINAL_PROTOCOL_VERSION,
+        state: "attaching",
         cols,
         rows,
-        seq: this.seq,
       });
-      this.seq += new TextEncoder().encode(fixture.frames.tail).byteLength;
-      this.dispatch({
-        channel: "control",
-        type: "tail_replay",
-        data: textToBase64(fixture.frames.tail),
-        seq: this.seq,
-        final: true,
-      });
-      fixtureWindow.__capProviderFixtureTailSeqs?.push(this.seq);
       this.sendLeaseState();
-      const willSendSeqDrift = seqDrift && !sentSeqDrift;
-      if (willSendSeqDrift) {
-        sentSeqDrift = true;
-        window.setTimeout(() => {
-          fixtureWindow.__capProviderFixtureDriftSeqs?.push(this.seq + 5000);
-          this.dispatch({
-            channel: "raw",
-            data: textToBase64("PROVIDER_FIXTURE_LIVE_ONLY_BOOTSTRAP\r\n"),
-            seq: this.seq + 5000,
-          });
-        }, 80);
-      }
-      this.sendRaw(`PROVIDER_FIXTURE_RESIZE:${cols}x${rows}\r\n`);
-      const liveDelayBase = willSendSeqDrift ? 180 : 80;
+
+      fixture.frames.bootstrap.forEach((chunk, index) => {
+        window.setTimeout(() => this.sendRaw(chunk), 60 + index * 80);
+      });
+      const readyDelay = 80 + fixture.frames.bootstrap.length * 80;
+      window.setTimeout(() => {
+        this.dispatch({
+          channel: "control",
+          type: "terminal_attachment_state",
+          protocolVersion: TERMINAL_PROTOCOL_VERSION,
+          state: "ready",
+          cols,
+          rows,
+        });
+      }, readyDelay);
       fixture.frames.live.forEach((line, index) => {
-        window.setTimeout(() => this.sendRaw(line), liveDelayBase + index * 80);
+        window.setTimeout(
+          () => this.sendRaw(line),
+          readyDelay + 120 + index * 100,
+        );
       });
     }
 
@@ -236,27 +280,35 @@ export function installProviderFixtureWebSocket(
         type: "lease_state",
         sessionId: this.taskId,
         lease: {
-          writerClientId: "provider-fixture-writer",
+          writerClientId: `provider-fixture-writer-${this.socketId}`,
           leaseExpiry: Date.now() + 30_000,
         },
       });
     }
 
     private handleKeystroke(data: string): void {
-      const text = base64ToText(data);
-      if (text === "\r" || text === "\n") {
-        const value = this.input;
-        this.input = "";
-        if (value) {
-          this.sendRaw(`PROVIDER_FIXTURE_ECHO:${value}\r\n`);
+      for (const byte of base64ToBytes(data)) {
+        if (byte === 0x0d || byte === 0x0a) {
+          const value = new TextDecoder().decode(
+            Uint8Array.from(this.inputBytes),
+          );
+          this.inputBytes = [];
+          if (value) this.sendRaw(`PROVIDER_FIXTURE_ECHO:${value}\r\n`);
+        } else {
+          this.inputBytes.push(byte);
         }
-        return;
       }
-      this.input += text;
     }
 
     private sendRaw(text: string): void {
-      this.seq += new TextEncoder().encode(text).byteLength;
+      const bytes = new TextEncoder().encode(text);
+      if (text.includes("\x1b[c")) {
+        fixtureWindow.__capProviderFixtureQueries?.push({
+          name: "da1",
+          bytes: [0x1b, 0x5b, 0x63],
+        });
+      }
+      this.seq += bytes.length;
       this.dispatch({
         channel: "raw",
         data: textToBase64(text),
@@ -267,22 +319,22 @@ export function installProviderFixtureWebSocket(
     private dispatch(frame: FixtureSocketFrame): void {
       if (this.readyState !== FixtureWebSocket.OPEN) return;
       this.onmessage?.(
-        new MessageEvent("message", {
-          data: JSON.stringify(frame),
-        }),
+        new MessageEvent("message", { data: JSON.stringify(frame) }),
       );
     }
   }
 
   window.WebSocket = FixtureWebSocket as unknown as typeof WebSocket;
   return () => {
-    for (const socket of sockets) {
-      socket.close(1000, "fixture restored");
-    }
-    delete fixtureWindow.__capProviderFixtureReconnectSeqs;
-    delete fixtureWindow.__capProviderFixtureTailSeqs;
-    delete fixtureWindow.__capProviderFixtureDriftSeqs;
+    for (const socket of sockets) socket.close(1000, "fixture restored");
+    delete fixtureWindow.__capProviderFixtureAttachFrames;
+    delete fixtureWindow.__capProviderFixtureConnectionOrigins;
+    delete fixtureWindow.__capProviderFixtureAckSeqs;
+    delete fixtureWindow.__capProviderFixtureResponses;
+    delete fixtureWindow.__capProviderFixtureQueries;
+    delete fixtureWindow.__capProviderFixtureProviderWrites;
     delete fixtureWindow.__capProviderFixtureCloseOpenSockets;
+    delete fixtureWindow.__capProviderFixtureEmitRaw;
     window.WebSocket = NativeWebSocket;
   };
 }

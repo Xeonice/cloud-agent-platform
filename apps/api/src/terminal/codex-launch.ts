@@ -116,7 +116,11 @@ export function wrapInDetachedSession(
   innerLine: string,
   workspaceDir = '/home/gem/workspace',
 ): string {
-  return `${TMUX_UTF8} new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}'`;
+  const sessionName = detachedSessionName(taskId);
+  return (
+    `${TMUX_UTF8} new-session -d -s ${sessionName} -c ${workspaceDir} '${innerLine}' ` +
+    `\\; set-option -t ${sessionName}: focus-events on`
+  );
 }
 
 /**
@@ -145,22 +149,6 @@ export function wrapHeadlessDetachedSession(
   workspaceDir = '/home/gem/workspace',
 ): string {
   return `${TMUX_UTF8} new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}; echo $? > ${headlessExitFile(taskId)}'`;
-}
-
-export function buildAttachSessionCommand(taskId: string): string {
-  const sessionName = detachedSessionName(taskId);
-  return (
-    `${TMUX_UTF8} set-option -t ${sessionName} status off \\; ` +
-    `attach -t ${sessionName}`
-  );
-}
-
-export function buildResizeDetachedSessionCommand(
-  taskId: string,
-  cols: number,
-  rows: number,
-): string {
-  return `${TMUX_UTF8} resize-window -t ${detachedSessionName(taskId)} -x ${cols} -y ${rows}`;
 }
 
 /**

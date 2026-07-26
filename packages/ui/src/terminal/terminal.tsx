@@ -1,9 +1,27 @@
 "use client";
 
 import * as React from "react";
-import type { Terminal as XTerm, IDisposable, ITheme } from "@xterm/xterm";
+import type {
+  Terminal as XTerm,
+  IDisposable,
+  ITheme,
+  IWindowOptions,
+} from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SerializeAddon } from "@xterm/addon-serialize";
+import {
+  PRODUCTION_TERMINAL_RESPONSE_PROFILE_INPUTS,
+  TERMINAL_RESPONSE_WINDOW_OPTIONS,
+  activateProductionTerminalResponseAddons,
+  productionTerminalResponseAddonInputs,
+  type TerminalResponseProfileRuntimeInputs,
+  type TerminalResponseWindowOptions,
+} from "./terminal-response-profile.js";
+
+export type {
+  TerminalResponseProfileRuntimeInputs,
+  TerminalResponseWindowOptions,
+} from "./terminal-response-profile.js";
 
 /**
  * `<Terminal>` — the shared xterm.js wrapper (frontend-console spec 13.2).
@@ -35,18 +53,37 @@ export interface TerminalHandle {
    * to advance the ACK counter (`term.write(chunk, callback)`).
    */
   write(data: string | Uint8Array, onFlushed?: () => void): void;
+  /** Fully reset parser modes, buffers, cursor state, and scrollback. */
+  reset(): void;
   /** Re-fit the terminal to its container and report the new geometry. */
   fit(): TerminalGeometry | null;
+  /** Measure the container's ideal fit without changing the terminal grid. */
+  proposeFit(): TerminalGeometry | null;
   /**
    * Resize the terminal to an EXPLICIT geometry (cols × rows). Used by the
    * asciicast replay player to match the recording's geometry (header + `r`
    * events) so cursor-addressed redraws land correctly.
    */
   resize(cols: number, rows: number): void;
-  /** Serialize the current visible frame (SerializeAddon) for snapshotting. */
+  /** Serialize both xterm buffers and modes via SerializeAddon. */
   serialize(): string | null;
+  /**
+   * Canonicalize only the active public xterm viewport. Unlike SerializeAddon,
+   * this excludes the hidden normal-buffer shell used to attach an alternate-
+   * screen TUI, while retaining every visible cell/style, cursor, mode, and the
+   * authoritative geometry needed for strict fresh-attach comparisons.
+   */
+  activeBufferSnapshot(): string | null;
   /** Current geometry, or null before the terminal has mounted. */
   geometry(): TerminalGeometry | null;
+  /** Current public xterm buffer identity and cursor, for diagnostics/stories. */
+  bufferState(): {
+    readonly type: "normal" | "alternate";
+    readonly cursorX: number;
+    readonly cursorY: number;
+  } | null;
+  /** Read back the response-affecting values of this mounted xterm instance. */
+  responseProfileInputs(): TerminalResponseProfileRuntimeInputs;
   /** Clear the terminal screen and scrollback. */
   clear(): void;
   /**
@@ -86,10 +123,28 @@ export interface TerminalProps {
    * is read-only (a pure reader view).
    */
   onData?: (data: string) => void;
+  /**
+   * Binary input callback from xterm (legacy mouse and other byte protocols).
+   * Each JS code unit represents one byte; consumers must use its low 8 bits.
+   */
+  onBinary?: (data: string) => void;
   /** Fires after the terminal has mounted, handing back the imperative handle. */
   onReady?: (handle: TerminalHandle) => void;
   /** Fires whenever the terminal is resized (initial fit + container resize). */
   onResize?: (geometry: TerminalGeometry) => void;
+  /**
+   * Reports the container's desired fit. In controlled-grid mode this does not
+   * mutate xterm; the live session keeps the server-authoritative grid instead.
+   */
+  onFit?: (geometry: TerminalGeometry) => void;
+  /** Keep resize-observer fits report-only after the initial mount fit. */
+  controlledGrid?: boolean;
+  /**
+   * Explicit opt-in window reports. Production callers omit this and use the
+   * all-disabled negotiated profile; conformance stories mount an isolated
+   * enabled instance to characterize CSI 14/16/18.
+   */
+  windowOptions?: Partial<TerminalResponseWindowOptions>;
   /** Extra className for the mount container. */
   className?: string;
   /**
@@ -146,8 +201,12 @@ function syncScrollArea(term: XTerm): void {
 
 export function Terminal({
   onData,
+  onBinary,
   onReady,
   onResize,
+  onFit,
+  controlledGrid = false,
+  windowOptions,
   className,
   theme,
   fontSize,
@@ -163,11 +222,17 @@ export function Terminal({
   // Keep the latest callbacks in refs so the mount effect runs exactly once
   // (xterm is expensive to re-instantiate) while always calling current props.
   const onDataRef = React.useRef(onData);
+  const onBinaryRef = React.useRef(onBinary);
   const onReadyRef = React.useRef(onReady);
   const onResizeRef = React.useRef(onResize);
+  const onFitRef = React.useRef(onFit);
+  const controlledGridRef = React.useRef(controlledGrid);
   onDataRef.current = onData;
+  onBinaryRef.current = onBinary;
   onReadyRef.current = onReady;
   onResizeRef.current = onResize;
+  onFitRef.current = onFit;
+  controlledGridRef.current = controlledGrid;
 
   // Appearance props are read once at mount (xterm is expensive to re-instantiate);
   // keeping them in refs avoids re-running the mount effect when the parent
@@ -177,11 +242,13 @@ export function Terminal({
   const lineHeightRef = React.useRef(lineHeight);
   const fontFamilyRef = React.useRef(fontFamily);
   const scrollbackRef = React.useRef(scrollback);
+  const windowOptionsRef = React.useRef(windowOptions);
   themeRef.current = theme;
   fontSizeRef.current = fontSize;
   lineHeightRef.current = lineHeight;
   fontFamilyRef.current = fontFamily;
   scrollbackRef.current = scrollback;
+  windowOptionsRef.current = windowOptions;
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -209,6 +276,16 @@ export function Terminal({
       const term = new XTermCtor({
         convertEol: false,
         cursorBlink: true,
+        // These response-affecting inputs are explicit because the negotiated
+        // live-terminal profile fingerprints their exact production values.
+        // Browser xterm 5.5.0 does not expose `termName` as a constructor option;
+        // its resolved built-in value is the profiled `xterm` default.
+        disableStdin:
+          PRODUCTION_TERMINAL_RESPONSE_PROFILE_INPUTS.disableStdin,
+        windowOptions: {
+          ...TERMINAL_RESPONSE_WINDOW_OPTIONS,
+          ...windowOptionsRef.current,
+        } satisfies IWindowOptions,
         // Optional fontFamily — undefined falls back to the component's default
         // monospace stack, so the bare (family-less) usage is unchanged.
         fontFamily:
@@ -231,15 +308,17 @@ export function Terminal({
 
       term.loadAddon(fitAddon);
       term.loadAddon(serializeAddon);
-      term.loadAddon(unicode11Addon);
-      // Activate unicode v11 width handling once its addon is loaded.
-      term.unicode.activeVersion = "11";
+      activateProductionTerminalResponseAddons(term, unicode11Addon);
 
       term.open(container);
       try {
         fitAddon.fit();
       } catch {
         // Container may not be measurable yet; a later resize will fit.
+      }
+      const initialFit = fitAddon.proposeDimensions();
+      if (initialFit) {
+        onFitRef.current?.({ cols: initialFit.cols, rows: initialFit.rows });
       }
 
       termRef.current = term;
@@ -259,6 +338,14 @@ export function Terminal({
         }),
       );
 
+      // Binary xterm input must remain a byte string. Do not pass it through a
+      // TextEncoder here; the session bridge owns the explicit low-8-bit map.
+      disposables.push(
+        term.onBinary((data) => {
+          onBinaryRef.current?.(data);
+        }),
+      );
+
       // Surface geometry changes for snapshot/reconnect parity.
       disposables.push(
         term.onResize(({ cols, rows }) => {
@@ -268,6 +355,11 @@ export function Terminal({
 
       if (typeof ResizeObserver !== "undefined") {
         resizeObserver = new ResizeObserver(() => {
+          const proposed = fitAddon.proposeDimensions();
+          if (proposed) {
+            onFitRef.current?.({ cols: proposed.cols, rows: proposed.rows });
+          }
+          if (controlledGridRef.current) return;
           try {
             fitAddon.fit();
           } catch {
@@ -282,6 +374,10 @@ export function Terminal({
           if (onFlushed) term.write(data, onFlushed);
           else term.write(data);
         },
+        reset() {
+          term.reset();
+          term.clear();
+        },
         fit() {
           try {
             fitAddon.fit();
@@ -289,6 +385,10 @@ export function Terminal({
             return null;
           }
           return { cols: term.cols, rows: term.rows };
+        },
+        proposeFit() {
+          const geometry = fitAddon.proposeDimensions();
+          return geometry ? { cols: geometry.cols, rows: geometry.rows } : null;
         },
         resize(cols, rows) {
           try {
@@ -304,8 +404,38 @@ export function Terminal({
             return null;
           }
         },
+        activeBufferSnapshot() {
+          try {
+            return serializeActiveBuffer(term);
+          } catch {
+            return null;
+          }
+        },
         geometry() {
           return { cols: term.cols, rows: term.rows };
+        },
+        bufferState() {
+          const active = term.buffer.active;
+          return {
+            type: active.type,
+            cursorX: active.cursorX,
+            cursorY: active.cursorY,
+          };
+        },
+        responseProfileInputs() {
+          const resolvedWindowOptions = term.options.windowOptions ?? {};
+          return {
+            termName: PRODUCTION_TERMINAL_RESPONSE_PROFILE_INPUTS.termName,
+            disableStdin: term.options.disableStdin ?? false,
+            windowOptions: {
+              getWinSizePixels: Boolean(resolvedWindowOptions.getWinSizePixels),
+              getCellSizePixels: Boolean(resolvedWindowOptions.getCellSizePixels),
+              getWinSizeChars: Boolean(resolvedWindowOptions.getWinSizeChars),
+            },
+            responseAffectingAddons: productionTerminalResponseAddonInputs(
+              term.unicode.activeVersion,
+            ),
+          };
         },
         clear() {
           term.clear();
@@ -367,4 +497,66 @@ export function Terminal({
       data-testid="terminal-surface"
     />
   );
+}
+
+export type ActiveBufferSnapshotTerminal = Pick<
+  XTerm,
+  "buffer" | "cols" | "modes" | "rows"
+>;
+
+export function serializeActiveBuffer(
+  term: ActiveBufferSnapshotTerminal,
+): string {
+  const buffer = term.buffer.active;
+  const reusableCell = buffer.getNullCell();
+  const rows = Array.from({ length: term.rows }, (_, row) => {
+    const line = buffer.getLine(buffer.viewportY + row);
+    if (!line) return { wrapped: false, cells: [] };
+    const cells = Array.from({ length: term.cols }, (_, column) => {
+      const cell = line.getCell(column, reusableCell);
+      if (!cell) return null;
+      const style =
+        (cell.isBold() ? 1 : 0) |
+        (cell.isItalic() ? 2 : 0) |
+        (cell.isDim() ? 4 : 0) |
+        (cell.isUnderline() ? 8 : 0) |
+        (cell.isBlink() ? 16 : 0) |
+        (cell.isInverse() ? 32 : 0) |
+        (cell.isInvisible() ? 64 : 0) |
+        (cell.isStrikethrough() ? 128 : 0) |
+        (cell.isOverline() ? 256 : 0);
+      return [
+        cell.getChars(),
+        cell.getCode(),
+        cell.getWidth(),
+        cell.getFgColorMode(),
+        cell.getFgColor(),
+        cell.getBgColorMode(),
+        cell.getBgColor(),
+        style,
+      ];
+    });
+    return { wrapped: line.isWrapped, cells };
+  });
+  return JSON.stringify({
+    version: 1,
+    type: buffer.type,
+    cols: term.cols,
+    rows: term.rows,
+    cursorX: buffer.cursorX,
+    cursorY: buffer.baseY + buffer.cursorY - buffer.viewportY,
+    atBottom: buffer.viewportY === buffer.baseY,
+    modes: {
+      applicationCursorKeysMode: term.modes.applicationCursorKeysMode,
+      applicationKeypadMode: term.modes.applicationKeypadMode,
+      bracketedPasteMode: term.modes.bracketedPasteMode,
+      insertMode: term.modes.insertMode,
+      mouseTrackingMode: term.modes.mouseTrackingMode,
+      originMode: term.modes.originMode,
+      reverseWraparoundMode: term.modes.reverseWraparoundMode,
+      sendFocusMode: term.modes.sendFocusMode,
+      wraparoundMode: term.modes.wraparoundMode,
+    },
+    viewport: rows,
+  });
 }

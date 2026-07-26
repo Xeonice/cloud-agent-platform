@@ -47,7 +47,12 @@ Before stopping a terminal task's container — while the container is still RUN
 - **THEN** the container is still stopped and retained, and the failure does not prevent the stop+retain
 
 ### Requirement: Multi-policy retention cleaner reaps stopped retained containers
-The orchestrator SHALL run a periodic, unref'd retention cleaner (modeled on the existing `CodexDeviceLoginService` sweep) that removes STOPPED `cap-aio-*` containers under MULTIPLE simultaneous policies, removing a container when ANY policy trips. Policy 1 (age): a stopped `cap-aio-*` container whose stopped age exceeds the configured retention window SHALL be removed. The retention window SHALL be read from account settings (the persisted retention-days value, default 30 days when unset). Policy 2 (free-disk high-water-mark): when host free disk drops below a configured floor, the cleaner SHALL evict OLDEST-stopped `cap-aio-*` containers FIRST until free disk recovers above the floor, even if those containers are younger than the retention window, because age alone cannot bound disk under a burst. The cleaner SHALL only ever remove containers that are STOPPED and carry the `cap-aio-*` identity — it SHALL NEVER remove a RUNNING container. The cleaner SHALL carry an in-process `isRunning` overlap guard so a slow sweep never overlaps the next tick, and the single-instance assumption SHALL be stated explicitly (no distributed lock; a multi-replica deployment would require one).
+The orchestrator SHALL run a periodic, unref'd retention cleaner (modeled on the existing `CodexDeviceLoginService` sweep) that operates through a provider-neutral retained-sandbox store/facade instead of assuming every retained sandbox is a local Docker `cap-aio-*` container. The local AIO implementation SHALL remove STOPPED `cap-aio-*` containers under MULTIPLE simultaneous policies, removing a container when ANY policy trips, while future providers MAY expose equivalent retained artifacts through the same store seam. Policy 1 (age): a stopped `cap-aio-*` container whose stopped age exceeds the configured retention window SHALL be removed. The retention window SHALL be read from account settings (the persisted retention-days value, default 30 days when unset). Policy 2 (free-disk high-water-mark): when host free disk drops below a configured floor, the cleaner SHALL evict OLDEST-stopped `cap-aio-*` containers FIRST until free disk recovers above the floor, even if those containers are younger than the retention window, because age alone cannot bound disk under a burst. The local AIO cleaner SHALL only ever remove containers that are STOPPED and carry the `cap-aio-*` identity — it SHALL NEVER remove a RUNNING container. The cleaner SHALL carry an in-process `isRunning` overlap guard so a slow sweep never overlaps the next tick, and the single-instance assumption SHALL be stated explicitly (no distributed lock; a multi-replica deployment would require one). A provider-specific removal failure SHALL be recorded or logged and SHALL NOT stop the cleaner from sweeping other eligible retained sandboxes.
+
+#### Scenario: Retention cleaner uses provider-neutral store
+- **WHEN** the retention cleaner sweeps retained sandboxes
+- **THEN** it obtains retention candidates and removal operations through the retained-sandbox store/facade seam
+- **AND** it does not depend directly on the local AIO provider class
 
 #### Scenario: A stopped container past the retention window is reaped
 - **WHEN** the cleaner sweeps and finds a stopped `cap-aio-*` container whose stopped age exceeds the configured retention window
@@ -69,6 +74,15 @@ The orchestrator SHALL run a periodic, unref'd retention cleaner (modeled on the
 #### Scenario: Overlapping sweeps are prevented by the in-process guard
 - **WHEN** a cleaner sweep is still in progress and the next scheduled tick fires
 - **THEN** the second tick is skipped by the `isRunning` guard and only one sweep runs at a time
+
+#### Scenario: Local AIO retention behavior is preserved
+- **WHEN** the selected retained-sandbox store is backed by local AIO containers
+- **THEN** stopped `cap-aio-*` containers are still removed by age or low-free-disk policies
+- **AND** running containers are still never removed by the cleaner
+
+#### Scenario: Retention removal remains best-effort
+- **WHEN** removing a retained sandbox fails for a provider-specific reason
+- **THEN** the cleaner records/logs the failure and continues sweeping other eligible retained sandboxes
 
 ### Requirement: Retained sandbox artifacts are provider-neutral
 
@@ -103,4 +117,32 @@ Provider-native retention, sleep, or snapshot operations SHALL NOT replace durab
 #### Scenario: Snapshot is secondary to transcript archive
 - **WHEN** a BoxLite-backed task reaches terminal state and BoxLite snapshot is enabled
 - **THEN** CAP still attempts transcript capture through the selected provider before relying on the snapshot for any history path
+
+### Requirement: Retention uses selected provider descriptors
+
+Sandbox retention SHALL route through the selected provider and its retention descriptor. Retention, pre-stop trim, credential clearing, transcript capture, cleanup eligibility, and artifact removal SHALL not assume AIO container names or AIO HTTP exec URLs in API code. Provider-specific assumptions, when needed, SHALL live behind the owning provider package or sandbox harness.
+
+#### Scenario: Retention uses selected command executor
+- **WHEN** a provider-backed task reaches terminal teardown
+- **THEN** pre-stop trim and credential-clearing commands run through the selected provider's command executor when reachable
+- **AND** API code does not resolve `aio-http-exec-v1`, `boxlite-exec-v1`, or provider-specific command protocol strings directly
+
+#### Scenario: Cleaner asks providers for cleanup candidates
+- **WHEN** the retention cleaner sweeps provider-owned artifacts
+- **THEN** it obtains cleanup candidates through provider-center retention descriptors or adapters
+- **AND** it only removes artifacts the owning provider marks safe to remove
+
+### Requirement: Provider e2e validates retention behavior
+
+Real provider e2e SHALL validate each provider's retention and cleanup contract at the provider package layer.
+
+#### Scenario: AIO e2e validates stopped retained artifact
+- **WHEN** AIO provider e2e tears down a completed task according to its retention policy
+- **THEN** it verifies the expected stopped or cleanup-eligible AIO artifact state
+- **AND** it verifies explicit cleanup removes the e2e artifact
+
+#### Scenario: BoxLite e2e validates provider retention descriptor
+- **WHEN** BoxLite provider e2e provisions and tears down a sandbox
+- **THEN** it verifies the provider retention descriptor and cleanup behavior match the advertised capabilities
+- **AND** a running BoxLite sandbox is not deleted by cleanup logic
 

@@ -79,10 +79,11 @@ export function providerMatchesSandboxTerminalStoryRequest(
   providerId: string,
 ): boolean {
   if (requested === 'auto') return true;
-  const normalized = providerId.toLowerCase();
-  return requested === 'aio'
-    ? normalized.includes('aio')
-    : normalized.includes('boxlite');
+  const familyTokens = providerId
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+  return familyTokens.includes(requested);
 }
 
 function validateSandboxTerminalStoryProviderReadiness(args: {

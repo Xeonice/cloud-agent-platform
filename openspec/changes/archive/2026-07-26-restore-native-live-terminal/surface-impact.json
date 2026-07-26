@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "restore-native-live-terminal",
+  "intent": "runtime-reliability",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "The change does not add or alter any Public V1 operation, request or response schema, status code, or error body. Native live attachment is carried by CAP's authenticated browser terminal WebSocket and provider-private terminal transports, while finished-session REST and cast compatibility contracts remain unchanged."
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "No MCP tool, argument, result, registration, or transport changes. MCP does not expose the browser terminal WebSocket, provider PTY identities, terminal-response correlation, or provider cleanup credentials."
+    },
+    "openapi": {
+      "status": "not-applicable",
+      "reason": "OpenAPI projects Public V1 operations only; the changed terminal attachment wire is private and no Public V1 schema or operation changes."
+    },
+    "apiPlayground": {
+      "status": "not-applicable",
+      "reason": "The API Playground catalogs Public V1 operations and has no entry for CAP's browser terminal WebSocket or provider-private PTY protocols."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "private-native-terminal-attachment-and-provider-pty-wire",
+      "reason": "Replaces CAP's private live snapshot and tail-replay controls with a versioned fresh-viewer attachment handshake, attachment-local response correlation, opaque-byte input, authoritative geometry, provider-native disposable PTYs, and exact cleanup. The coordinated API and Web terminal protocol plus AIO and BoxLite private transport behavior change, while detached task ownership and finished-session public artifacts remain separate."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

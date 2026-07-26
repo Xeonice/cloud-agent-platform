@@ -17,6 +17,8 @@ export interface TerminalTransportBuildArgs {
   readonly taskId: string;
   readonly connection: SandboxConnection;
   readonly selectedRun?: SelectedSandboxRun | null;
+  /** Provider-specific transports may opt into their verified opaque-input path. */
+  readonly enableOpaqueInput?: boolean;
 }
 
 export interface TerminalTransportFactoryContext extends TerminalTransportBuildArgs {

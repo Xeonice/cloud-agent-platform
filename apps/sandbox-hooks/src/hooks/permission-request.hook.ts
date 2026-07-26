@@ -356,16 +356,13 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
 }
 
 /**
- * CLI bootstrap (migrate-execution-to-aio-sandbox, Track derived-image-and-hooks,
- * task 5.4). This file is baked into the derived AIO image at
- * `/opt/cap/dist/hooks/permission-request.hook.js` and invoked by Codex as a
- * blocking `PreToolUse`/`PermissionRequest` hook (see `~/.codex/hooks.json`).
+ * Isolated compatibility CLI for the historical Codex 0.131 blocking hook.
+ * Bypass-mode AIO and BoxLite images do not ship or register this adapter.
  *
  * When run directly, it self-wires the {@link HttpApprovalTransport} from the
- * `ORCHESTRATOR_APPROVALS_URL` env injected into the sandbox container by
- * `AioSandboxProvider`, then runs the blocking round-trip over stdin/stdout. If
- * the env is absent the hook fails closed (deny) rather than letting the tool
- * call proceed unapproved.
+ * `ORCHESTRATOR_APPROVALS_URL` env explicitly supplied by its verification or a
+ * future caller, then runs the blocking round-trip over stdin/stdout. If the env
+ * is absent the compatibility adapter fails closed.
  */
 export async function runCli(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const approvalsUrl = env['ORCHESTRATOR_APPROVALS_URL'];

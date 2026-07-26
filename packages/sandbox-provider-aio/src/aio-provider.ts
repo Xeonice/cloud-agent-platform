@@ -21,6 +21,7 @@ import type {
   SandboxReadoptionPort,
   SandboxReadoptionTarget,
   SandboxRetentionPolicy,
+  SandboxRuntimePrivateFilePort,
   SandboxResolvedEnvironmentMetadata,
   SandboxRunCleanupAuthorization,
   SandboxSelectedRunPort,
@@ -41,7 +42,6 @@ import {
   buildSandboxCommandLine,
   isSandboxLegacyDeliverWorkspaceArgs,
   latchSandboxExternalBoundaryGuard,
-  normalizeSandboxCommandResult,
   redactSandboxProvisioningStageFailure,
   reportSandboxProvisioningProgress,
   resourcesForSandboxProvision,
@@ -57,6 +57,7 @@ import {
 import Docker from 'dockerode';
 import {
   AioSandboxContainerController,
+  normalizeAioShellExecResult,
   type AioDockerClient,
   type AioFetch,
   type AioProviderControllerLogger,
@@ -69,11 +70,22 @@ import {
   defineAioLocalSandboxProvider,
   type AioLocalSandboxRepoMount,
 } from './aio-local-provider.js';
-import { createAioWorkspaceSecurityAdapter } from './aio-workspace-security.js';
+import {
+  createAioRuntimePrivateFilePort,
+  createAioWorkspaceSecurityAdapter,
+} from './aio-workspace-security.js';
+import { executeAioShellCommand } from './aio-shell-exec.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
 const AIO_WORKSPACE_DELIVERY_TIMEOUT_MS = 120_000;
+
+class AioPreStopPrivateCleanupUnconfirmedError extends Error {
+  constructor() {
+    super('AIO pre-stop private cleanup was not confirmed');
+    this.name = 'AioPreStopPrivateCleanupUnconfirmedError';
+  }
+}
 
 export interface AioProvisionLookupHook<TCloneSpec, TRuntimeId> {
   getCloneSpec?(taskId: string): MaybePromise<TCloneSpec | null>;
@@ -96,6 +108,8 @@ export interface AioProviderExecutionContext<TRuntimeId = string> {
   readonly providerSandboxId: string;
   readonly containerName: string;
   readonly controller: AioSandboxContainerController;
+  /** Provider-private archive channel for runtime credentials/config/prompts. */
+  readonly runtimePrivateFiles: SandboxRuntimePrivateFilePort;
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
 }
 
@@ -252,7 +266,11 @@ export class AioSandboxProvider<
   ) {
     this.id = options.id ?? AIO_LOCAL_SANDBOX_PROVIDER_ID;
     this.controller = options.controller;
-    this.hooks = options.hooks ?? {};
+    // Keep the capability declaration and every later setup stage bound to
+    // one immutable hook snapshot. Otherwise a caller could mutate the
+    // options object after admission and invalidate the workspace-hook
+    // invariant while an asynchronous provision is already in flight.
+    this.hooks = Object.freeze({ ...(options.hooks ?? {}) });
     this.fetch = options.fetch;
     this.workspaceDir = options.workspaceDir ?? AIO_SANDBOX_WORKSPACE_DIR;
     const capabilities =
@@ -367,6 +385,15 @@ export class AioSandboxProvider<
         providerSandboxId,
         containerName: spec.containerName,
         controller: this.controller,
+        runtimePrivateFiles: createAioRuntimePrivateFilePort({
+          taskId: ctx.taskId,
+          controller: this.controller,
+          executor: guardedHookExecutor,
+          providerId: this.id,
+          ownership: ctx.ownership,
+          beforeSandboxCleanup: ctx.beforeSandboxCleanup,
+          afterSandboxCleanup: ctx.afterSandboxCleanup,
+        }),
         environment,
       };
       reportSandboxProvisioningProgress(ctx.onProvisioningProgress, {
@@ -522,9 +549,10 @@ export class AioSandboxProvider<
       throw err;
     }
 
-    if (!connection) {
-      throw new Error(`AIO provision failed before creating a connection for task ${ctx.taskId}`);
-    }
+    // Every successful path through the try block receives the controller's
+    // required connection before any subsequent setup stage runs. A failure
+    // before that assignment exits through the catch block, so `connection`
+    // cannot still be null here.
     return this.controller.registerConnection(connection);
   }
 
@@ -534,26 +562,41 @@ export class AioSandboxProvider<
     ownership?: SandboxOwnershipFence,
     diagnostics?: SandboxProvisioningDiagnosticEmitter,
   ): Promise<SandboxTeardownResult> {
-    const result = await this.controller.teardownSandbox(taskId, {
-      ownership,
-      diagnostics,
-      beforeStop: async ({ baseUrl }) => {
-        if (runtimeId === undefined) return;
-        const executor = this.createCommandExecutor(baseUrl);
-        try {
-          await this.hooks.preStopTrim?.({
-            taskId,
-            runtimeId,
-            baseUrl,
-            executor,
-            workspaceDir: this.workspaceDir,
-            controller: this.controller,
-          });
-        } catch {
-          // Failed provisioning should still stop the container even if cleanup degrades.
-        }
-      },
-    });
+    const providerSandboxId = this.controller.getProviderSandboxId(taskId);
+    let result: SandboxTeardownResult;
+    try {
+      result = await this.controller.teardownSandbox(taskId, {
+        ownership,
+        providerSandboxId,
+        diagnostics,
+        beforeStop: async ({ baseUrl }) => {
+          if (runtimeId === undefined) return;
+          const executor = this.createCommandExecutor(baseUrl);
+          try {
+            await this.hooks.preStopTrim?.({
+              taskId,
+              runtimeId,
+              baseUrl,
+              executor,
+              workspaceDir: this.workspaceDir,
+              controller: this.controller,
+            });
+          } catch {
+            throw new AioPreStopPrivateCleanupUnconfirmedError();
+          }
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof AioPreStopPrivateCleanupUnconfirmedError)) {
+        throw error;
+      }
+      result = await this.controller.removeSandboxAndConfirm(
+        taskId,
+        ownership,
+        providerSandboxId,
+        diagnostics,
+      );
+    }
     this.runs.delete(taskId);
     return result;
   }
@@ -585,30 +628,49 @@ export class AioSandboxProvider<
       options.providerSandboxId ??
       run?.providerSandboxId ??
       this.controller.getProviderSandboxId(taskId);
-    const result = options.disposition === 'superseded-remove'
-      ? await this.controller.removeSandboxAndConfirm(
-          taskId,
-          ownership,
-          providerSandboxId,
-          run?.diagnostics,
-        )
-      : await this.controller.teardownSandbox(taskId, {
+    let result: SandboxTeardownResult;
+    if (options.disposition === 'superseded-remove') {
+      result = await this.controller.removeSandboxAndConfirm(
+        taskId,
+        ownership,
+        providerSandboxId,
+        run?.diagnostics,
+      );
+    } else {
+      try {
+        result = await this.controller.teardownSandbox(taskId, {
           ownership,
           providerSandboxId,
           diagnostics: run?.diagnostics,
           beforeStop: async ({ baseUrl }) => {
             const executor = this.createCommandExecutor(baseUrl);
-            await this.hooks.preStopTrim?.({
-              taskId,
-              runtimeId:
-                run?.runtimeId ?? (await this.resolveRuntimeId(taskId)),
-              baseUrl,
-              executor,
-              workspaceDir: this.workspaceDir,
-              controller: this.controller,
-            });
+            try {
+              await this.hooks.preStopTrim?.({
+                taskId,
+                runtimeId:
+                  run?.runtimeId ?? (await this.resolveRuntimeId(taskId)),
+                baseUrl,
+                executor,
+                workspaceDir: this.workspaceDir,
+                controller: this.controller,
+              });
+            } catch {
+              throw new AioPreStopPrivateCleanupUnconfirmedError();
+            }
           },
         });
+      } catch (error) {
+        if (!(error instanceof AioPreStopPrivateCleanupUnconfirmedError)) {
+          throw error;
+        }
+        result = await this.controller.removeSandboxAndConfirm(
+          taskId,
+          ownership,
+          providerSandboxId,
+          run?.diagnostics,
+        );
+      }
+    }
     this.runs.delete(taskId);
     return result;
   }
@@ -931,12 +993,11 @@ export class AioSandboxProvider<
   ): Promise<void> {
     if (ctx.workspace !== undefined) {
       if (ctx.workspace === null) return;
-      const hook = this.hooks.workspaceMaterialization;
-      if (!hook) {
-        throw new SandboxProviderConfigurationError(
-          'AIO canonical workspace materialization requires the staged workspace hook',
-        );
-      }
+      // `provision()` rejects a canonical workspace before creating a
+      // container unless this hook is configured, so the private materializer
+      // only runs under that established invariant.
+      const hook = this.hooks
+        .workspaceMaterialization as SandboxWorkspaceMaterializationHook;
       const adapter = createAioWorkspaceSecurityAdapter({
         taskId: ctx.taskId,
         providerId: this.id,
@@ -1088,12 +1149,16 @@ export function createAioHttpCommandExecutor(
         guard: options.externalBoundaryGuard,
         signal,
         run: async () => {
-          const res = await fetchImpl(`${options.baseUrl}/v1/shell/exec`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ command: buildSandboxCommandLine(request) }),
+          const command = buildSandboxCommandLine(request);
+          const res = await executeAioShellCommand(
+            fetchImpl,
+            options.baseUrl,
+            // AIO REST sessions are backed by a persistent login shell. Run
+            // each executor request in a child shell so commands such as
+            // `exit 1` settle the request without terminating that session.
+            `sh -lc ${shellQuote(command)}`,
             signal,
-          });
+          );
           if (!res.ok) {
             return {
               exitCode: Number.NaN,
@@ -1103,9 +1168,7 @@ export function createAioHttpCommandExecutor(
               timedOut: false,
             };
           }
-          return normalizeSandboxCommandResult(
-            await res.json().catch(() => undefined),
-          );
+          return normalizeAioShellExecResult(res.body);
         },
       });
     },

@@ -16,10 +16,17 @@ const EXACT_HOST_GIT_CREDENTIAL_BRAND: unique symbol = Symbol(
 const SANDBOX_SECRET_FILE_HANDLE_BRAND: unique symbol = Symbol(
   'SandboxSecretFileHandle',
 );
+const SANDBOX_RUNTIME_PRIVATE_FILE_BRAND: unique symbol = Symbol(
+  'SandboxRuntimePrivateFile',
+);
 
 const redactedSecretValues = new WeakMap<RedactedSecret, string>();
 const exactHostCredentials = new WeakSet<ExactHostGitCredential>();
 const secretFilePaths = new WeakMap<SandboxSecretFileHandle, string>();
+const runtimePrivateFiles = new WeakMap<
+  SandboxRuntimePrivateFile,
+  { readonly path: string; readonly content: Uint8Array }
+>();
 
 /**
  * Opaque, serialization-safe secret wrapper.
@@ -69,12 +76,10 @@ async function withRedactedSecret(
   secret: RedactedSecret,
   consume: (value: string) => void | Promise<void>,
 ): Promise<void> {
-  const value = redactedSecretValues.get(secret);
-  if (value === undefined) {
-    throw new SandboxProviderConfigurationError(
-      'Sandbox secret must originate from the redacted secret factory',
-    );
-  }
+  // This helper is private and is reached only through an immutable credential
+  // registered in `exactHostCredentials`; its secret was registered atomically
+  // by the same factory before the credential became observable.
+  const value = redactedSecretValues.get(secret) as string;
   await consume(value);
 }
 
@@ -239,6 +244,102 @@ export interface SandboxProviderPrivateSecretFileTransport {
   ): Promise<void>;
 }
 
+/**
+ * Provider-neutral provision-time file port for runtime-owned private material.
+ *
+ * Runtime setup uses this for credentials, config, and prompt files so their
+ * bytes travel through the provider's archive/file API rather than a shell
+ * command, argv, environment variable, stdin, or diagnostic object. The port
+ * deliberately fixes the guest mode at 0600 and accepts only absolute paths
+ * below the configured runtime home.
+ */
+export interface SandboxRuntimePrivateFile {
+  readonly kind: 'sandbox-runtime-private-file';
+  readonly [SANDBOX_RUNTIME_PRIVATE_FILE_BRAND]: true;
+  toString(): string;
+  toJSON(): Readonly<Record<string, unknown>>;
+}
+
+export interface SandboxRuntimePrivateFilePort {
+  writeFile(
+    file: SandboxRuntimePrivateFile,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<void>;
+}
+
+export interface CreateSandboxRuntimePrivateFilePortOptions {
+  /** Absolute guest directory that contains every runtime-owned file. */
+  readonly rootDirectory: string;
+  readonly transport: SandboxProviderPrivateSecretFileTransport;
+}
+
+class SandboxRuntimePrivateFileValue implements SandboxRuntimePrivateFile {
+  readonly kind = 'sandbox-runtime-private-file' as const;
+  declare readonly [SANDBOX_RUNTIME_PRIVATE_FILE_BRAND]: true;
+
+  toString(): string {
+    return `[SandboxRuntimePrivateFile ${SANDBOX_REDACTED_VALUE}]`;
+  }
+
+  toJSON(): Readonly<Record<string, unknown>> {
+    return {
+      kind: this.kind,
+      path: SANDBOX_REDACTED_VALUE,
+      content: SANDBOX_REDACTED_VALUE,
+      mode: SANDBOX_SECRET_FILE_MODE,
+    };
+  }
+}
+
+/** Create a one-shot opaque runtime file whose bytes have no public getter. */
+export function createSandboxRuntimePrivateFile(
+  path: string,
+  content: string | Uint8Array,
+): SandboxRuntimePrivateFile {
+  const file = new SandboxRuntimePrivateFileValue();
+  runtimePrivateFiles.set(file, {
+    path,
+    content:
+      typeof content === 'string'
+        ? new TextEncoder().encode(content)
+        : content.slice(),
+  });
+  return Object.freeze(file);
+}
+
+/**
+ * Compose a runtime file port over the same provider-private archive transport
+ * used by Git credentials. The wrapped request is serialization-safe and its
+ * content remains non-enumerable while crossing the provider boundary.
+ */
+export function createSandboxRuntimePrivateFilePort(
+  options: CreateSandboxRuntimePrivateFilePortOptions,
+): SandboxRuntimePrivateFilePort {
+  const root = normalizeRuntimePrivateRoot(options.rootDirectory);
+  return Object.freeze({
+    async writeFile(
+      file: SandboxRuntimePrivateFile,
+      writeOptions: { readonly signal?: AbortSignal } = {},
+    ): Promise<void> {
+      const material = runtimePrivateFiles.get(file);
+      if (!material) {
+        throw new SandboxProviderConfigurationError(
+          'Sandbox runtime private file is invalid or already consumed',
+        );
+      }
+      try {
+        const path = normalizeRuntimePrivatePath(material.path, root);
+        await options.transport.writeFile(
+          privateWriteRequest(path, material.content, writeOptions.signal),
+        );
+      } finally {
+        material.content.fill(0);
+        runtimePrivateFiles.delete(file);
+      }
+    },
+  });
+}
+
 export interface SandboxSecretFileWriteRequest {
   readonly kind: 'git-http-credential';
   readonly credential: ExactHostGitCredential;
@@ -272,13 +373,8 @@ class SandboxSecretFileHandleValue implements SandboxSecretFileHandle {
   declare readonly [SANDBOX_SECRET_FILE_HANDLE_BRAND]: true;
 
   get path(): string {
-    const path = secretFilePaths.get(this);
-    if (path === undefined) {
-      throw new SandboxProviderConfigurationError(
-        'Sandbox secret file handle is invalid',
-      );
-    }
-    return path;
+    // Instances are private and enter `secretFilePaths` before being returned.
+    return secretFilePaths.get(this) as string;
   }
 
   toString(): string {
@@ -395,12 +491,8 @@ export function createSandboxSecretFilePort(
         );
       }
       if (deleted.has(handle)) return;
-      const path = secretFilePaths.get(handle);
-      if (path === undefined) {
-        throw new SandboxProviderConfigurationError(
-          'Sandbox secret file handle is invalid',
-        );
-      }
+      // `owned` is an unforgeable WeakSet populated together with this map.
+      const path = secretFilePaths.get(handle) as string;
       try {
         await options.transport.deleteFile(privateDeleteRequest(path));
       } catch {
@@ -496,6 +588,47 @@ function privateDeleteRequest(
   return Object.freeze(new ProviderPrivateDeleteRequestValue(path));
 }
 
+function normalizeRuntimePrivateRoot(value: string): string {
+  if (
+    typeof value !== 'string' ||
+    !value.startsWith('/') ||
+    value.includes('\0') ||
+    value.split('/').some((part) => part === '.' || part === '..')
+  ) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox runtime private file root must be an absolute normalized path',
+    );
+  }
+  const normalized = value.replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  if (!normalized) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox runtime private file root must not be filesystem root',
+    );
+  }
+  return normalized;
+}
+
+function normalizeRuntimePrivatePath(value: string, root: string): string {
+  if (
+    typeof value !== 'string' ||
+    !value.startsWith('/') ||
+    value.includes('\0') ||
+    value.endsWith('/') ||
+    value.split('/').some((part) => part === '.' || part === '..')
+  ) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox runtime private file path must be an absolute normalized file path',
+    );
+  }
+  const normalized = value.replace(/\/{2,}/g, '/');
+  if (normalized === root || !normalized.startsWith(`${root}/`)) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox runtime private file path escapes its configured root',
+    );
+  }
+  return normalized;
+}
+
 function renderExactHostGitConfig(
   credential: ExactHostGitCredential,
   authorizationHeader: string,
@@ -540,11 +673,8 @@ function normalizeExactHost(repositoryUrl: string): NormalizedExactHost {
       'Git repository URL must use HTTP or HTTPS',
     );
   }
-  if (parsed.hostname.length === 0) {
-    throw new SandboxProviderConfigurationError(
-      'Git repository URL must include a host',
-    );
-  }
+  // WHATWG parsing of the special HTTP(S) schemes above cannot succeed without
+  // a hostname, so there is no separate reachable hostless state here.
   if (parsed.username.length > 0 || parsed.password.length > 0) {
     throw new SandboxProviderConfigurationError(
       'Git repository URL must not contain userinfo',

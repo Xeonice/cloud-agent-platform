@@ -47,8 +47,8 @@ import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnosti
  * Composes the full orchestrator after integration:
  *  - data plane: `PrismaModule`, `ReposModule`, `TasksModule`;
  *  - realtime: `TerminalModule` (dual-channel gateway with connect-auth 11.4,
- *    keystroke gating 7.5, and approval routing 6.5 — the latter re-homed onto
- *    the `/internal/sandbox/approvals` HTTP callback under connect-in) + `WriteLockModule`;
+ *    keystroke gating 7.5, and a dormant, private-peer-protected approval
+ *    compatibility callback) + `WriteLockModule`;
  *  - safety: `CredsModule` (global ephemeral session credentials), `SandboxModule`
  *    (the `SandboxProvider` port bound by token, 9.1b), `GuardrailsModule`
  *    (semaphore / deadline / idle / circuit-breaker wired into the lifecycle +

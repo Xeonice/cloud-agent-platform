@@ -165,6 +165,12 @@ export function isSandboxWorkspaceTransferDetachedSignal(
     error instanceof SandboxWorkspaceTransferDetachedSignal ||
     (error instanceof Error &&
       error.name === 'SandboxWorkspaceTransferDetachedSignal' &&
+      typeof (error as SandboxWorkspaceTransferDetachedSignal).job?.taskId ===
+        'string' &&
+      (error as SandboxWorkspaceTransferDetachedSignal).job.taskId.length > 0 &&
+      typeof (error as SandboxWorkspaceTransferDetachedSignal).job?.jobId ===
+        'string' &&
+      (error as SandboxWorkspaceTransferDetachedSignal).job.jobId.length > 0 &&
       typeof (error as SandboxWorkspaceTransferDetachedSignal).job?.probe ===
         'function' &&
       typeof (error as SandboxWorkspaceTransferDetachedSignal).job?.kill ===

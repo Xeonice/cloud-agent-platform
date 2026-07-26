@@ -62,12 +62,6 @@ importers:
       '@prisma/client':
         specifier: ^5.22.0
         version: 5.22.0(prisma@5.22.0)
-      '@xterm/addon-serialize':
-        specifier: ^0.13.0
-        version: 0.13.0(@xterm/xterm@5.5.0)
-      '@xterm/headless':
-        specifier: ^5.5.0
-        version: 5.5.0
       dockerode:
         specifier: ^5.0.0
         version: 5.0.0
@@ -415,9 +409,6 @@ importers:
       '@cap/sandbox-cloud-http':
         specifier: workspace:*
         version: link:../sandbox-cloud-http
-      '@cap/sandbox-conformance':
-        specifier: workspace:*
-        version: link:../sandbox-conformance
       '@cap/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
@@ -434,18 +425,27 @@ importers:
       '@cap/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@cap/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../sandbox-conformance
       '@cap/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.41
+      '@types/ws':
+        specifier: ^8.5.12
+        version: 8.18.1
       eslint:
         specifier: ^9.27.0
         version: 9.39.4(jiti@2.7.0)
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
 
   packages/sandbox-cloud-http:
     dependencies:

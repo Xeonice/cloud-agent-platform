@@ -32,10 +32,7 @@ export function buildTaskModelMaterialCommands(
   }
   const selector = parsed.data;
   const encoded = Buffer.from(selector, 'utf8').toString('base64');
-  const material = taskModelLaunchMaterial({ kind: 'explicit', selector });
-  if (material.kind !== 'explicit') {
-    throw new SandboxRuntimeModelSetupError('material-write');
-  }
+  const material = explicitTaskModelLaunchMaterial({ kind: 'explicit', selector });
   const expected = material.checksum.slice('sha256:'.length);
   return [
     {
@@ -117,11 +114,8 @@ export async function verifyTaskModelMaterial(
   let material: TaskModelLaunchMaterial;
   try {
     TaskModelSelectorSchema.parse(intent.selector);
-    material = taskModelLaunchMaterial(intent);
+    material = explicitTaskModelLaunchMaterial(intent);
   } catch {
-    throw new SandboxRuntimeModelSetupError('material-verify');
-  }
-  if (material.kind !== 'explicit') {
     throw new SandboxRuntimeModelSetupError('material-verify');
   }
   try {
@@ -140,6 +134,20 @@ export async function verifyTaskModelMaterial(
     throw new SandboxRuntimeModelSetupError('material-verify');
   }
   return material;
+}
+
+/**
+ * Preserve the discriminant that `taskModelLaunchMaterial` intentionally keeps
+ * from its input. The sandbox-core helper has a union return type for callers
+ * with a union intent, while this module has already narrowed the intent.
+ */
+function explicitTaskModelLaunchMaterial(
+  intent: Extract<TaskModelIntent, { kind: 'explicit' }>,
+): Extract<TaskModelLaunchMaterial, { kind: 'explicit' }> {
+  return taskModelLaunchMaterial(intent) as Extract<
+    TaskModelLaunchMaterial,
+    { kind: 'explicit' }
+  >;
 }
 
 async function cleanupFailedTaskModelMaterial(

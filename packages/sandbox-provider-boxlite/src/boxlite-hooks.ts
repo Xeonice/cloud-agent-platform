@@ -1,6 +1,7 @@
 import type {
   SandboxCommandExecutor,
   SandboxPreflightResult,
+  SandboxRuntimePrivateFilePort,
   SandboxTranscriptSourceBase,
   TaskModelIntent,
 } from '@cap/sandbox-core';
@@ -30,6 +31,8 @@ export interface BoxLiteRuntimeSetupContext {
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
   readonly runtimeId?: string | null;
+  /** Provider-private archive channel for runtime credentials/config/prompts. */
+  readonly runtimePrivateFiles: SandboxRuntimePrivateFilePort;
 }
 
 export type BoxLiteRuntimeSetup = (
@@ -53,7 +56,7 @@ export type BoxLiteTranscriptRead<
 
 export type BoxLitePreStopCleanupContext = Omit<
   BoxLiteRuntimeSetupContext,
-  'modelIntent' | 'executionMode'
+  'modelIntent' | 'executionMode' | 'runtimePrivateFiles'
 >;
 
 export type BoxLitePreStopCleanup = (
@@ -63,6 +66,8 @@ export type BoxLitePreStopCleanup = (
 export interface BoxLiteRuntimePreflightOptions {
   readonly requiredTools: readonly string[];
   readonly workspacePath?: string;
+  /** Require the image-owned ASCII/base64 child-PTY bridge used by terminals. */
+  readonly requireTerminalByteBridge?: boolean;
   readonly commandTimeoutMs?: number;
   readonly cache?: Map<string, SandboxPreflightResult>;
   readonly now?: () => Date;

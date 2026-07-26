@@ -11,6 +11,10 @@ import {
   AioSandboxContainerController,
   BoxLiteRestClient,
   assertSandboxProviderSupportsResources,
+  createAioRuntimePrivateFilePort,
+  createBoxLiteWorkspaceSecurityAdapter,
+  createSandboxRuntimePrivateFile,
+  deleteBoxLiteSandboxAndConfirm,
   readBoxLiteProviderConfig,
   type AioDockerClient,
   type BoxLiteClient,
@@ -38,6 +42,8 @@ const MAX_RESULT_BYTES = 1024 * 1024;
 const DEFAULT_ORPHAN_AGE_MS = 5 * 60_000;
 const DEFAULT_ORPHAN_SWEEP_INTERVAL_MS = 60_000;
 const DEFAULT_CLEANUP_ATTEMPTS = 3;
+const CODEX_MODEL_PROBE_AUTH_PATH =
+  '/home/gem/.cap/runtime-model-probe-auth.json';
 
 const ProbeResultSchema = z
   .object({
@@ -316,10 +322,8 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
   ): Promise<RuntimeModelAdapterResult> {
     const state = this.requireState(handle);
     assertAvailable(input.signal, input.deadlineAt, this.now());
-    const command = buildCodexModelProbeCommand(
-      state.credential.authJson,
-      remainingMs(input.deadlineAt, this.now()),
-    );
+    const timeoutMs = remainingMs(input.deadlineAt, this.now());
+    const command = buildCodexModelProbeCommand(timeoutMs);
     let output: string;
     let exitCode: number;
     let timedOut = false;
@@ -327,21 +331,81 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
       if (!state.baseUrl) {
         throw new Error('Runtime-model probe is not ready.');
       }
-      const result = await this.aio.runSandboxExec(state.baseUrl, command, {
+      const executor = {
+        exec: async (request: {
+          readonly command: string;
+          readonly signal?: AbortSignal;
+        }) => {
+          const result = await this.aio.runSandboxExec(
+            state.baseUrl!,
+            request.command,
+            { signal: request.signal },
+          );
+          return {
+            exitCode: result.exitCode,
+            output: result.output,
+            stdout: result.output,
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      };
+      const privateFiles = createAioRuntimePrivateFilePort({
+        taskId: state.taskId,
+        controller: this.aio,
+        executor,
+      });
+      await privateFiles.writeFile(
+        createSandboxRuntimePrivateFile(
+          CODEX_MODEL_PROBE_AUTH_PATH,
+          state.credential.authJson,
+        ),
+        { signal: input.signal },
+      );
+      const result = await executor.exec({
+        command,
         signal: input.signal,
       });
       output = result.output;
       exitCode = result.exitCode;
     } else {
-      const result = await state.client.exec({
+      const executor = {
+        exec: (request: {
+          readonly command: string;
+          readonly timeoutMs?: number;
+          readonly signal?: AbortSignal;
+        }) =>
+          state.client.exec({
+            sandboxId: state.sandboxId,
+            command: request.command,
+            cwd: state.config.workspacePath,
+            timeoutMs: request.timeoutMs ?? timeoutMs,
+            cancellationSignal: request.signal,
+          }),
+      };
+      const security = createBoxLiteWorkspaceSecurityAdapter({
+        client: state.client,
         sandboxId: state.sandboxId,
-        command,
-        cwd: state.config.workspacePath,
-        timeoutMs: remainingMs(input.deadlineAt, this.now()),
       });
-      output = result.stdout || result.output;
-      exitCode = result.exitCode;
-      timedOut = result.timedOut === true;
+      await security.runtimePrivateFiles.writeFile(
+        createSandboxRuntimePrivateFile(
+          CODEX_MODEL_PROBE_AUTH_PATH,
+          state.credential.authJson,
+        ),
+        { signal: input.signal },
+      );
+      try {
+        const result = await executor.exec({
+          command,
+          timeoutMs,
+          signal: input.signal,
+        });
+        output = result.stdout || result.output;
+        exitCode = result.exitCode;
+        timedOut = result.timedOut === true;
+      } finally {
+        await security.settleCredentialSafety();
+      }
     }
     if (exitCode !== 0 || timedOut) {
       throw new Error('Codex runtime-model probe failed.');
@@ -393,9 +457,12 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
     for (let attempt = 1; attempt <= this.cleanupAttempts; attempt += 1) {
       try {
         if (state.kind === 'aio') {
-          await this.aio.removeSandbox(state.taskId, { bestEffort: false });
+          await this.aio.removeSandboxAndConfirm(state.taskId);
         } else {
-          await state.client.deleteSandbox(state.sandboxId);
+          await deleteBoxLiteSandboxAndConfirm({
+            client: state.client,
+            sandboxId: state.sandboxId,
+          });
         }
         return;
       } catch {
@@ -445,7 +512,7 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
         typeof info.Created === 'number' ? info.Created * 1_000 : Number.NaN;
       if (!Number.isFinite(createdAt) || createdAt > olderThanMs) continue;
       try {
-        await this.docker.getContainer(info.Id).remove({ force: true });
+        await removeAioOrphanAndConfirm(this.docker, info.Id);
         reaped += 1;
       } catch {
         this.logger.error('An AIO runtime-model orphan could not be reclaimed.');
@@ -471,7 +538,10 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
       const createdAt = boxLiteProbeCreatedAt(sandbox);
       if (createdAt === null || createdAt > olderThanMs) continue;
       try {
-        await client.deleteSandbox(sandbox.id);
+        await deleteBoxLiteSandboxAndConfirm({
+          client,
+          sandboxId: sandbox.id,
+        });
         reaped += 1;
       } catch {
         this.logger.error(
@@ -487,6 +557,41 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
     if (!state) throw new Error('Runtime-model probe handle is unavailable.');
     return state;
   }
+}
+
+async function removeAioOrphanAndConfirm(
+  docker: Docker,
+  containerId: string,
+): Promise<void> {
+  const container = docker.getContainer(containerId);
+  try {
+    await container.remove({ force: true });
+  } catch {
+    // A lost remove response is ambiguous; only the exact-id inspection below
+    // settles absence.
+  }
+  try {
+    await container.inspect();
+  } catch (error) {
+    if (isNotFound(error)) return;
+    throw error;
+  }
+  throw new Error('AIO runtime-model orphan removal could not be confirmed.');
+}
+
+function isNotFound(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as {
+    readonly status?: unknown;
+    readonly statusCode?: unknown;
+    readonly response?: { readonly status?: unknown; readonly statusCode?: unknown };
+  };
+  return (
+    value.status === 404 ||
+    value.statusCode === 404 ||
+    value.response?.status === 404 ||
+    value.response?.statusCode === 404
+  );
 }
 
 function snapshotEnvironment(
@@ -561,10 +666,8 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 
 /** Fixed helper program executed inside the selected immutable sandbox image. */
 export function buildCodexModelProbeCommand(
-  authJson: string,
   timeoutMs: number,
 ): string {
-  const auth = Buffer.from(authJson, 'utf8').toString('base64');
   const program = Buffer.from(CODEX_MODEL_PROBE_PROGRAM, 'utf8').toString(
     'base64',
   );
@@ -580,7 +683,9 @@ export function buildCodexModelProbeCommand(
     'probe_dir="$(mktemp -d /tmp/cap-runtime-model-probe.XXXXXX)"',
     "trap 'rm -rf \"$probe_dir\"' EXIT HUP INT TERM",
     'mkdir -p "$probe_dir/home/.codex"',
-    `printf '%s' '${auth}' | base64 -d > "$probe_dir/home/.codex/auth.json"`,
+    `test -f '${CODEX_MODEL_PROBE_AUTH_PATH}'`,
+    `mv -f -- '${CODEX_MODEL_PROBE_AUTH_PATH}' "$probe_dir/home/.codex/auth.json"`,
+    'chmod 600 "$probe_dir/home/.codex/auth.json"',
     `printf '%s' '${program}' | base64 -d > "$probe_dir/probe.cjs"`,
     `HOME="$probe_dir/home" CODEX_HOME="$probe_dir/home/.codex" CAP_MODEL_PROBE_TIMEOUT_MS='${timeout}' node "$probe_dir/probe.cjs"`,
   ].join('; ');

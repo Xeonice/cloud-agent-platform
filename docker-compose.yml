@@ -56,6 +56,10 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    # Native-terminal shutdown may need up to 25s to release and attest AIO
+    # owner/viewer PTYs. Leave Nest and the remaining shutdown hooks margin
+    # before Compose escalates SIGTERM to SIGKILL.
+    stop_grace_period: 40s
     logging: *default-logging
     # DooD needs access to the mounted /var/run/docker.sock. The api image runs as
     # a non-root user (correct for the Fly.io control-plane deploy, which does NOT

@@ -27,8 +27,8 @@ export interface ProviderSelectedRunFixture {
 }
 
 export interface ProviderTerminalFrameFixture {
-  readonly snapshot: string;
-  readonly tail: string;
+  /** Fragmented fresh-tmux-client bootstrap/current-frame bytes. */
+  readonly bootstrap: readonly string[];
   readonly live: readonly string[];
 }
 
@@ -78,16 +78,13 @@ export const providerTerminalFixtures: Record<
       },
     },
     frames: {
-      snapshot:
-        "PROVIDER_FIXTURE_AIO_SNAPSHOT_BEGIN\r\n" +
-        "AIO descriptor: aio-json-v1 / aio-http-exec-v1\r\n" +
-        "PROVIDER_FIXTURE_SNAPSHOT_READY\r\n",
-      tail:
-        "PROVIDER_FIXTURE_AIO_TAIL_REPLAY_BEGIN\r\n" +
-        Array.from({ length: 36 }, (_, index) =>
-          `PROVIDER_FIXTURE_AIO_REPLAY_${String(index + 1).padStart(3, "0")} scrollback`,
-        ).join("\r\n") +
-        "\r\nPROVIDER_FIXTURE_TAIL_FINAL\r\n",
+      bootstrap: [
+        "\x1b[?1049h\x1b[2J\x1b[H",
+        "\x1b[1;34mAIO descriptor\x1b[0m: aio-json-v1 / aio-http-exec-v1\r\n",
+        "\x1b[c",
+        "PROVIDER_FIXTURE_AIO_CURRENT_FRAME\r\n",
+        "\x1b[4;8H中文当前画面 ✓\x1b[6;1H",
+      ],
       live: [
         "PROVIDER_FIXTURE_AIO_LIVE_001\r\n",
         "PROVIDER_FIXTURE_AIO_LIVE_002\r\n",
@@ -130,16 +127,13 @@ export const providerTerminalFixtures: Record<
       },
     },
     frames: {
-      snapshot:
-        "PROVIDER_FIXTURE_BOXLITE_SNAPSHOT_BEGIN\r\n" +
-        "BoxLite descriptor: boxlite-v1 / boxlite-exec-v1\r\n" +
-        "PROVIDER_FIXTURE_SNAPSHOT_READY\r\n",
-      tail:
-        "PROVIDER_FIXTURE_BOXLITE_TAIL_REPLAY_BEGIN\r\n" +
-        Array.from({ length: 36 }, (_, index) =>
-          `PROVIDER_FIXTURE_BOXLITE_REPLAY_${String(index + 1).padStart(3, "0")} scrollback`,
-        ).join("\r\n") +
-        "\r\nPROVIDER_FIXTURE_TAIL_FINAL\r\n",
+      bootstrap: [
+        "\x1b[?1049h\x1b[2J\x1b[H",
+        "\x1b[1;35mBoxLite descriptor\x1b[0m: boxlite-v1 / boxlite-exec-v1\r\n",
+        "\x1b[c",
+        "PROVIDER_FIXTURE_BOXLITE_CURRENT_FRAME\r\n",
+        "\x1b[4;8H中文当前画面 ✓\x1b[6;1H",
+      ],
       live: [
         "PROVIDER_FIXTURE_BOXLITE_LIVE_001\r\n",
         "PROVIDER_FIXTURE_BOXLITE_LIVE_002\r\n",

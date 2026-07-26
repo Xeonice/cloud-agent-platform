@@ -71,7 +71,13 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function partName(index: number): string {
+/**
+ * Format the stable lexicographic name used for one archive part.
+ *
+ * Exporting this pure boundary keeps the maximum-part invariant directly
+ * testable without performing a million provider uploads.
+ */
+export function formatBoxLiteArchivePartName(index: number): string {
   const name = String(index).padStart(PART_NAME_WIDTH, '0');
   if (name.length > PART_NAME_WIDTH) {
     // 10^6 parts at the minimum part size is far beyond any plausible mirror;
@@ -163,7 +169,7 @@ export async function uploadBoxLiteArchiveInParts(
   try {
     for await (const part of splitIntoParts(args.archive, args.partBytes)) {
       hash.update(part);
-      const name = partName(partIndex);
+      const name = formatBoxLiteArchivePartName(partIndex);
       partIndex += 1;
       // The daemon extracts the body at `path`, so the raw part bytes travel
       // inside a single-entry tar envelope that materializes `<partsDir>/<name>`.

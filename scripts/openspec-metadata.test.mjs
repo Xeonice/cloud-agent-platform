@@ -1060,8 +1060,29 @@ test('diff-aware migration validates touched changes without bulk-failing legacy
         'openspec/changes/archive/2026-01-01-old/tasks.md',
         `openspec/changes/${fixture.change}/surface-impact.json`,
         'apps/api/src/app.module.ts',
-      ]),
+      ], { repoRoot: fixture.root }),
       [fixture.change],
+    );
+
+    rmSync(fixture.changeDirectory, { recursive: true, force: true });
+    const archivedTasks = `openspec/changes/archive/2026-07-26-${fixture.change}/tasks.md`;
+    assert.deepEqual(
+      validateChangedOpenSpecChanges(
+        [
+          `openspec/changes/${fixture.change}/tasks.md`,
+          archivedTasks,
+        ],
+        { repoRoot: fixture.root, registryInventory: undefined },
+      ),
+      [],
+    );
+    assert.throws(
+      () =>
+        validateChangedOpenSpecChanges(
+          [`openspec/changes/${fixture.change}/tasks.md`],
+          { repoRoot: fixture.root, registryInventory: undefined },
+        ),
+      /tasks\.md is required/u,
     );
   } finally {
     fixture.cleanup();

@@ -138,6 +138,67 @@ body {
   height: 100%;
 }
 
+.terminal-story-response-grid {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 12px;
+}
+
+.terminal-story-response-grid > div {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--terminal-line);
+}
+
+.terminal-story-native-page {
+  min-height: 100dvh;
+}
+
+.terminal-story-native-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.terminal-story-native-actions button {
+  min-height: 30px;
+  border: 1px solid var(--terminal-line);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--terminal-fg);
+  background: #151515;
+  font: 12px var(--font-mono);
+  cursor: pointer;
+}
+
+.terminal-story-native-grid {
+  display: grid;
+  width: min(1100px, calc(100vw - 36px));
+  height: 590px;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.terminal-story-native-grid[data-matrix="true"] {
+  width: calc(100vw - 36px);
+  height: calc(100dvh - 110px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.terminal-story-native-slot {
+  min-width: 0;
+  min-height: 0;
+  transition: width 100ms ease;
+}
+
+.terminal-story-native-slot[data-compact="true"] {
+  width: 66%;
+}
+
 .terminal-story-probe {
   position: absolute;
   width: 1px;

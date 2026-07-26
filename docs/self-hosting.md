@@ -162,18 +162,25 @@ when they are needed:
   BoxLite `release-assets` handles its
   `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst` the same way and extracts it
   under `CAP_SANDBOX_ASSET_DIR`, writes `BOXLITE_ROOTFS_PATH`, clears image env,
-  and requires native BoxLite (`BOXLITE_PROTOCOL_MODE=native`,
-  `BOXLITE_PATH_PREFIX=default`). Registry mode defaults `BOXLITE_IMAGE` to the
+  and requires native BoxLite (`BOXLITE_PROTOCOL_MODE=native`). Use
+  `BOXLITE_PATH_PREFIX=default` for a prefixed service, or persist
+  `BOXLITE_PATH_PREFIX=` for BoxLite 0.9.7 local `boxlite serve`. Registry mode
+  defaults `BOXLITE_IMAGE` to the
   matching `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}` unless you set
   `BOXLITE_IMAGE` or a default `BOXLITE_IMAGE_MAP`. Readiness
   checks the endpoint/token, creates a short-lived probe sandbox without
   unsupported create-time fields, starts it through the native BoxLite API,
   verifies the image, workspace, and required runtime tools aligned with the AIO
   sandbox runtime (`bash`, `claude`, `codex`, `git`, `gzip`, `node`,
-  `openspec`, `sh`, `tar`, `tmux` by default), then tears the probe sandbox
+  `openspec`, `python3`, `sh`, `tar`, `tmux` by default), then tears the probe sandbox
   down. Override `BOXLITE_RUNTIME_REQUIRED_TOOLS` only when you intentionally
   run a narrower custom runtime image. The official BoxLite image uses
   `/home/gem/workspace`, matching the AIO runtime launch path.
+  Native interactive terminal provisioning additionally requires executable
+  `/usr/local/bin/cap-pty-byte-bridge`. The bridge carries only bounded ASCII
+  frames with canonical base64 child-PTY bytes across BoxLite's outer terminal,
+  avoiding the per-chunk lossy UTF-8 behavior observed in BoxLite 0.9.5. Each
+  terminal open still requires its own generation-fenced bridge-ready handshake.
   API versions before `v0.37.1` do not understand split AIO assets. An existing
   AIO deployment explicitly using `release-assets` must first rerun the current
   quick-deploy path, or switch to `registry` and recreate the API, before using

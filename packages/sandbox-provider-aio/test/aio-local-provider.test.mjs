@@ -50,22 +50,12 @@ await test('reads pinned AIO config and rejects unsafe or invalid env', async ()
       AIO_SANDBOX_IMAGE: 'registry.local/cap-aio-sandbox:1.2.3',
       AIO_SANDBOX_NETWORK: 'cap-ci',
       AIO_SANDBOX_READINESS_TIMEOUT_MS: '1234',
-      ORCHESTRATOR_APPROVALS_BASE: 'http://api:8080///',
     }),
     {
       image: 'registry.local/cap-aio-sandbox:1.2.3',
       network: 'cap-ci',
       readinessTimeoutMs: 1234,
-      approvalsBase: 'http://api:8080',
     },
-  );
-
-  assert.equal(
-    mod.readAioLocalSandboxConfig({
-      AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:0.1.0',
-      PORT: '18080',
-    }).approvalsBase,
-    'http://api:18080',
   );
 
   assert.throws(() => mod.requirePinnedAioSandboxImage(undefined), /must be set/);
@@ -94,7 +84,6 @@ await test('builds provision specs, names, env, and validation helpers', async (
       image: 'cap-aio-sandbox:0.1.0',
       network: 'cap-net-test',
       readinessTimeoutMs: 456,
-      approvalsBase: 'http://api:8080/',
     },
   });
 
@@ -104,10 +93,7 @@ await test('builds provision specs, names, env, and validation helpers', async (
   assert.equal(spec.connection.baseUrl, 'http://cap-aio-task-helpers:8080');
   assert.equal(spec.connection.wsUrl, 'ws://cap-aio-task-helpers:8080/v1/shell/ws');
   assert.equal(spec.containerConfig.HostConfig.SecurityOpt[0], 'seccomp=unconfined');
-  assert.deepEqual(spec.containerConfig.Env, [
-    'TASK_ID=task-helpers',
-    'ORCHESTRATOR_APPROVALS_URL=http://api:8080/internal/sandbox/approvals',
-  ]);
+  assert.deepEqual(spec.containerConfig.Env, ['TASK_ID=task-helpers']);
 
   const custom = mod.buildAioLocalSandboxProvisionSpec({
     taskId: 'task-custom-env',
@@ -115,7 +101,6 @@ await test('builds provision specs, names, env, and validation helpers', async (
       image: 'cap-aio-sandbox:0.1.0',
       network: 'cap-net-test',
       readinessTimeoutMs: 456,
-      approvalsBase: 'http://api:8080',
     },
     environment: {
       environmentId: 'env-aio',
@@ -133,7 +118,6 @@ await test('builds provision specs, names, env, and validation helpers', async (
           image: 'cap-aio-sandbox:0.1.0',
           network: 'cap-net-test',
           readinessTimeoutMs: 456,
-          approvalsBase: 'http://api:8080',
         },
         environment: {
           environmentId: 'env-boxlite',
@@ -155,7 +139,85 @@ await test('builds provision specs, names, env, and validation helpers', async (
   assert.equal(mod.parseAioTaskIdFromContainerNames(undefined), null);
   assert.equal(mod.parseAioTaskIdFromContainerNames(['/cap-aio-']), null);
   assert.throws(() => mod.assertAioSeccompUnconfined([]), /SecurityOpt/);
-  assert.equal(mod.normalizeUrlBase('http://example.test///'), 'http://example.test');
+});
+
+await test('builds a read-only repo source mount and rejects escaping mount inputs', async () => {
+  assert.deepEqual(
+    mod.buildAioRepoSourceMount({
+      volumeName: 'cap-repo-store',
+      subpath: 'repo-123.git/objects',
+      mountPath: '/run/cap/repo-source',
+    }),
+    {
+      Type: 'volume',
+      Source: 'cap-repo-store',
+      Target: '/run/cap/repo-source',
+      ReadOnly: true,
+      VolumeOptions: { Subpath: 'repo-123.git/objects' },
+    },
+  );
+
+  for (const subpath of ['', '/repo.git', 'repos/../private.git']) {
+    assert.throws(
+      () =>
+        mod.buildAioRepoSourceMount({
+          volumeName: 'cap-repo-store',
+          subpath,
+          mountPath: '/run/cap/repo-source',
+        }),
+      /subpath must be relative/u,
+    );
+  }
+  assert.throws(
+    () =>
+      mod.buildAioRepoSourceMount({
+        volumeName: '   ',
+        subpath: 'repo.git',
+        mountPath: '/run/cap/repo-source',
+      }),
+    /requires a volume name/u,
+  );
+  assert.throws(
+    () =>
+      mod.buildAioRepoSourceMount({
+        volumeName: 'cap-repo-store',
+        subpath: 'repo.git',
+        mountPath: 'run/cap/repo-source',
+      }),
+    /path must be absolute/u,
+  );
+});
+
+await test('reports incompatible environment identity without assuming optional metadata', async () => {
+  const base = {
+    taskId: 'task-incompatible-env',
+    config: {
+      image: 'cap-aio-sandbox:0.1.0',
+      network: 'cap-net-test',
+      readinessTimeoutMs: 456,
+    },
+  };
+
+  assert.throws(
+    () =>
+      mod.buildAioLocalSandboxProvisionSpec({
+        ...base,
+        environment: {
+          id: 'legacy-env-id',
+          sourceKind: 'boxlite-image',
+          sourceRef: 'boxlite:test',
+        },
+      }),
+    /environment legacy-env-id source boxlite-image/u,
+  );
+  assert.throws(
+    () =>
+      mod.buildAioLocalSandboxProvisionSpec({
+        ...base,
+        environment: { sourceRef: 'unknown:test' },
+      }),
+    /environment unknown source unknown/u,
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

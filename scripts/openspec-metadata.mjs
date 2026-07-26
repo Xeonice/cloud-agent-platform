@@ -1527,6 +1527,21 @@ export function changedOpenSpecChangeNames(
   return [...names].sort();
 }
 
+function archivedOpenSpecChangeNames(
+  changedPaths,
+  { repoRoot = DEFAULT_REPO_ROOT } = {},
+) {
+  const names = new Set();
+  for (const filePath of changedPaths) {
+    const normalized = normalizeChangedPath(repoRoot, filePath);
+    const match = normalized.match(
+      /^openspec\/changes\/archive\/\d{4}-\d{2}-\d{2}-([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/|$)/u,
+    );
+    if (match) names.add(match[1]);
+  }
+  return names;
+}
+
 /**
  * Validate only touched active changes. Untouched legacy changes deliberately do
  * not require a bulk sidecar/task-metadata backfill.
@@ -1536,8 +1551,11 @@ export function validateChangedOpenSpecChanges(
   { repoRoot = DEFAULT_REPO_ROOT, phase = 'apply', registryInventory } = {},
 ) {
   const names = changedOpenSpecChangeNames(changedPaths, { repoRoot });
+  const archivedNames = archivedOpenSpecChangeNames(changedPaths, { repoRoot });
   const validated = [];
   for (const changeName of names) {
+    const activeDirectory = join(repoRoot, 'openspec', 'changes', changeName);
+    if (!existsSync(activeDirectory) && archivedNames.has(changeName)) continue;
     validated.push(
       validateChangeMetadata(changeName, {
         repoRoot,

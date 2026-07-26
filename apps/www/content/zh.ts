@@ -58,7 +58,7 @@ export const zh: SiteContent = {
           "# 写一个 .env：CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite 另写：CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN",
           "# 同主机 BoxLite：BOXLITE_ENDPOINT=http://host.docker.internal:7331 + BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331",
-          "# 可选 BoxLite 默认值：BOXLITE_PROTOCOL_MODE=native + BOXLITE_PATH_PREFIX=default",
+          "# BoxLite 原生路由：BOXLITE_PROTOCOL_MODE=native；有 prefix 的服务用 BOXLITE_PATH_PREFIX=default，0.9.7 本地 serve 用 BOXLITE_PATH_PREFIX=",
           "# Linux/AIO 另带上：aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],

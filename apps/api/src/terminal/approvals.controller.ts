@@ -23,13 +23,10 @@ import { TerminalGateway } from './terminal.gateway';
  * Orchestrator approvals HTTP endpoint (migrate-execution-to-aio-sandbox,
  * Integration task 5.5).
  *
- * Under the connect-in model the per-task AIO sandbox's baked Codex hooks call
- * BACK IN to the orchestrator over the private `cap-net` network (the sandbox
- * has no inbound host port; it dials the orchestrator BY CONTAINER NAME). This
- * single endpoint replaces the old runner dial-back / WebSocket transport for
- * the approval round-trip and the post-tool-use report — ONLY the transport
- * changes; the approval semantics live unchanged in {@link TerminalGateway}
- * (`onPermissionRequest` fan-out -> operator decision -> `onDecision`).
+ * This is an isolated compatibility callback for the historical sandbox-hook
+ * transport. Current bypass-mode AIO/BoxLite images do not bake or register that
+ * hook. The endpoint remains available for explicit adapter verification and a
+ * future separately designed caller; its routing lives in {@link TerminalGateway}.
  *
  * SECURITY: this endpoint is exempt from operator auth because the caller is a
  * sandbox, not a human operator. The controller therefore enforces the existing
@@ -44,8 +41,8 @@ import { TerminalGateway } from './terminal.gateway';
  *    acknowledged with an empty 200; post-hoc only — never gates or reverses a
  *    command.
  *
- * The hook fails closed (deny) on any non-2xx / unparseable response, so an
- * invalid body is rejected with 400 and the blocked tool call never proceeds.
+ * A compatibility caller fails closed on non-2xx/unparseable responses; an
+ * invalid body is therefore rejected with 400.
  */
 @Controller('internal/sandbox/approvals')
 export class ApprovalsController {

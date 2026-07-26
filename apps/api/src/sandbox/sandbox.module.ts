@@ -1,7 +1,7 @@
 import { Global, Logger, Module } from '@nestjs/common';
 import { createConfiguredSandboxProvider } from '@cap/sandbox';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
-import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
+import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
@@ -116,7 +116,6 @@ const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
         runtimes: RuntimeRegistry,
         materialResolvers: RuntimeMaterialResolverRegistry,
         lookup: ProvisionLookup,
-        codexAuthSource: CodexAuthSource,
       ): SandboxProvider =>
         createConfiguredSandboxProvider<
           CloneSpec,
@@ -128,7 +127,6 @@ const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
           runtimeRegistry: runtimes,
           materialResolvers,
           provisionLookup: lookup,
-          codexAuthSource,
           skillInstallers: { resolveSkillInstaller },
           sessionIdForTask,
           logger: {
@@ -142,7 +140,6 @@ const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
         RUNTIME_REGISTRY,
         RUNTIME_MATERIAL_RESOLVER_REGISTRY,
         PROVISION_LOOKUP,
-        CODEX_AUTH_SOURCE,
       ],
     },
     // add-claude-code-runtime Track 2/3 + pixel-restore-console-to-od Track 3 —

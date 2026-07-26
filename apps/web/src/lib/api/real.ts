@@ -315,12 +315,21 @@ async function requestText(path: string, init?: RequestInit): Promise<string> {
   });
   if (!res.ok) {
     let detail = res.statusText;
+    let body: unknown;
     try {
-      detail = (await res.text()) || detail;
+      const text = await res.text();
+      detail = text || detail;
+      if (text) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          // Plain-text errors remain available through `message`.
+        }
+      }
     } catch {
       // Ignore body read failures; fall back to the status text.
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, body);
   }
   if (res.status === 204) return "";
   return res.text();
@@ -1097,12 +1106,48 @@ export async function discoverCodexModels(
 
 /**
  * `GET /tasks/:id/cast` — the finished task's `session.cast` (asciicast v2 JSONL)
- * served as raw `text/plain` (session-terminal-replay). Returns the body text
- * for the read-only timing player to parse; a missing/absent cast surfaces as an
- * {@link ApiError} (the player renders an empty/"no recording" state).
+ * served as raw `text/plain` when explicitly enabled. Disabled, unavailable,
+ * or oversized artifacts surface as typed {@link ApiError} states; an enabled
+ * task with no cast retains the empty-body compatibility signal.
  */
 export async function getSessionCast(taskId: string): Promise<string> {
   return requestText(`/tasks/${encodeURIComponent(taskId)}/cast`);
+}
+
+export type SessionCastUnavailableReason =
+  | "disabled"
+  | "too_large"
+  | "unavailable";
+
+/** Reduce the cast endpoint's explicit safe error body to a fixed UI state. */
+export function sessionCastUnavailableReasonFromApiError(
+  error: unknown,
+): SessionCastUnavailableReason | null {
+  if (!(error instanceof ApiError)) return null;
+  const body = error.body;
+  const code =
+    typeof body === "object" && body !== null && "code" in body
+      ? (body as { code?: unknown }).code
+      : undefined;
+  if (
+    error.status === 503 &&
+    code === "terminal_raw_recording_disabled"
+  ) {
+    return "disabled";
+  }
+  if (
+    error.status === 413 &&
+    code === "terminal_raw_recording_too_large"
+  ) {
+    return "too_large";
+  }
+  if (
+    error.status === 503 &&
+    code === "terminal_raw_recording_unavailable"
+  ) {
+    return "unavailable";
+  }
+  return null;
 }
 
 /** Start an asynchronous, account-scoped official Codex login session. */

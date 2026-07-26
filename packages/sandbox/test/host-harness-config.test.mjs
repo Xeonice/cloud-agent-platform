@@ -430,5 +430,173 @@ await test('managed provider identity is taken from the enabled provider config'
   );
 });
 
+await test('deployment policy rejects unavailable families and preserves stable ranking', () => {
+  assert.throws(
+    () =>
+      mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+        { providerFamily: 'boxlite' },
+        { CAP_SANDBOX_PROVIDER: 'boxlite' },
+      ),
+    /Configured BoxLite provider is unavailable/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+        { providerFamily: 'cloud-http' },
+        { CAP_SANDBOX_PROVIDER: 'auto' },
+      ),
+    /Configured provider family is unavailable/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'boxlite',
+      }),
+    /Configured BoxLite provider is unavailable/,
+  );
+
+  const firstOnTie = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1',
+    CAP_SANDBOX_LOCAL_PRIORITY: '50',
+    CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+    CAP_SANDBOX_CLOUD_HTTP_PRIORITY: '50',
+    CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+  });
+  assert.equal(firstOnTie.providerId, 'aio-local');
+
+  const preferredCloud = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1',
+    CAP_SANDBOX_LOCAL_PRIORITY: '50',
+    CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+    CAP_SANDBOX_CLOUD_HTTP_PRIORITY: '50',
+    CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+    CAP_SANDBOX_PREFER_LOCATION: 'cloud',
+  });
+  assert.equal(preferredCloud.providerFamily, 'cloud-http');
+
+  const filteredCloud = mod.resolveConfiguredTaskProvisioningPolicy(
+    { providerFamily: 'cloud-http' },
+    {
+      CAP_SANDBOX_PROVIDER: 'auto',
+      AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1',
+      CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+      CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+    },
+  );
+  assert.equal(filteredCloud.providerFamily, 'cloud-http');
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy(
+        { providerFamily: 'cloud-http' },
+        { CAP_SANDBOX_PROVIDER: 'auto' },
+      ),
+    /No sandbox provider candidates are configured/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'control-plane',
+      }),
+    /explicit provider family "control-plane"/,
+  );
+});
+
+await test('deployment target fails closed for invalid sources and honors location ties', () => {
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'auto',
+        CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+      }),
+    /cannot prove an immutable runtime source/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'boxlite',
+      }),
+    /Configured BoxLite deployment source is unavailable/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'boxlite',
+        BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+        BOXLITE_API_TOKEN: 'secret',
+        BOXLITE_ROOTFS_PATH: '/var/lib/boxlite/rootfs',
+        BOXLITE_CAPABILITIES: 'terminal.websocket,command.exec',
+        BOXLITE_TERMINAL_MODE: 'pty',
+      }),
+    /cannot prove an immutable runtime source/,
+  );
+
+  const common = {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1',
+    CAP_SANDBOX_LOCAL_PRIORITY: '50',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'secret',
+    BOXLITE_IMAGE: 'cap-boxlite@sha256:runtime',
+    BOXLITE_PROVIDER_PRIORITY: '50',
+    BOXLITE_PROVIDER_LOCATION: 'cloud',
+    BOXLITE_CAPABILITIES: 'terminal.websocket,command.exec',
+    BOXLITE_TERMINAL_MODE: 'pty',
+  };
+  assert.equal(
+    mod.resolveConfiguredDeploymentEnvironmentTarget('codex', common).providerFamily,
+    'aio',
+  );
+  assert.equal(
+    mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+      ...common,
+      CAP_SANDBOX_PREFER_LOCATION: 'cloud',
+    }).providerFamily,
+    'boxlite',
+  );
+  assert.equal(
+    mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+      ...common,
+      CAP_SANDBOX_PREFER_LOCATION: 'local',
+    }).providerFamily,
+    'aio',
+  );
+});
+
+await test('transfer liveness accepts partial overrides and rejects fractional values', () => {
+  assert.deepEqual(
+    mod.readConfiguredWorkspaceTransferLiveness({
+      CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS: '45000',
+    }),
+    { heartbeatWindowMs: 45_000 },
+  );
+  assert.deepEqual(
+    mod.readConfiguredWorkspaceTransferLiveness({
+      CAP_SANDBOX_TRANSFER_ABSOLUTE_CAP_MS: '5400000',
+    }),
+    { absoluteCapMs: 5_400_000 },
+  );
+  assert.throws(
+    () =>
+      mod.readConfiguredWorkspaceTransferLiveness({
+        CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS: '45000.5',
+      }),
+    /must be an integer/,
+  );
+
+  const policy = mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+    { providerFamily: 'aio' },
+    {
+      CAP_SANDBOX_PROVIDER: 'aio',
+      AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1',
+      CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS: '45000',
+    },
+  );
+  assert.deepEqual(policy.workspaceTransferLiveness, {
+    heartbeatWindowMs: 45_000,
+  });
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

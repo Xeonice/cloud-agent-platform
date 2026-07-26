@@ -105,19 +105,11 @@ async function* streamTar(
   signal: AbortSignal | undefined,
 ): AsyncGenerator<Uint8Array, void, undefined> {
   if (signal?.aborted) throw new RepoStoreArchiveStreamError('aborted');
-  let child;
-  try {
-    child = spawn('tar', ['-C', directory, '-cf', '-', name], {
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-  } catch (error) {
-    throw new RepoStoreArchiveStreamError(
-      'spawn_failed',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
+  const child = spawn('tar', ['-C', directory, '-cf', '-', name], {
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
 
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => {
@@ -135,13 +127,15 @@ async function* streamTar(
     );
     child.once('close', (code: number | null) => resolve(code ?? -1));
   });
+  // A spawn error can arrive before stdout finishes closing. Attach a handler
+  // immediately so Node does not promote that short timing window to an
+  // unhandled rejection; awaiting the original promise below still returns the
+  // typed failure to the archive consumer.
+  void exited.catch(() => undefined);
 
   const abort = () => child.kill('SIGKILL');
   signal?.addEventListener('abort', abort, { once: true });
   try {
-    if (!child.stdout) {
-      throw new RepoStoreArchiveStreamError('spawn_failed', 'tar has no stdout');
-    }
     for await (const chunk of child.stdout) {
       yield chunk as Uint8Array;
     }

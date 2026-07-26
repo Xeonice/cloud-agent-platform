@@ -52,6 +52,14 @@ await test('terminal story provider parser and matcher are provider-id based', (
     mod.providerMatchesSandboxTerminalStoryRequest('boxlite', 'managed-boxlite'),
     true,
   );
+  assert.equal(
+    mod.providerMatchesSandboxTerminalStoryRequest('aio', 'notaiolocal'),
+    false,
+  );
+  assert.equal(
+    mod.providerMatchesSandboxTerminalStoryRequest('boxlite', 'boxliteish'),
+    false,
+  );
 });
 
 await test('terminal story readiness reports disabled and capability-missing states', () => {

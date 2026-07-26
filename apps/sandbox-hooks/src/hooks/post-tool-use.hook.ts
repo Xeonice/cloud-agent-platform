@@ -320,13 +320,11 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
 }
 
 /**
- * CLI bootstrap (migrate-execution-to-aio-sandbox, Track derived-image-and-hooks,
- * task 5.4). This file is baked into the derived AIO image at
- * `/opt/cap/dist/hooks/post-tool-use.hook.js` and invoked by Codex as a
- * non-blocking `PostToolUse` hook (see `~/.codex/hooks.json`).
+ * Isolated compatibility CLI for the historical Codex 0.131 `PostToolUse`
+ * adapter. Bypass-mode AIO and BoxLite images do not ship or register it.
  *
  * When run directly, it reads the task identity and the orchestrator approvals
- * URL from the env injected into the sandbox container by `AioSandboxProvider`
+ * URL from env explicitly supplied by an adapter verification or future caller
  * (`TASK_ID`, `WORKSPACES_DIR`/`WORKSPACE_DIR`, `ORCHESTRATOR_APPROVALS_URL`),
  * wires {@link HttpReportTransport}, and delivers the report over the outbound
  * HTTP callback. With no approvals URL configured the report is still printed to

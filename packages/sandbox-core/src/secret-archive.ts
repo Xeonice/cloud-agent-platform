@@ -1,6 +1,7 @@
 import { SandboxProviderConfigurationError } from './errors.js';
 
 const TAR_BLOCK_SIZE = 512;
+const TAR_UID_GID_MAX = 0o7777777;
 
 /**
  * Build the provider-neutral private-file transport envelope used by sandbox
@@ -10,10 +11,33 @@ const TAR_BLOCK_SIZE = 512;
 export function createSandboxMode0600FileArchive(
   name: string,
   content: Uint8Array,
+  ownership: { readonly uid: number; readonly gid: number } = {
+    uid: 0,
+    gid: 0,
+  },
 ): Uint8Array {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u.test(name)) {
+  // Hidden runtime files such as Claude's `.claude.json` are valid leaf names.
+  // Keep the tar entry flat and ASCII-only, while rejecting the two path
+  // navigation components themselves and every slash/backslash form.
+  if (
+    !/^[A-Za-z0-9._-]{1,100}$/u.test(name) ||
+    name === '.' ||
+    name === '..'
+  ) {
     throw new SandboxProviderConfigurationError(
       'Sandbox secret archive file name is invalid',
+    );
+  }
+  if (
+    !Number.isSafeInteger(ownership.uid) ||
+    ownership.uid < 0 ||
+    ownership.uid > TAR_UID_GID_MAX ||
+    !Number.isSafeInteger(ownership.gid) ||
+    ownership.gid < 0 ||
+    ownership.gid > TAR_UID_GID_MAX
+  ) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox secret archive ownership is invalid',
     );
   }
 
@@ -25,8 +49,8 @@ export function createSandboxMode0600FileArchive(
   const header = archive.subarray(0, TAR_BLOCK_SIZE);
   writeTarText(header, 0, 100, name);
   writeTarOctal(header, 100, 8, 0o600);
-  writeTarOctal(header, 108, 8, 0);
-  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 108, 8, ownership.uid);
+  writeTarOctal(header, 116, 8, ownership.gid);
   writeTarOctal(header, 124, 12, content.byteLength);
   writeTarOctal(header, 136, 12, 0);
   header.fill(0x20, 148, 156);

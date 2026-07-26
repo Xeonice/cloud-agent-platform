@@ -22,7 +22,6 @@ export const AIO_SANDBOX_CODEX_HOME_DIR = '/home/gem/.codex';
 export const AIO_SANDBOX_SECCOMP_UNCONFINED = 'seccomp=unconfined';
 export const AIO_SANDBOX_SHM_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 export const AIO_SANDBOX_DEFAULT_NETWORK = 'cap-net';
-export const AIO_SANDBOX_DEFAULT_API_PORT = '8080';
 export const AIO_SANDBOX_READINESS_TIMEOUT_MS = 60_000;
 export const AIO_SANDBOX_TRIM_TIMEOUT_MS = 10_000;
 export const AIO_SANDBOX_SESSION_PROBE_TIMEOUT_MS = 5_000;
@@ -32,15 +31,12 @@ export interface AioLocalSandboxEnv {
   readonly AIO_SANDBOX_IMAGE?: string;
   readonly AIO_SANDBOX_NETWORK?: string;
   readonly AIO_SANDBOX_READINESS_TIMEOUT_MS?: string;
-  readonly ORCHESTRATOR_APPROVALS_BASE?: string;
-  readonly PORT?: string;
 }
 
 export interface AioLocalSandboxConfig {
   readonly image: string;
   readonly network: string;
   readonly readinessTimeoutMs: number;
-  readonly approvalsBase: string;
 }
 
 /**
@@ -147,10 +143,6 @@ export function readAioLocalSandboxConfig(
       AIO_SANDBOX_READINESS_TIMEOUT_MS,
       'AIO_SANDBOX_READINESS_TIMEOUT_MS',
     ),
-    approvalsBase: normalizeUrlBase(
-      env.ORCHESTRATOR_APPROVALS_BASE ??
-        `http://api:${env.PORT ?? AIO_SANDBOX_DEFAULT_API_PORT}`,
-    ),
   };
 }
 
@@ -183,10 +175,7 @@ export function buildAioLocalSandboxProvisionSpec(args: {
     containerConfig: {
       Image: image,
       name: containerName,
-      Env: buildAioSandboxEnv({
-        taskId: args.taskId,
-        approvalsBase: config.approvalsBase,
-      }),
+      Env: buildAioSandboxEnv({ taskId: args.taskId }),
       ...(args.labels && Object.keys(args.labels).length > 0
         ? { Labels: { ...args.labels } }
         : {}),
@@ -294,12 +283,8 @@ export function buildAioSandboxConnection(taskId: string): SandboxConnection {
 
 export function buildAioSandboxEnv(args: {
   readonly taskId: string;
-  readonly approvalsBase: string;
 }): string[] {
-  return [
-    `TASK_ID=${args.taskId}`,
-    `ORCHESTRATOR_APPROVALS_URL=${normalizeUrlBase(args.approvalsBase)}/internal/sandbox/approvals`,
-  ];
+  return [`TASK_ID=${args.taskId}`];
 }
 
 export function parseAioTaskIdFromContainerNames(
@@ -325,9 +310,6 @@ export function assertAioSeccompUnconfined(securityOpt: readonly string[]): void
   }
 }
 
-export function normalizeUrlBase(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '');
-}
 
 function readPositiveInteger(
   raw: string | undefined,

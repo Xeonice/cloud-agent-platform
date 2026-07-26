@@ -138,7 +138,7 @@ function HistoryPage() {
           任务历史
         </h1>
         <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
-          按任务回看运行结果、耗时与运行 Agent；每条记录都保留可回放的会话记录与终端记录，保留周期可在设置中调整。
+          按任务回看运行结果、耗时与运行 Agent；会话记录按保留策略提供，完整 raw 终端历史默认不保存。
         </p>
       </section>
 

@@ -945,7 +945,9 @@ async function runTransferWithRetries(args: {
   readonly command: string;
 }): Promise<ActiveWorkspaceFailure | null> {
   const detached = args.context.detachedTransfer;
-  for (let attempt = 1; attempt <= TRANSFER_MAX_ATTEMPTS; attempt += 1) {
+  const runAttempt = async (
+    attempt: number,
+  ): Promise<ActiveWorkspaceFailure | null> => {
     const anotherAttemptPossible =
       attempt < TRANSFER_MAX_ATTEMPTS &&
       args.deadline.remainingTimeoutMs() >
@@ -998,9 +1000,9 @@ async function runTransferWithRetries(args: {
     if (args.deadline.remainingTimeoutMs() <= TRANSFER_RETRY_MIN_BUDGET_MS) {
       return outcome;
     }
-  }
-  // Unreachable: the final loop iteration always returns.
-  return failed(args.stage, 'unknown', false);
+    return runAttempt(attempt + 1);
+  };
+  return runAttempt(1);
 }
 
 /**
@@ -1177,13 +1179,7 @@ async function runMaterializationStage(args: {
  */
 export function sandboxWorkspaceTransferJobId(taskId: string): string {
   const sanitized = taskId.replace(/[^A-Za-z0-9._-]/gu, '-');
-  const id = `ws-transfer-${sanitized}`.slice(0, 128);
-  if (!/^[A-Za-z0-9]/u.test(id)) {
-    throw new SandboxProviderConfigurationError(
-      'Sandbox workspace transfer job id must start alphanumeric',
-    );
-  }
-  return id;
+  return `ws-transfer-${sanitized}`.slice(0, 128);
 }
 
 /**

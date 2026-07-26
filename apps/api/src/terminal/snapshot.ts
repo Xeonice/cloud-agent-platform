@@ -1,15 +1,6 @@
 export {
-  DEFAULT_FRESH_RECONNECT_REPLAY_BYTES,
-  DEFAULT_SNAPSHOT_INTERVAL_MS,
   SESSION_CAST_FILENAME,
   SESSION_LOG_FILENAME,
-  SnapshotManager,
   readSessionLogTail,
   stripAnsi,
-  toSnapshotFrame,
-  type CapturedSnapshot,
-  type HeadlessTerminal,
-  type ReconnectOptions,
-  type SnapshotManagerOptions,
-  type WsControlFrame,
 } from '@cap/sandbox';

@@ -173,8 +173,8 @@ jobs:
       # and the @cap/contracts / @cap/ui dist types. Two separate invocations
       # guarantee every build (hence every generated input) is done before any
       # typecheck runs.
-      - name: Build (codegen prerequisites)
-        run: pnpm turbo build
+      - name: Build + terminal response-profile source conformance
+        run: pnpm turbo build && pnpm verify:terminal-response-profile
 
       - name: Typecheck + lint (strict)
         run: pnpm turbo typecheck lint

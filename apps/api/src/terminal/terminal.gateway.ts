@@ -13,16 +13,16 @@
  *
  * The gateway's transport core owns the dual-channel transport, control-frame
  * validation, application-layer backpressure (5.2), the ACK-based pause/resume
- * protocol (5.3), and snapshot + tail-replay reconnect (5.4), delegating
- * bookkeeping to {@link BackpressureController} and {@link SnapshotManager}.
+ * protocol (5.3), and fresh viewer attachment, delegating connection-local
+ * flow-control bookkeeping to {@link BackpressureController}.
  *
  * Under the CONNECT-IN model the orchestrator is the WebSocket *client* into each
  * task's sandbox: it dials the per-task AIO Sandbox terminal OUT via an
- * {@link AioPtyClient} (registered through {@link openSession}), which becomes the
- * `TerminalSession.pty` backend. There is no inbound runner dial-back — the only
+ * {@link SandboxTerminalSession} (registered through {@link openSession}), which becomes the
+ * `TerminalSession.ownerPty` backend. There is no inbound runner dial-back — the only
  * inbound peers are operator console clients. The layers above the `TerminalPty`
- * seam (auth, lease, approval routing, backpressure, snapshots, guardrails) are
- * unchanged by this inversion. The gateway layers on:
+ * seam (auth, lease, approval routing, attachment-local backpressure, recording,
+ * guardrails) are unchanged by this inversion. The gateway layers on:
  *   - connect-time OPERATOR authentication of console clients via the human
  *     SESSION (cookie or `bearer.<token>` subprotocol) with a DB allowed re-check,
  *     and the gated legacy `AUTH_TOKEN` break-glass path, resolved by the shared
@@ -38,9 +38,12 @@
 import path from 'node:path';
 import { statSync } from 'node:fs';
 import { appendFile, mkdir, open } from 'node:fs/promises';
-import { Inject, Logger, Optional } from '@nestjs/common';
-import { Terminal as HeadlessXterm } from '@xterm/headless';
-import { SerializeAddon } from '@xterm/addon-serialize';
+import {
+  Inject,
+  Logger,
+  Optional,
+  type OnApplicationShutdown,
+} from '@nestjs/common';
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -51,7 +54,11 @@ import type { IncomingMessage } from 'node:http';
 import type { RawData, Server, WebSocket } from 'ws';
 import {
   ControlFrameSchema,
+  decodeCanonicalBase64Bytes,
   FRAME_CHANNEL,
+  HIGH_WATER_MARK_BYTES,
+  negotiateTerminalAttach,
+  TERMINAL_PROTOCOL_VERSION,
   extractWsOperatorToken,
   type AckFrame,
   type ConnectAuthFrame,
@@ -63,10 +70,14 @@ import {
   type PermissionRequestFrame,
   type PostToolUseReportFrame,
   type RawFrame,
-  type ReconnectFrame,
   type ResizeFrame,
   type ResumeFrame,
   type TakeoverRequestFrame,
+  type TerminalAttachFrame,
+  type TerminalAttachOutcome,
+  type TerminalAttachmentStateFrame,
+  type TerminalGeometryFrame,
+  type TerminalResponseFrame,
   parseAsciicastEvent,
   parseAsciicastHeader,
 } from '@cap/contracts';
@@ -75,13 +86,21 @@ import {
   type FlowSignal,
 } from './backpressure';
 import {
-  SnapshotManager,
   SESSION_LOG_FILENAME,
   SESSION_CAST_FILENAME,
   readSessionLogTail,
-  type HeadlessTerminal,
-  type WsControlFrame,
+  stripAnsi,
 } from './snapshot';
+import {
+  readTerminalRecordingPolicy,
+  TERMINAL_RAW_RECORDING_TRUNCATION_TEXT,
+  type TerminalRecordingPolicy,
+} from './terminal-recording-policy';
+import {
+  TerminalQueryObserver,
+  type TerminalQueryExpectation,
+  type TerminalQueryObserverOptions,
+} from './terminal-query-observer';
 import {
   buildCastHeaderLine,
   buildCastEventLine,
@@ -93,16 +112,24 @@ import type {
   AgentTerminalPty,
 } from './agent-terminal-pty';
 import {
+  aggregateTerminalCleanupSettlements,
+  buildSandboxTerminalViewerAttachmentFactory,
+  normalizeTerminalCleanupDecision,
   openSandboxTerminalPty,
   SandboxRuntimeModelSetupError,
-  type AioResolvedTaskLaunchContext,
+  type SandboxResolvedTaskLaunchContext,
   type SandboxTerminalExitStatus,
   type SandboxTerminalPtyMode,
+  type TerminalTransportWriteOutcome,
+  type TerminalTransportCleanupSettlement,
+  type TerminalViewerAttachment,
+  type TerminalViewerAttachmentFactory,
+  type TerminalViewerAttachmentOutcome,
 } from '@cap/sandbox';
 import type { SelectedSandboxRun } from '@cap/sandbox';
 import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
 // add-claude-code-runtime Track 3 (3.2): the gateway resolves the task's selected
-// AgentRuntime (Track 2's RuntimeRegistry) and threads it into the AioPtyClient so
+// AgentRuntime (Track 2's RuntimeRegistry) and threads it into the SandboxTerminalSession so
 // the launch / autosubmit / exit-detection seams dispatch to it. Optional injection
 // — when no registry is wired (focused transport unit context) the bridge defaults
 // to the codex inline path, so nothing about the codex flow changes.
@@ -119,7 +146,11 @@ import { WriteLockService } from '../write-lock/write-lock.service';
 // the constant-time legacy-bearer comparison internally, so the gateway needs no
 // direct `constantTimeEqual` import.
 import { AuthSessionService } from '../auth/auth-session.service';
-import { resolveOperatorPrincipal } from '../auth/operator-principal';
+import {
+  resolveOperatorPrincipal,
+  type OperatorPrincipal,
+  type PrincipalKind,
+} from '../auth/operator-principal';
 import { readCookie, SESSION_COOKIE_NAME } from '../auth/session-token';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import {
@@ -128,79 +159,7 @@ import {
   type TaskLaunchContext,
 } from '../sandbox/provision-lookup.port';
 import { stableJson } from '../runtime-models/runtime-model-catalog.util';
-
-/**
- * REAL headless xterm terminal backing the {@link SnapshotManager} (D9).
- *
- * Replaces the prior `NullHeadlessTerminal` (whose `serialize()` was always
- * empty, so every periodic snapshot was blank and `buildReconnectFrames`
- * replayed nothing). It owns a `@xterm/headless` `Terminal` fed the SAME raw PTY
- * bytes that are appended to `session.log`, with a `SerializeAddon` loaded so
- * `serialize()` returns the ACTUAL visible frame. We intentionally exclude the
- * headless xterm scrollback from snapshots: Codex inline/no-alt-screen output is
- * still a TUI repaint stream, so xterm scrollback is physical redraw history, not
- * a reliable linear transcript. The scrollable semantic history is served from
- * rollout JSONL via `/session-history`; this snapshot restores the live control
- * frame. The recorded `cols`/`rows` track the terminal geometry so a reconnecting
- * client of a different size can reconcile dimensions before applying it.
- *
- * `@xterm/headless`'s `write` is asynchronous internally (it parses on a
- * microtask), but `serialize()` reflects all bytes written before it is called
- * within the same synchronous turn because the parser is flushed on demand; the
- * snapshot cadence (seconds) is far slower than write bursts, so the visible
- * frame is always current by capture time.
- */
-class XtermHeadlessTerminal implements HeadlessTerminal {
-  private readonly term: HeadlessXterm;
-  private readonly serializer: SerializeAddon;
-
-  constructor(cols = 80, rows = 24) {
-    this.term = new HeadlessXterm({
-      cols,
-      rows,
-      // Required so the SerializeAddon can read the full buffer/styles.
-      allowProposedApi: true,
-      // Keep a bounded scrollback so a long-running session does not grow the
-      // headless buffer without bound (the durable source is session.log).
-      scrollback: 1000,
-    });
-    this.serializer = new SerializeAddon();
-    this.term.loadAddon(this.serializer);
-  }
-
-  get cols(): number {
-    return this.term.cols;
-  }
-  set cols(value: number) {
-    if (value > 0 && value !== this.term.cols) {
-      this.term.resize(value, this.term.rows);
-    }
-  }
-
-  get rows(): number {
-    return this.term.rows;
-  }
-  set rows(value: number) {
-    if (value > 0 && value !== this.term.rows) {
-      this.term.resize(this.term.cols, value);
-    }
-  }
-
-  write(data: string | Uint8Array): void {
-    this.term.write(data);
-  }
-
-  /** SerializeAddon: the actual current visible frame (non-empty once fed). */
-  serialize(): string {
-    return this.serializer.serialize({ scrollback: 0 });
-  }
-
-  resize(cols: number, rows: number): void {
-    if (cols > 0 && rows > 0) {
-      this.term.resize(cols, rows);
-    }
-  }
-}
+import { TerminalDiagnosticsMetricsService } from '../metrics/terminal-diagnostics-metrics.service';
 
 /** A node-pty handle: a pausable producer the gateway streams to clients. */
 export interface TerminalPty extends AgentTerminalPty {
@@ -226,24 +185,28 @@ export interface TerminalPty extends AgentTerminalPty {
    * the task has already been transitioned (e.g. a deadline/idle `forceFail`
    * backstop stopped the sandbox while the poller was still armed). Optional so
    * transport-only `TerminalPty` fakes need not implement it; the
-   * {@link AioPtyClient} provides it.
+   * {@link SandboxTerminalSession} provides it.
    */
   close?(): void;
 }
 
 /**
- * The per-task server-side terminal session the gateway streams from. It pairs
- * the live PTY (raw producer) with the snapshot manager that mirrors it for
- * reconnect. Under the connect-in model the live PTY is an {@link AioPtyClient}
- * dialed OUT into the sandbox terminal; the caller supplies concrete instances
- * and this gateway defines the shape it consumes.
+ * The per-task server-side terminal session. The owner PTY remains the sole
+ * lifecycle/recording source; every browser gets a disposable, independently
+ * opened viewer attachment from `viewerFactory`.
  */
 export interface TerminalSession {
   readonly taskId: string;
-  readonly pty: TerminalPty;
-  readonly snapshots: SnapshotManager;
+  readonly ownerPty: TerminalPty;
+  readonly viewerFactory: TerminalViewerAttachmentFactory;
+  readonly geometry: MutableTerminalGeometry;
   /** Await before settling durable admission success and releasing launch authority. */
   readonly launchDecision: Promise<AgentTerminalLaunchOutcome>;
+}
+
+interface MutableTerminalGeometry {
+  cols: number;
+  rows: number;
 }
 
 export interface OpenTerminalSessionOptions {
@@ -260,11 +223,116 @@ export interface OpenTerminalSessionOptions {
 }
 
 /**
+ * Sanitized, story-only evidence emitted at the CAP Gateway/provider boundary.
+ *
+ * The provider-backed verification story needs to distinguish bytes merely sent
+ * by a browser from bytes that actually crossed the Gateway's provider-write
+ * seam.  These events intentionally contain no provider URL, token, sandbox id,
+ * principal, or terminal output payload.  Exact input/response bytes are base64
+ * because they are opaque and may not be valid UTF-8.
+ */
+export type ProviderTerminalStoryTelemetryEvent =
+  | {
+      readonly type: 'attachment_state';
+      readonly taskId: string;
+      readonly attachmentId: string;
+      readonly state: AttachmentStateDetails['state'];
+      readonly reason?: string;
+      readonly cols: number;
+      readonly rows: number;
+    }
+  | {
+      readonly type: 'viewer_opened' | 'viewer_closed';
+      readonly taskId: string;
+      readonly attachmentId: string;
+    }
+  | {
+      readonly type: 'query';
+      readonly taskId: string;
+      readonly attachmentId: string;
+      readonly queryId: number | null;
+      readonly responseClass: string;
+      readonly parameters: Readonly<Record<string, string | number | boolean>>;
+      readonly bytesBase64: string;
+      readonly admitted: boolean;
+    }
+  | {
+      readonly type: 'response';
+      readonly taskId: string;
+      readonly attachmentId: string;
+      readonly bytesBase64: string;
+      readonly accepted: boolean;
+      readonly responseClass?: string;
+      readonly reason?: string;
+    }
+  | {
+      readonly type: 'provider_write';
+      readonly taskId: string;
+      readonly attachmentId: string;
+      readonly source: 'keystroke' | 'terminal_response';
+      readonly bytesBase64: string;
+      readonly outcome: TerminalTransportWriteOutcome | 'threw';
+    }
+  | {
+      readonly type: 'resize';
+      readonly taskId: string;
+      readonly attachmentId: string;
+      readonly cols: number;
+      readonly rows: number;
+      readonly authoritative: boolean;
+    };
+
+export interface ProviderTerminalStoryTelemetryObserver {
+  onEvent(event: ProviderTerminalStoryTelemetryEvent): void;
+}
+
+export interface ProviderTerminalStoryGatewayResourceState {
+  readonly ownerRegistered: boolean;
+  readonly activeViewerCount: number;
+}
+
+/**
  * What kind of peer is on the other end of a connection. Under the connect-in
  * model the only inbound peers are operator console clients; the orchestrator
- * dials sandboxes OUT via {@link AioPtyClient}, so there is no inbound runner.
+ * dials sandboxes OUT via {@link SandboxTerminalSession}, so there is no inbound runner.
  */
 type ConnectionKind = 'operator';
+
+type AttachmentPhase = 'unattached' | 'attaching' | 'attached' | 'closed';
+
+/** Canonical non-secret subset retained after a credential resolves. */
+interface PrincipalIdentity {
+  readonly kind: PrincipalKind;
+  readonly userId: string | null;
+  readonly keyId: string | null;
+}
+
+interface FrozenClientBinding {
+  readonly principalIdentity: PrincipalIdentity;
+  readonly boundTaskId: string;
+  readonly generation: number;
+}
+
+type AttachmentStateDetails =
+  | { readonly state: 'attaching' | 'ready' }
+  | {
+      readonly state: 'unavailable';
+      readonly reason:
+        | 'session_absent'
+        | 'session_indeterminate'
+        | 'viewer_limit'
+        | 'provider_unavailable';
+      readonly reloadRequired: false;
+    }
+  | {
+      readonly state: 'failed';
+      readonly reason:
+        | 'provider_failed'
+        | 'attach_timeout'
+        | 'transport_closed'
+        | 'internal_error';
+      readonly reloadRequired: false;
+    };
 
 /** Per-connected-client state held by the gateway. */
 interface ClientState {
@@ -273,14 +341,29 @@ interface ClientState {
   kind: ConnectionKind;
   /** True once the connection has passed its auth/handshake gate. */
   authenticated: boolean;
-  /** The task this client is streaming/serving, once it has joined one. */
-  taskId: string | null;
+  /** Stable identity from the latest successful pre-attach authentication. */
+  principalIdentity: PrincipalIdentity | null;
+  /** Mutable only while unattached; terminal_attach freezes it into `binding`. */
+  requestedTaskId: string | null;
+  phase: AttachmentPhase;
+  binding: FrozenClientBinding | null;
+  generation: number;
+  authAttemptEpoch: number;
+  abortController: AbortController | null;
+  attachment: TerminalViewerAttachment | null;
+  attachmentSubscriptions: Array<{ dispose(): void }>;
   /** Backpressure controller for this client's view of the raw stream. */
   readonly backpressure: BackpressureController;
   /** Cumulative byte offset of raw output sent to this client. */
   sentBytes: number;
-  /** Unsubscribe handle for the client's PTY data subscription, if attached. */
-  ptySubscription: { dispose(): void } | null;
+  desiredGeometry: MutableTerminalGeometry;
+  /** Generation-local transparent parser + terminal-response authorization. */
+  queryObserver: TerminalQueryObserver | null;
+  /** Metrics-only idempotence; contains no task/viewer/provider identity. */
+  metricsAttachAttempted: boolean;
+  metricsAttachOutcomeRecorded: boolean;
+  metricsViewerActive: boolean;
+  metricsViewerPaused: boolean;
 }
 
 /** A blocked permission request awaiting an operator decision (6.5). */
@@ -300,10 +383,27 @@ interface PendingApproval {
   readonly reply?: (frame: DecisionFrame) => void;
 }
 
+interface SessionLogState {
+  readonly logPath: string;
+  tail: Promise<void>;
+  ensured: boolean;
+  reservedBytes: number;
+  readonly maxBytes: number;
+  pendingWrites: number;
+  readonly maxPendingWrites: number;
+  truncated: boolean;
+}
+
 interface SessionCastState {
   readonly castPath: string;
   tail: Promise<void>;
   startMs: number;
+  ready: boolean;
+  reservedBytes: number;
+  readonly maxBytes: number;
+  pendingWrites: number;
+  readonly maxPendingWrites: number;
+  truncated: boolean;
 }
 
 interface ResizeRepaintSuppressionState {
@@ -315,6 +415,55 @@ interface CastResumeState {
   readonly hasHeader: boolean;
   readonly hasBytes: boolean;
   readonly lastTimeSec: number;
+  readonly sizeBytes: number;
+}
+
+type TerminalCleanupSource = 'owner' | 'viewer';
+
+interface TrackedTerminalCleanup {
+  readonly source: TerminalCleanupSource;
+  readonly decision: Promise<TerminalTransportCleanupSettlement>;
+  metricsOutcomeRecorded: boolean;
+}
+
+type BoundedTerminalCleanupResult =
+  | {
+      readonly kind: 'settled';
+      readonly source: TerminalCleanupSource;
+      readonly settlement: TerminalTransportCleanupSettlement;
+    }
+  | {
+      readonly kind: 'timeout';
+      readonly source: TerminalCleanupSource;
+    };
+
+/**
+ * Secret-free graceful-shutdown evidence. Provider identity values never leave
+ * their adapters; this summary exposes only bounded source and identity counts.
+ */
+export interface TerminalGatewayShutdownCleanupSummary {
+  readonly kind: 'confirmed' | 'indeterminate';
+  readonly timeoutMs: number;
+  readonly elapsedMs: number;
+  readonly closedClientCount: number;
+  readonly closedSessionCount: number;
+  readonly sourceCount: number;
+  readonly ownerSourceCount: number;
+  readonly viewerSourceCount: number;
+  readonly confirmedSourceCount: number;
+  readonly indeterminateSourceCount: number;
+  readonly timedOutSourceCount: number;
+  readonly expectedIdentities: number;
+  readonly observedIdentities: number;
+  readonly confirmedIdentities: number;
+  readonly deletedIdentities: number;
+  readonly alreadyAbsentIdentities: number;
+  readonly causes: {
+    readonly identityUnavailable: number;
+    readonly cleanupUnsupported: number;
+    readonly cleanupUnconfirmed: number;
+    readonly timeout: number;
+  };
 }
 
 const RESIZE_REPAINT_QUIESCE_MS = readDurationEnv(
@@ -327,12 +476,50 @@ const RESIZE_REPAINT_MAX_MS = readDurationEnv(
 );
 const CAST_RESUME_HEAD_BYTES = 4096;
 const CAST_RESUME_TAIL_BYTES = 1024 * 1024;
+const DEFAULT_TERMINAL_COLUMNS = 80;
+const DEFAULT_TERMINAL_ROWS = 24;
+export const DEFAULT_TERMINAL_VIEWER_LIMIT_PER_TASK = 8;
+export const MAX_TERMINAL_VIEWER_LIMIT_PER_TASK = 64;
+const DEFAULT_TERMINAL_VIEWER_ATTACH_TIMEOUT_MS = 12_000;
+const MAX_TERMINAL_VIEWER_ATTACH_TIMEOUT_MS = 120_000;
+// AIO's exact main/injector release alone has a 20 s bounded protocol, followed
+// by provider-session and encrypted ownership-journal deletion. Their complete
+// fail-closed envelope is just under 30 s, so retain scheduler/network margin
+// inside the process-level 40 s graceful-stop window.
+export const DEFAULT_TERMINAL_SHUTDOWN_CLEANUP_TIMEOUT_MS = 35_000;
+export const MAX_TERMINAL_SHUTDOWN_CLEANUP_TIMEOUT_MS = 35_000;
+
+type TerminalQueryRuntimeConfig = Pick<
+  TerminalQueryObserverOptions,
+  'ttlMs' | 'capacity' | 'responseRateLimit' | 'responseRateWindowMs'
+>;
 
 function readDurationEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function readBoundedPositiveIntegerEnv(
+  name: string,
+  fallback: number,
+  hardMax: number,
+): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > hardMax) {
+    throw new RangeError(`${name} must be an integer in [1, ${hardMax}]`);
+  }
+  return value;
+}
+
+/** Preserve invalid numeric values so the observer's hard-bound validator rejects them. */
+function readOptionalNumberEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return Number(raw);
 }
 
 /**
@@ -357,7 +544,7 @@ export interface PendingApprovalView {
  */
 @WebSocketGateway({ path: '/terminal' })
 export class TerminalGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayConnection, OnGatewayDisconnect, OnApplicationShutdown
 {
   private readonly logger = new Logger(TerminalGateway.name);
 
@@ -367,8 +554,36 @@ export class TerminalGateway
   /** Connected clients keyed by socket. */
   private readonly clients = new Map<WebSocket, ClientState>();
 
+  /**
+   * Gateway-owned close fence for disposable viewers.  Abort, policy failure,
+   * timeout, and the late async continuation can all observe the same handle;
+   * only the first path is allowed to invoke the provider close operation.
+   */
+  private readonly closedViewerAttachments =
+    new WeakSet<TerminalViewerAttachment>();
+
+  /** Cleanup decisions that have not yet settled at the API boundary. */
+  private readonly pendingTerminalCleanups = new Set<TrackedTerminalCleanup>();
+
   /** Active terminal sessions keyed by task id. */
   private readonly sessions = new Map<string, TerminalSession>();
+
+  /**
+   * Opt-in observers registered only by the local provider-backed story.
+   * Keeping this empty in normal operation makes the production hot path a
+   * single map lookup and prevents verification-only inventories from becoming
+   * a general terminal logging surface.
+   */
+  private readonly providerStoryObservers = new Map<
+    string,
+    Set<ProviderTerminalStoryTelemetryObserver>
+  >();
+
+  /** Owner recording subscriptions, separate from every browser attachment. */
+  private readonly ownerSubscriptions = new Map<
+    string,
+    { dispose(): void }
+  >();
 
   /** Pending blocked approvals keyed by `requestId` (6.5). */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
@@ -387,29 +602,24 @@ export class TerminalGateway
   private readonly lastWriterClientId = new Map<string, string>();
 
   /**
-   * Per-task `session.log` append state (D9 / 3.1). Under the connect-in model
-   * there is no in-sandbox runner producer writing `session.log`; the
-   * orchestrator bridge must persist raw PTY output itself. Each entry holds the
-   * absolute log path and a serialized tail-promise so concurrent appends are
-   * ordered (no interleaving) and the byte stream on disk matches, byte-for-byte,
-   * the bytes fed to `snapshots.feed` — keeping the snapshot boundary and the
-   * replayed tail aligned.
+   * Explicitly opted-in `session.log` append state. Native live rendering,
+   * activity, runtime classification, and exit settlement never depend on this
+   * map. Synchronous byte reservation happens before a write is enqueued so a
+   * slow disk cannot turn the promise chain into an unbounded heap backlog.
    */
-  private readonly sessionLogs = new Map<
-    string,
-    { logPath: string; tail: Promise<void>; ensured: boolean }
-  >();
+  private readonly sessionLogs = new Map<string, SessionLogState>();
 
   /**
-   * Per-task `session.cast` (asciicast v2) append state — parallel to
-   * {@link sessionLogs} but on its OWN tail chain, INDEPENDENT of the session.log
-   * lockstep: a cast write failure never affects streaming. `startMs` anchors
-   * event `time`. (session-terminal-replay, Track 2)
+   * Explicitly opted-in, independently bounded `session.cast` append state.
+   * It deliberately does not share the session.log gate or tail chain.
    */
   private readonly sessionCasts = new Map<
     string,
     SessionCastState
   >();
+
+  /** Resize events accepted before async interactive-cast activation completes. */
+  private readonly pendingCastResizeEvents = new Map<string, string[]>();
 
   /**
    * Resize-triggered terminal repaints are current-screen redraws, not new agent
@@ -420,11 +630,23 @@ export class TerminalGateway
     ResizeRepaintSuppressionState
   >();
 
-  /** Bounded per-task output used only by the selected runtime's pure classifier. */
+  /**
+   * Bounded owner-output evidence used by runtime classification and exit-detail
+   * audit even when both raw artifacts are disabled.
+   */
   private readonly runtimeFailureBuffers = new Map<string, string>();
   private readonly runtimeFailureChecks = new Set<string>();
   private readonly runtimeFailuresReported = new Set<string>();
   private readonly runtimeFailureRuntimes = new Map<string, AgentRuntime>();
+
+  private readonly viewerLimitPerTask: number;
+  private readonly viewerAttachTimeoutMs: number;
+  private readonly shutdownCleanupTimeoutMs: number;
+  private readonly terminalQueryConfig: TerminalQueryRuntimeConfig;
+  private readonly terminalRecordingPolicy: TerminalRecordingPolicy;
+
+  private shuttingDown = false;
+  private shutdownCleanupPromise?: Promise<TerminalGatewayShutdownCleanupSummary>;
 
   private nextClientId = 1;
 
@@ -442,57 +664,174 @@ export class TerminalGateway
     @Optional() @Inject(AuthSessionService) private readonly authSession?: AuthSessionService,
     // 3.2 — optional so the transport core still constructs in isolation; when the
     // module provides it the gateway resolves each task's runtime and hands it to
-    // the AioPtyClient's launch/exit seams.
+    // the SandboxTerminalSession's launch/exit seams.
     @Optional() @Inject(RUNTIME_REGISTRY) private readonly runtimes?: RuntimeRegistry,
     @Optional() @Inject(PROVISION_LOOKUP) private readonly provisionLookup?: ProvisionLookup,
-  ) {}
+    @Optional()
+    @Inject(TerminalDiagnosticsMetricsService)
+    private readonly terminalMetrics?: TerminalDiagnosticsMetricsService,
+  ) {
+    this.terminalRecordingPolicy = readTerminalRecordingPolicy();
+    this.viewerLimitPerTask = readBoundedPositiveIntegerEnv(
+      'CAP_TERMINAL_VIEWER_LIMIT_PER_TASK',
+      DEFAULT_TERMINAL_VIEWER_LIMIT_PER_TASK,
+      MAX_TERMINAL_VIEWER_LIMIT_PER_TASK,
+    );
+    this.viewerAttachTimeoutMs = readBoundedPositiveIntegerEnv(
+      'CAP_TERMINAL_VIEWER_ATTACH_TIMEOUT_MS',
+      DEFAULT_TERMINAL_VIEWER_ATTACH_TIMEOUT_MS,
+      MAX_TERMINAL_VIEWER_ATTACH_TIMEOUT_MS,
+    );
+    this.shutdownCleanupTimeoutMs = readBoundedPositiveIntegerEnv(
+      'CAP_TERMINAL_SHUTDOWN_CLEANUP_TIMEOUT_MS',
+      DEFAULT_TERMINAL_SHUTDOWN_CLEANUP_TIMEOUT_MS,
+      MAX_TERMINAL_SHUTDOWN_CLEANUP_TIMEOUT_MS,
+    );
+    // Keep raw numeric parsing separate from validation. A bad deployment value
+    // must fail the native attachment before provider open, not silently fall
+    // back to a more permissive default or take down unrelated API surfaces.
+    this.terminalQueryConfig = {
+      ttlMs: readOptionalNumberEnv('CAP_TERMINAL_QUERY_TTL_MS'),
+      capacity: readOptionalNumberEnv('CAP_TERMINAL_QUERY_CAPACITY'),
+      responseRateLimit: readOptionalNumberEnv(
+        'CAP_TERMINAL_RESPONSE_RATE_LIMIT',
+      ),
+      responseRateWindowMs: readOptionalNumberEnv(
+        'CAP_TERMINAL_RESPONSE_RATE_WINDOW_MS',
+      ),
+    };
+  }
 
   // -------------------------------------------------------------------------
-  // Session registry — the caller registers a task's session (PTY + snapshots)
-  // after provisioning the sandbox and opening the AioPtyClient to its wsUrl.
+  // Session registry — one owner PTY plus a repeatable viewer factory per task.
   // -------------------------------------------------------------------------
 
   /** Register a task's terminal session so clients can stream it. */
   registerSession(session: TerminalSession): void {
+    if (this.shuttingDown) {
+      this.trackTerminalCleanup(
+        'owner',
+        typeof session.ownerPty.close === 'function'
+          ? session.ownerPty.cleanupDecision
+          : undefined,
+      );
+      try {
+        session.ownerPty.close?.();
+      } catch {
+        this.logger.warn(
+          'terminal owner close threw after shutdown had started',
+        );
+      }
+      return;
+    }
+    const previous = this.sessions.get(session.taskId);
+    if (previous && previous !== session) {
+      this.unregisterSession(session.taskId);
+    }
     this.sessions.set(session.taskId, session);
   }
 
-  /** Remove a task's terminal session (e.g. on completion/teardown). */
+  /** Register bounded evidence collection for one explicitly enabled story task. */
+  observeProviderTerminalStory(
+    taskId: string,
+    observer: ProviderTerminalStoryTelemetryObserver,
+  ): { dispose(): void } {
+    const observers = this.providerStoryObservers.get(taskId) ?? new Set();
+    observers.add(observer);
+    this.providerStoryObservers.set(taskId, observers);
+    let disposed = false;
+    return {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        observers.delete(observer);
+        if (observers.size === 0) this.providerStoryObservers.delete(taskId);
+      },
+    };
+  }
+
+  /** Exact, non-provider-specific cleanup evidence used after story teardown. */
+  getProviderTerminalStoryResourceState(
+    taskId: string,
+  ): ProviderTerminalStoryGatewayResourceState {
+    return {
+      ownerRegistered: this.sessions.has(taskId),
+      activeViewerCount: this.viewerCount(taskId),
+    };
+  }
+
   /**
-   * Sample the tail of a task's API-side `session.log` for the failure-detail
-   * audit (record-task-failure-reason). Delegates to the pure snapshot helper;
-   * the file lives on the API-side workspace volume, so it is readable even after
-   * the sandbox is torn down. Best-effort: returns `''` on any error.
+   * Compatibility seam retained for Guardrails. Prefer the bounded live owner
+   * evidence; only an explicitly enabled legacy/raw log falls back to disk.
+   * This keeps failure classification independent from multi-gigabyte history.
    */
   async readSessionLogTail(taskId: string): Promise<string> {
-    // A WS close can race the final queued append. Classification needs the
-    // decisive last chunk, so observe the per-task append chain before sampling.
+    const evidence = this.runtimeFailureBuffers.get(taskId);
+    if (evidence !== undefined) {
+      return formatFailureEvidenceTail(evidence);
+    }
+    if (!this.terminalRecordingPolicy.sessionLog.enabled) return '';
     await this.flushSessionLog(taskId);
     return readSessionLogTail(resolveWorkspaceDir(taskId));
   }
 
   unregisterSession(taskId: string): void {
     const session = this.sessions.get(taskId);
+    // Remove the session first. Every asynchronous viewer continuation checks
+    // this identity before touching a provider attachment.
+    this.sessions.delete(taskId);
+    this.ownerSubscriptions.get(taskId)?.dispose();
+    this.ownerSubscriptions.delete(taskId);
+    for (const [client, state] of this.clients) {
+      if (state.binding?.boundTaskId !== taskId || state.phase === 'closed') continue;
+      this.writeLock?.releaseOnDisconnect(taskId, state.clientId);
+      this.recordTerminalAttachOutcome(state, 'session_absent');
+      this.sendAttachmentState(client, state, {
+        state: 'unavailable',
+        reason: 'session_absent',
+        reloadRequired: false,
+      });
+      this.invalidateAttachment(state);
+    }
     // 4.3 — release the bridge BEFORE dropping the session so a re-adopted (or
     // freshly-launched) task that ends drives the normal `onTerminal`/`recordExit`
     // path EXACTLY ONCE. `unregisterSession` is only reached from a TERMINAL
     // teardown (`onTerminal` after a clean exit, or a `forceFail` backstop after a
     // deadline/idle/circuit trip), at which point the task is already transitioned.
-    // Closing the `AioPtyClient` here stops its liveness poller + outbound WS, so a
+    // Closing the `SandboxTerminalSession` here stops its liveness poller + outbound WS, so a
     // poller that is still armed (a `forceFail` stopped the sandbox while the WS was
     // attached) cannot observe the now-gone session and fire a SECOND
     // `onSessionExit` → `recordExit`. `close()` is the D5 release-without-terminate
     // path: it never resolves an exit, so it is safe to call after the transition.
     // Idempotent: the bridge guards its own teardown; a missing `close` (transport
     // fake) is a no-op.
-    session?.pty.close?.();
-    this.sessions.delete(taskId);
-    // Drop the session.log append state; the file itself persists on the volume
-    // for post-mortem / restart reconnect (multi-target-deploy persistent volume).
-    this.sessionLogs.delete(taskId);
+    if (session) {
+      this.trackTerminalCleanup(
+        'owner',
+        typeof session.ownerPty.close === 'function'
+          ? session.ownerPty.cleanupDecision
+          : undefined,
+      );
+      try {
+        session.ownerPty.close?.();
+      } catch {
+        this.logger.warn(`task ${taskId}: terminal owner close threw`);
+      }
+    }
+    // Keep a final queued append discoverable until it settles so an immediate
+    // failure-audit read can await the decisive last owner chunk.
+    const logEntry = this.sessionLogs.get(taskId);
+    if (logEntry) {
+      void logEntry.tail.finally(() => {
+        if (this.sessionLogs.get(taskId) === logEntry) {
+          this.sessionLogs.delete(taskId);
+        }
+      });
+    }
     // session-terminal-replay — drop the cast append state too (the session.cast
     // file persists on the volume for replay, like session.log).
     this.sessionCasts.delete(taskId);
+    this.pendingCastResizeEvents.delete(taskId);
     this.runtimeFailureBuffers.delete(taskId);
     this.runtimeFailureChecks.delete(taskId);
     this.runtimeFailuresReported.delete(taskId);
@@ -502,6 +841,127 @@ export class TerminalGateway
     // its last-writer record too (bounds the map to live tasks; harmless either
     // way since a stale id can never match a future monotonic clientId).
     this.lastWriterClientId.delete(taskId);
+  }
+
+  /**
+   * Nest shutdown hook: close every API-owned terminal bridge without touching
+   * the detached task sessions, then wait only within the configured hard bound
+   * for provider cleanup evidence.
+   */
+  async onApplicationShutdown(): Promise<void> {
+    const summary = await this.shutdownTerminalResources();
+    const evidence = JSON.stringify(summary);
+    if (summary.kind === 'confirmed') {
+      this.logger.log(`terminal cleanup settled ${evidence}`);
+    } else {
+      this.logger.warn(`terminal cleanup indeterminate ${evidence}`);
+    }
+  }
+
+  /** Public for deterministic lifecycle verification; idempotent per process. */
+  shutdownTerminalResources(): Promise<TerminalGatewayShutdownCleanupSummary> {
+    if (!this.shutdownCleanupPromise) {
+      this.shutdownCleanupPromise = this.performTerminalShutdownCleanup();
+    }
+    return this.shutdownCleanupPromise;
+  }
+
+  private async performTerminalShutdownCleanup(): Promise<TerminalGatewayShutdownCleanupSummary> {
+    const startedAt = Date.now();
+    this.shuttingDown = true;
+    const closedClientCount = this.clients.size;
+    const closedSessionCount = this.sessions.size;
+
+    // Unregistering removes each task before aborting its viewers, so no close
+    // callback can re-grant a write lease or reopen provider work during drain.
+    for (const taskId of [...this.sessions.keys()]) {
+      this.unregisterSession(taskId);
+    }
+    for (const [client, state] of [...this.clients]) {
+      this.invalidateAttachment(state);
+      this.clients.delete(client);
+      try {
+        client.close(1001, 'terminal gateway shutting down');
+      } catch {
+        // The WebSocket server may already have closed this peer.
+      }
+    }
+    this.providerStoryObservers.clear();
+
+    // No awaited work occurs before this snapshot. Consequently immediately
+    // resolved decisions registered by close() are still included, while prior
+    // fully settled resources have already left the pending set.
+    const cleanups = [...this.pendingTerminalCleanups];
+    const results = await Promise.all(
+      cleanups.map((cleanup) =>
+        waitForTerminalCleanup(
+          cleanup,
+          this.shutdownCleanupTimeoutMs,
+        ),
+      ),
+    );
+    results.forEach((result, index) => {
+      this.recordTerminalCleanupOutcome(
+        cleanups[index]!,
+        result.kind === 'timeout' ? 'indeterminate' : result.settlement.kind,
+      );
+    });
+    const settled = results.filter(
+      (result): result is Extract<
+        BoundedTerminalCleanupResult,
+        { kind: 'settled' }
+      > => result.kind === 'settled',
+    );
+    const aggregate = aggregateTerminalCleanupSettlements(
+      settled.map(({ settlement }) => settlement),
+    );
+    const timedOutSourceCount = results.length - settled.length;
+    const confirmedSourceCount = settled.filter(
+      ({ settlement }) => settlement.kind === 'confirmed',
+    ).length;
+    const indeterminateSettlements = settled
+      .map(({ settlement }) => settlement)
+      .filter(
+        (settlement): settlement is Extract<
+          TerminalTransportCleanupSettlement,
+          { kind: 'indeterminate' }
+        > => settlement.kind === 'indeterminate',
+      );
+    const indeterminateSourceCount = indeterminateSettlements.length;
+
+    return {
+      kind:
+        timedOutSourceCount === 0 && indeterminateSourceCount === 0
+          ? 'confirmed'
+          : 'indeterminate',
+      timeoutMs: this.shutdownCleanupTimeoutMs,
+      elapsedMs: Math.max(0, Date.now() - startedAt),
+      closedClientCount,
+      closedSessionCount,
+      sourceCount: results.length,
+      ownerSourceCount: results.filter(({ source }) => source === 'owner').length,
+      viewerSourceCount: results.filter(({ source }) => source === 'viewer').length,
+      confirmedSourceCount,
+      indeterminateSourceCount,
+      timedOutSourceCount,
+      expectedIdentities: aggregate.expectedIdentities,
+      observedIdentities: aggregate.observedIdentities,
+      confirmedIdentities: aggregate.confirmedIdentities,
+      deletedIdentities: aggregate.deletedIdentities,
+      alreadyAbsentIdentities: aggregate.alreadyAbsentIdentities,
+      causes: {
+        identityUnavailable: indeterminateSettlements.filter(
+          ({ cause }) => cause === 'identity-unavailable',
+        ).length,
+        cleanupUnsupported: indeterminateSettlements.filter(
+          ({ cause }) => cause === 'cleanup-unsupported',
+        ).length,
+        cleanupUnconfirmed: indeterminateSettlements.filter(
+          ({ cause }) => cause === 'cleanup-unconfirmed',
+        ).length,
+        timeout: timedOutSourceCount,
+      },
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -514,7 +974,7 @@ export class TerminalGateway
    * credentials.
    *
    * Under the connect-in model the only inbound peer is an OPERATOR console
-   * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
+   * client; the orchestrator dials sandboxes OUT via {@link SandboxTerminalSession}, so
    * there is no inbound runner dial-back to handshake. The operator is
    * authenticated at connect time against a human SESSION, resolved from the URL
    * `token` query param or
@@ -532,6 +992,14 @@ export class TerminalGateway
    * (see {@link handleControlFrame}) so nothing is acted on until auth resolves.
    */
   handleConnection(client: WebSocket, request?: IncomingMessage): void {
+    if (this.shuttingDown) {
+      try {
+        client.close(1001, 'terminal gateway shutting down');
+      } catch {
+        // The server may already have closed this socket.
+      }
+      return;
+    }
     const clientId = `c${this.nextClientId++}`;
     const url = this.parseUrl(request);
 
@@ -539,10 +1007,26 @@ export class TerminalGateway
       clientId,
       kind: 'operator',
       authenticated: false,
-      taskId: null,
+      principalIdentity: null,
+      requestedTaskId: null,
+      phase: 'unattached',
+      binding: null,
+      generation: 0,
+      authAttemptEpoch: 0,
+      abortController: null,
+      attachment: null,
+      attachmentSubscriptions: [],
       backpressure: new BackpressureController(),
       sentBytes: 0,
-      ptySubscription: null,
+      desiredGeometry: {
+        cols: DEFAULT_TERMINAL_COLUMNS,
+        rows: DEFAULT_TERMINAL_ROWS,
+      },
+      queryObserver: null,
+      metricsAttachAttempted: false,
+      metricsAttachOutcomeRecorded: false,
+      metricsViewerActive: false,
+      metricsViewerPaused: false,
     };
     this.clients.set(client, state);
 
@@ -568,23 +1052,19 @@ export class TerminalGateway
     // session cookie the REST AuthGuard does — it previously read NEITHER cookie,
     // so a browser (empty VITE_AUTH_TOKEN) always failed with 1008.
     const cookieToken = readCookie(request?.headers?.cookie, SESSION_COOKIE_NAME);
-    void this.authenticateOperator({ cookieToken, presentedToken: presented }).then((ok) => {
+    const taskId = url?.searchParams.get('taskId') ?? null;
+    const authEpoch = ++state.authAttemptEpoch;
+    void this.authenticateOperator({ cookieToken, presentedToken: presented }).then((principal) => {
       if (!this.clients.has(client)) return; // disconnected mid-resolution
-      if (!ok) {
+      if (authEpoch !== state.authAttemptEpoch || state.phase !== 'unattached') return;
+      if (!principal) {
         this.logger.warn(`client ${clientId}: operator auth failed; closing`);
-        this.closeUnauthenticated(client);
+        this.failAuthentication(client, state);
         return;
       }
       state.authenticated = true;
-      // Associate the operator with the task it asked to stream, if any.
-      const taskId = url?.searchParams.get('taskId') ?? null;
-      if (taskId) state.taskId = taskId;
-      // 7.1 — auto-grant the write lease the instant auth resolves (when free),
-      // so operator keystrokes reach the PTY without a client-driven takeover
-      // RACING this async auth resolution (a fixed client retry window could be
-      // fully consumed before auth lands on a cold/contended session store,
-      // leaving the terminal permanently read-only). See grantWriteLeaseIfFree.
-      this.grantWriteLeaseIfFree(state);
+      state.principalIdentity = principalIdentityOf(principal);
+      state.requestedTaskId = taskId;
       this.logger.debug(`client ${clientId} authenticated as operator`);
     });
 
@@ -594,29 +1074,8 @@ export class TerminalGateway
   handleDisconnect(client: WebSocket): void {
     const state = this.clients.get(client);
     if (!state) return;
-    // Detach from the PTY and clear any backpressure pause this client owned so
-    // a wedged pause cannot outlive the client that caused it.
-    state.ptySubscription?.dispose();
-    state.backpressure.reset();
-    // Remove the client BEFORE the lease handoff so the re-grant below never
-    // picks the disconnecting socket and broadcastLeaseState never targets it.
+    this.invalidateAttachment(state);
     this.clients.delete(client);
-
-    // 7.3 — auto-release the write lease immediately on writer disconnect, then
-    // hand it to a still-connected operator on the SAME task (if any). This is
-    // what makes a sole operator's RELOAD safe: the new connection's connect-time
-    // auto-grant can race ahead of this close and find the lease still held by the
-    // OLD connection (so it skips the grant); when the old socket finally closes
-    // here, the freed lease is immediately re-granted to that remaining new
-    // connection instead of being left free with the only operator holding
-    // nothing (which left the terminal permanently read-only).
-    if (state.taskId && this.writeLock) {
-      const released = this.writeLock.releaseOnDisconnect(state.taskId, state.clientId);
-      if (released) {
-        this.regrantWriteLeaseToRemaining(state.taskId);
-        this.broadcastLeaseState(state.taskId);
-      }
-    }
 
     this.logger.debug(`client ${state.clientId} disconnected`);
   }
@@ -644,7 +1103,7 @@ export class TerminalGateway
       // inbound raw frame from an OPERATOR is not the keystroke path (that is the
       // lock-gated `keystroke` control frame, 7.5); operator raw frames are
       // dropped. Under the connect-in model sandbox PTY output arrives OUT-of-band
-      // via {@link AioPtyClient}'s onData, not as an inbound raw frame, so there
+      // via {@link SandboxTerminalSession}'s onData, not as an inbound raw frame, so there
       // is no inbound producer raw-frame path here.
       return;
     }
@@ -699,7 +1158,7 @@ export class TerminalGateway
    * keystroke/heartbeat/takeover (7.5) and approval round-trip frames (6.5).
    *
    * Under the connect-in model the only inbound peer is an OPERATOR console
-   * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
+   * client; the orchestrator dials sandboxes OUT via {@link SandboxTerminalSession}, so
    * there is no inbound runner dial-back handshake. Because operator SESSION auth
    * is async (resolved against the store, 2.7), a connection may receive frames
    * before `authenticated` is set: until it authenticates the only frame acted on
@@ -730,8 +1189,11 @@ export class TerminalGateway
       case 'ack':
         this.onAck(frame, client, state);
         break;
-      case 'reconnect':
-        void this.onReconnect(frame, client, state);
+      case 'terminal_attach':
+        this.onTerminalAttach(frame, client, state);
+        break;
+      case 'terminal_response':
+        this.onTerminalResponse(frame, client, state);
         break;
       case 'connect_auth':
         void this.onConnectAuth(frame, client, state);
@@ -745,18 +1207,49 @@ export class TerminalGateway
       case 'takeover_request':
         this.onTakeover(frame, client, state);
         break;
-      // `permission_request` is no longer accepted as an inbound control frame:
-      // under the connect-in model the sandbox hook delivers it over an OUTBOUND
-      // HTTP callback (re-homed in the integration track), which calls
-      // `onPermissionRequest` directly. An operator client cannot inject one.
+      // `permission_request` is not accepted from an operator WebSocket. The
+      // isolated compatibility callback may call `onPermissionRequest` directly;
+      // current bypass-mode sandbox images do not register a hook caller.
       case 'decision':
         this.onDecision(frame, client, state);
         break;
       case 'resize':
         this.onResize(frame, state);
         break;
+      case 'permission_request':
+      case 'post_tool_use_report':
+        // These task-scoped frames are server/compatibility-callback inputs,
+        // never operator-WebSocket inputs. Check the frozen binding first so a
+        // cross-task attempt is rejected by the same boundary as keystrokes and
+        // heartbeats, then close even a same-task direction violation.
+        if (!this.requireBoundTask(frame.taskId, client, state)) return;
+        this.failPolicyViolation(
+          client,
+          state,
+          `${frame.type} is not accepted from an operator WebSocket`,
+        );
+        break;
+      case 'lease_state':
+        if (!this.requireBoundTask(frame.sessionId, client, state)) return;
+        this.failPolicyViolation(
+          client,
+          state,
+          'lease_state is server-only',
+        );
+        break;
+      case 'pause':
+      case 'resume':
+      case 'terminal_attachment_state':
+      case 'terminal_geometry':
+        this.failPolicyViolation(
+          client,
+          state,
+          `${frame.type} is server-only`,
+        );
+        break;
       default:
-        // Unhandled-but-valid frames (e.g. server->client only) are inert.
+        // Exhaustiveness fallback for future contract variants. They stay inert
+        // until their direction and frozen-binding rules are defined explicitly.
         break;
     }
   }
@@ -785,7 +1278,7 @@ export class TerminalGateway
   private async authenticateOperator(args: {
     cookieToken: string | null;
     presentedToken: string | null;
-  }): Promise<boolean> {
+  }): Promise<OperatorPrincipal | null> {
     const { cookieToken, presentedToken } = args;
     // Keep the two credentials on their CORRECT trust domains (unlike the old
     // single-string handling): the browser's `cap_session` COOKIE is a session
@@ -796,21 +1289,20 @@ export class TerminalGateway
     // on the session re-check or the constant-time legacy `AUTH_TOKEN` compare.
     const sessionToken = cookieToken ?? presentedToken;
     const bearerToken = presentedToken;
-    if (sessionToken === null && bearerToken === null) return false;
+    if (sessionToken === null && bearerToken === null) return null;
     const credentials = { sessionToken, bearerToken };
     // Route through the shared resolver so the WS surface cannot drift from REST
     // on prefix dispatch (cap_sk_ api-key / reserved mcp_), the session re-check,
     // or the constant-time legacy AUTH_TOKEN compare. The same single presented
     // token fills both candidate slots; prefix dispatch (the FIRST step) ensures a
     // cap_sk_/mcp_ token here never falls into a Session lookup.
-    const principal = await resolveOperatorPrincipal(credentials, {
+    return resolveOperatorPrincipal(credentials, {
       resolveSession: (token) =>
         this.authSession ? this.authSession.resolveSession(token) : Promise.resolve(null),
       resolveApiKey: (raw) =>
         this.authSession ? this.authSession.resolveApiKey(raw) : Promise.resolve(null),
       // No MCP resolver bound: the `mcp_` slot fails closed (denyMcpResolver).
     });
-    return principal !== null;
   }
 
   /**
@@ -826,25 +1318,52 @@ export class TerminalGateway
     client: WebSocket,
     state: ClientState,
   ): Promise<void> {
-    if (state.authenticated) {
-      if (frame.taskId) state.taskId = frame.taskId;
+    const currentTaskId = this.clientTaskId(state);
+    if (
+      state.phase !== 'unattached' &&
+      frame.taskId !== undefined &&
+      frame.taskId !== currentTaskId
+    ) {
+      this.failPolicyViolation(
+        client,
+        state,
+        'connect_auth cannot retarget an accepted terminal attachment',
+      );
       return;
     }
+
+    const targetTaskId = frame.taskId ?? currentTaskId;
+    const authEpoch = ++state.authAttemptEpoch;
     // connect_auth carries the token explicitly in the frame (no cookie context).
-    const ok = await this.authenticateOperator({
+    const principal = await this.authenticateOperator({
       cookieToken: null,
       presentedToken: frame.token,
     });
     if (!this.clients.has(client)) return; // disconnected mid-resolution
-    if (!ok) {
-      this.closeUnauthenticated(client);
+    if (authEpoch !== state.authAttemptEpoch || state.phase === 'closed') return;
+    if (!principal) {
+      this.failAuthentication(client, state);
       return;
     }
+
+    const identity = principalIdentityOf(principal);
+    if (state.binding) {
+      if (
+        !samePrincipalIdentity(identity, state.binding.principalIdentity) ||
+        targetTaskId !== state.binding.boundTaskId
+      ) {
+        this.failPolicyViolation(
+          client,
+          state,
+          'connect_auth principal/task changed after terminal attachment acceptance',
+        );
+      }
+      return;
+    }
+
     state.authenticated = true;
-    if (frame.taskId) state.taskId = frame.taskId;
-    // Mirror the connect-time auto-grant on the explicit connect_auth path so a
-    // non-browser/re-asserting client also gets the lease when it is free.
-    this.grantWriteLeaseIfFree(state);
+    state.principalIdentity = identity;
+    state.requestedTaskId = targetTaskId;
   }
 
   // -------------------------------------------------------------------------
@@ -856,15 +1375,13 @@ export class TerminalGateway
    * (`GuardrailsService.startRunning`, which resolves this gateway lazily by
    * `TERMINAL_GATEWAY_TOKEN` and calls `openSession` after `provision()`, 4.2)
    * hands the {@link SandboxConnection} returned by `provision()`; this gateway
-   * dials the sandbox terminal OUT by constructing an {@link AioPtyClient} to
-   * `connection.wsUrl` and registers a {@link TerminalSession} so reconnecting
-   * operator clients get the snapshot + tail-replay path.
+   * dials the sandbox terminal OUT by constructing an {@link SandboxTerminalSession} to
+   * `connection.wsUrl`, retains it as the task owner, and registers a repeatable
+   * viewer factory. Browser reconnect never consumes owner bytes or durable log
+   * history; it opens a fresh attach-only provider PTY instead. Idempotent for an
+   * already-open task.
    *
-   * The SnapshotManager is backed by a REAL {@link XtermHeadlessTerminal} (D9) so
-   * periodic snapshots carry the actual visible frame, alongside byte-offset
-   * tracking + tail-replay. Idempotent for an already-open task.
-   *
-   * Create-vs-attach (survive-api-redeploy D2 / 2.5): the {@link AioPtyClient} is
+   * Create-vs-attach (survive-api-redeploy D2 / 2.5): the {@link SandboxTerminalSession} is
    * opened in `'launch-or-attach'` mode, so once the AIO shell is `ready` it probes
    * whether the detached session `task<taskId>` is already alive — ATTACHING to a
    * still-running codex (operator reconnect / freshly-booted api re-adoption) or
@@ -872,7 +1389,7 @@ export class TerminalGateway
    * both first launch and re-adoption.
    *
    * Exit detection (D4): a WS close NO LONGER terminates the task — it only
-   * detaches; the detached codex keeps running for re-adoption. The `AioPtyClient`
+   * detaches; the detached codex keeps running for re-adoption. The `SandboxTerminalSession`
    * polls the named session's liveness and invokes the gateway's `onSessionExit`
    * hook ONLY when the session is observed GONE, so the guardrails mapping
    * (zero → `recordSuccess`, non-zero/abnormal → `recordFailure`) is applied at the
@@ -886,19 +1403,20 @@ export class TerminalGateway
     selectedRun?: SelectedSandboxRun | null,
     options: OpenTerminalSessionOptions = {},
   ): TerminalSession {
+    if (this.shuttingDown) {
+      throw new Error('terminal gateway is shutting down');
+    }
     const { taskId } = connection;
     const existing = this.sessions.get(taskId);
     if (existing) return existing;
 
     const workspaceDir = resolveWorkspaceDir(taskId);
-    // D9 — back the SnapshotManager with a REAL xterm headless terminal so
-    // periodic snapshots carry the actual visible frame (the prior
-    // NullHeadlessTerminal serialized to empty, leaving reconnect with nothing).
-    const headless = new XtermHeadlessTerminal();
-    const snapshots = new SnapshotManager(headless, workspaceDir, {
-      initialOffset: readSessionLogSize(workspaceDir),
+    const viewerFactory = buildSandboxTerminalViewerAttachmentFactory({
+      taskId,
+      connection,
+      selectedRun,
     });
-    const pty = openSandboxTerminalPty({
+    const ownerPty = openSandboxTerminalPty({
       connection,
       selectedRun,
       onExit:
@@ -916,34 +1434,47 @@ export class TerminalGateway
     });
     const session: TerminalSession = {
       taskId,
-      pty,
-      snapshots,
-      launchDecision: pty.launchDecision,
+      ownerPty,
+      viewerFactory,
+      geometry: {
+        cols: DEFAULT_TERMINAL_COLUMNS,
+        rows: DEFAULT_TERMINAL_ROWS,
+      },
+      launchDecision: ownerPty.launchDecision,
     };
     this.registerSession(session);
-    // 3.1 — register the per-task session.log append target. The path MUST match
-    // the one SnapshotManager reads for tail-replay (workspaceDir/session.log) so
-    // the persisted bytes are exactly what reconnect replays after a snapshot.
-    if (!this.sessionLogs.has(taskId)) {
+    // Full raw terminal artifacts are diagnostics opt-ins. Their absence does
+    // not affect the owner lifecycle, bounded failure evidence, or browser PTYs.
+    if (
+      this.terminalRecordingPolicy.sessionLog.enabled &&
+      !this.sessionLogs.has(taskId)
+    ) {
+      const logPath = path.join(workspaceDir, SESSION_LOG_FILENAME);
       this.sessionLogs.set(taskId, {
-        logPath: path.join(workspaceDir, SESSION_LOG_FILENAME),
+        logPath,
         tail: Promise.resolve(),
         ensured: false,
+        reservedBytes: existingFileSize(logPath),
+        maxBytes: this.terminalRecordingPolicy.sessionLog.maxBytes,
+        pendingWrites: 0,
+        maxPendingWrites: this.terminalRecordingPolicy.maxPendingWrites,
+        truncated: false,
       });
     }
-    // session-terminal-replay — begin the asciicast recording alongside
-    // session.log (independent tail chain; best-effort, never blocks streaming).
-    this.initCast(
+    if (this.terminalRecordingPolicy.sessionCast.enabled) {
+      this.initCast(
+        taskId,
+        workspaceDir,
+        session.geometry.cols,
+        session.geometry.rows,
+      );
+    }
+    // Owner output is lifecycle/recording/classification only. Browser output is
+    // sourced exclusively from each connection's disposable viewer attachment.
+    this.ownerSubscriptions.set(
       taskId,
-      workspaceDir,
-      session.snapshots.cols,
-      session.snapshots.rows,
+      ownerPty.onData((chunk, meta) => this.onPtyOutput(taskId, chunk, meta)),
     );
-    // Feed live PTY output into the SnapshotManager + fan it out to operators
-    // who have not yet reconnected/attached (VR.10). Operators that have called
-    // attachPty receive the same bytes through their own ptySubscription.
-    pty.onData((chunk, meta) => this.onPtyOutput(taskId, chunk, meta));
-    snapshots.start();
     this.logger.debug(`task ${taskId}: opened sandbox terminal session`);
     return session;
   }
@@ -951,7 +1482,7 @@ export class TerminalGateway
   private async resolveTaskLaunchContext(
     taskId: string,
     selectedRun?: SelectedSandboxRun | null,
-  ): Promise<AioResolvedTaskLaunchContext> {
+  ): Promise<SandboxResolvedTaskLaunchContext> {
     if (!this.provisionLookup || !this.runtimes) {
       throw new SandboxRuntimeModelSetupError('launch-context');
     }
@@ -1016,7 +1547,7 @@ export class TerminalGateway
    * Resolve a task's selected {@link AgentRuntime} via the injected
    * {@link RuntimeRegistry} (3.2). Best-effort + never throws: a missing registry
    * (transport-only unit context), a registry without `resolveForTask`, or a
-   * rejected promise all resolve to `undefined`, which the {@link AioPtyClient}
+   * rejected promise all resolve to `undefined`, which the {@link SandboxTerminalSession}
    * treats as the DEFAULT codex inline path — so a runtime-resolution hiccup can
    * never strand a codex task. Threaded as the bridge's runtime resolver so the
    * (async) per-task `runtime`-column lookup happens off the synchronous
@@ -1062,7 +1593,7 @@ export class TerminalGateway
   }
 
   /**
-   * Invoked when an {@link AioPtyClient} resolves a task's exit status because its
+   * Invoked when an {@link SandboxTerminalSession} resolves a task's exit status because its
    * detached named tmux session was observed GONE by the liveness poller (D4) —
    * NOT on a mere WS close (an operator disconnect / api restart leaves the session
    * alive for re-adoption and never reaches here). Applies the guardrails outcome
@@ -1096,25 +1627,70 @@ export class TerminalGateway
    */
   private onKeystroke(
     frame: KeystrokeFrame,
-    _client: WebSocket,
+    client: WebSocket,
     state: ClientState,
   ): void {
-    if (!state.authenticated || state.kind !== 'operator') return;
+    if (!this.requireBoundTask(frame.sessionId, client, state)) return;
+    if (state.phase !== 'attached' || !state.attachment) return;
     if (!this.writeLock) return;
     // Gate: only the lease holder may forward raw input to the PTY.
     if (!this.writeLock.isWriter(frame.sessionId, state.clientId)) {
       return;
     }
+    const input = decodeCanonicalBase64Bytes(frame.data);
     const session = this.sessions.get(frame.sessionId);
-    if (!session) return;
-    const input = Buffer.from(frame.data, 'base64').toString('utf8');
+    if (!session || !state.queryObserver) {
+      this.failAttachment(client, state, 'internal_error');
+      return;
+    }
+    // This never grants write authority: the lease check above already did so.
+    // It only consumes a matching query token before the one original burst is
+    // written, preventing a response carried on the human path from being replayed
+    // later through the lease-independent terminal_response path.
+    try {
+      state.queryObserver.accountForWriterBurst(input, session.geometry);
+    } catch {
+      this.failAttachment(client, state, 'internal_error');
+      return;
+    }
     // A real operator keystroke is a hard boundary after a resize repaint: any
     // subsequent PTY output is user/agent activity and must re-enter durable
     // history so a refresh/reconnect cannot skip it.
-    if (input.length > 0) {
+    if (input.byteLength > 0) {
       this.endResizeRepaintSuppression(frame.sessionId);
     }
-    session.pty.write(input);
+    let outcome: TerminalTransportWriteOutcome;
+    try {
+      outcome = state.attachment.write(input);
+    } catch {
+      this.emitProviderStoryEvent(frame.sessionId, {
+        type: 'provider_write',
+        taskId: frame.sessionId,
+        attachmentId: this.providerStoryAttachmentId(state),
+        source: 'keystroke',
+        bytesBase64: Buffer.from(
+          input.buffer,
+          input.byteOffset,
+          input.byteLength,
+        ).toString('base64'),
+        outcome: 'threw',
+      });
+      this.failAttachment(client, state, 'provider_failed');
+      return;
+    }
+    this.emitProviderStoryEvent(frame.sessionId, {
+      type: 'provider_write',
+      taskId: frame.sessionId,
+      attachmentId: this.providerStoryAttachmentId(state),
+      source: 'keystroke',
+      bytesBase64: Buffer.from(
+        input.buffer,
+        input.byteOffset,
+        input.byteLength,
+      ).toString('base64'),
+      outcome,
+    });
+    this.handleViewerWriteOutcome(outcome, client, state);
     // VR.3 — operator input is activity: reset the idle window so an operator
     // actively driving codex keeps the task alive even between codex outputs.
     this.guardrails?.recordActivity(frame.sessionId);
@@ -1123,10 +1699,13 @@ export class TerminalGateway
   /** Renew the write lease for a heartbeat from the current holder (7.2). */
   private onHeartbeat(
     frame: HeartbeatFrame,
-    _client: WebSocket,
+    client: WebSocket,
     state: ClientState,
   ): void {
-    if (!state.authenticated) return;
+    if (!this.requireBoundTask(frame.sessionId, client, state)) return;
+    // The socket's server-assigned ClientState identity is authoritative. The
+    // legacy browser `writerClientId` field is validated syntactically but never
+    // trusted for lease selection or task routing.
     // VR.3 — an operator heartbeat means a human is ATTENDING this task. Reset the
     // idle window so an operator-driven session (codex idling at its composer,
     // waiting for the next instruction and therefore producing NO PTY output) is
@@ -1137,6 +1716,7 @@ export class TerminalGateway
     this.guardrails?.recordActivity(frame.sessionId);
     if (!this.writeLock) return;
     this.writeLock.heartbeat(frame.sessionId, state.clientId);
+    let reacquired = false;
     // Self-heal, SCOPED to the prior holder: if the lease is FREE after the
     // heartbeat (this connection's own lease expired while its tab was throttled
     // past the TTL) AND this connection was the last grantee, re-acquire it so a
@@ -1151,6 +1731,10 @@ export class TerminalGateway
       this.lastWriterClientId.get(frame.sessionId) === state.clientId
     ) {
       this.writeLock.acquire(frame.sessionId, state.clientId);
+      reacquired = true;
+    }
+    if (reacquired) {
+      this.applyAuthoritativeGeometry(frame.sessionId, state.desiredGeometry);
     }
     this.broadcastLeaseState(frame.sessionId);
   }
@@ -1161,12 +1745,16 @@ export class TerminalGateway
    */
   private onTakeover(
     frame: TakeoverRequestFrame,
-    _client: WebSocket,
+    client: WebSocket,
     state: ClientState,
   ): void {
-    if (!state.authenticated || !this.writeLock) return;
+    if (!this.requireBoundTask(frame.sessionId, client, state)) return;
+    // As with heartbeat, ignore the caller-supplied legacy client id and bind
+    // takeover to the authenticated socket's server-side identity.
+    if (!this.writeLock) return;
     this.writeLock.takeover(frame.sessionId, state.clientId);
     this.lastWriterClientId.set(frame.sessionId, state.clientId);
+    this.applyAuthoritativeGeometry(frame.sessionId, state.desiredGeometry);
     this.broadcastLeaseState(frame.sessionId);
   }
 
@@ -1176,46 +1764,51 @@ export class TerminalGateway
    */
   acquireLease(sessionId: string, client: WebSocket): void {
     const state = this.clients.get(client);
-    if (!state || !state.authenticated || !this.writeLock) return;
+    if (!state || !this.requireBoundTask(sessionId, client, state) || !this.writeLock) return;
+    const wasWriter = this.writeLock.isWriter(sessionId, state.clientId);
     this.writeLock.acquire(sessionId, state.clientId);
     this.lastWriterClientId.set(sessionId, state.clientId);
+    if (!wasWriter && this.writeLock.isWriter(sessionId, state.clientId)) {
+      this.applyAuthoritativeGeometry(sessionId, state.desiredGeometry);
+    }
     this.broadcastLeaseState(sessionId);
   }
 
   /**
    * After a writer disconnects and its lease is released, hand the now-free lease
    * to a still-connected authenticated operator on the same task (if any), so a
-   * sole operator that RELOADED — whose new connection raced ahead of the old
-   * socket's close and skipped its connect-time auto-grant — is promoted to
-   * writer immediately rather than being left read-only with a free lease. No-op
-   * when the lease is somehow already re-held or no operator remains.
+   * sole operator that RELOADED is promoted to writer immediately rather than
+   * being left read-only with a free lease. Only sockets with an accepted frozen
+   * binding participate. No-op when the lease is already held or no viewer
+   * remains.
    */
   private regrantWriteLeaseToRemaining(taskId: string): void {
     if (!this.writeLock) return;
     if (this.writeLock.getLease(taskId)) return; // already re-held
     for (const state of this.clients.values()) {
-      if (state.kind === 'operator' && state.authenticated && state.taskId === taskId) {
+      if (
+        state.kind === 'operator' &&
+        state.authenticated &&
+        (state.phase === 'attaching' || state.phase === 'attached') &&
+        state.binding?.boundTaskId === taskId
+      ) {
         this.writeLock.acquire(taskId, state.clientId);
         this.lastWriterClientId.set(taskId, state.clientId);
+        this.applyAuthoritativeGeometry(taskId, state.desiredGeometry);
         return;
       }
     }
   }
 
   /**
-   * Auto-grant the write lease to an operator the moment its connect-time auth
-   * resolves, WHEN the lease is free (7.1 `acquire` — non-preemptive). This is
-   * what lets operator keystrokes reach the PTY without a client-driven takeover
-   * handshake racing the async auth: the grant happens server-side exactly when
-   * `state.authenticated` flips, then broadcasts a `lease_state` so the client
-   * captures the sessionId and enables input. A second operator on the same task
-   * finds a LIVE lease and stays a reader — no preemption (explicit takeover is
-   * the only way to seize a held lease). The lease is keyed by this connection's
-   * server-assigned `clientId`, the same id the keystroke gate checks, so the
-   * grant and the gate cannot drift.
+   * Auto-grant the write lease at terminal-attach acceptance, after principal
+   * and task are frozen, WHEN the lease is free (non-preemptive). A second
+   * attachment finds a live lease and stays a reader; explicit takeover is the
+   * only preemption path. The lease is keyed by this connection's server-assigned
+   * client id, the same id the input gate checks.
    */
   private grantWriteLeaseIfFree(state: ClientState): void {
-    const taskId = state.taskId;
+    const taskId = this.clientTaskId(state);
     if (!taskId || !this.writeLock) return;
     if (this.writeLock.getLease(taskId)) return; // a live writer already holds it
     this.writeLock.acquire(taskId, state.clientId);
@@ -1234,15 +1827,16 @@ export class TerminalGateway
       lease: lease ? { ...lease } : null,
     };
     for (const [socket, state] of this.clients) {
-      // Fan a session's lease state ONLY to operators actually watching THAT
-      // session (or not yet joined to any). Without this taskId filter a
+      // Fan a session's lease state ONLY to sockets with an accepted immutable
+      // binding to THAT session. Without this taskId filter a
       // heartbeat/takeover on task B would push a lease_state(sessionId=B) down a
       // socket joined to task A, corrupting that client's sessionId binding and
       // silently routing its keystrokes to the wrong session.
       if (
         state.kind === 'operator' &&
         state.authenticated &&
-        (state.taskId === null || state.taskId === sessionId)
+        (state.phase === 'attaching' || state.phase === 'attached') &&
+        state.binding?.boundTaskId === sessionId
       ) {
         this.send(socket, frame);
       }
@@ -1259,11 +1853,10 @@ export class TerminalGateway
    * (the lock-INDEPENDENT approval surface, D7), and record a `reply` transport
    * so the resolved `decision` can be returned to the blocked hook by `requestId`.
    *
-   * Under the connect-in model the sandbox's hook delivers this over an OUTBOUND
-   * HTTP callback (re-homed in the integration track), and the HTTP handler
-   * passes the `reply` used to unblock the hook. The approval routing/semantics
-   * above the transport are unchanged. Notification-adapter round-trips, when
-   * wired, also consume this same pending entry.
+   * An isolated compatibility callback or a future explicit CAP-brokered caller
+   * can pass the `reply` used to resolve the request. Current bypass-mode PTYs do
+   * not call this path. Notification-adapter round-trips, when wired, may consume
+   * the same pending entry.
    */
   onPermissionRequest(
     frame: PermissionRequestFrame,
@@ -1275,12 +1868,10 @@ export class TerminalGateway
       // (be-audit-approvals 6.5; consumed via {@link listPendingApprovals}).
       toolName: frame.toolName,
       toolInput: frame.toolInput,
-      // Connect-in reply transport: the OUTBOUND-HTTP-callback handler registers
-      // this so `onDecision` can unblock the hook by `requestId` correlation.
+      // Optional compatibility/future reply transport, resolved by requestId.
       reply,
     });
-    // VR.3 — a hook event counts as activity; reset the idle window so the
-    // task is not force-failed while it is actively waiting for a decision.
+    // An explicit approval request counts as activity while awaiting a decision.
     if (this.guardrails) {
       this.guardrails.recordActivity(frame.taskId);
     }
@@ -1289,7 +1880,8 @@ export class TerminalGateway
       if (
         s.kind === 'operator' &&
         s.authenticated &&
-        (s.taskId === null || s.taskId === frame.taskId)
+        s.phase === 'attached' &&
+        s.binding?.boundTaskId === frame.taskId
       ) {
         this.send(socket, frame);
       }
@@ -1297,17 +1889,14 @@ export class TerminalGateway
   }
 
   /**
-   * Connect-in approval entry point for the OUTBOUND HTTP callback (5.5). The
-   * sandbox's blocking Codex hook POSTs its `permission_request` to the
-   * orchestrator approvals endpoint (over `cap-net`); the approvals controller
-   * calls this, which routes the request through the SAME `onPermissionRequest`
-   * fan-out + `onDecision` resolution path the WS transport used, and resolves
-   * with the operator's {@link DecisionFrame} once a decision arrives. Only the
-   * transport differs — the approval semantics above it are unchanged.
+   * Approval-router entry point retained for the isolated compatibility callback
+   * and a future explicitly CAP-brokered action. Current bypass-mode sandbox
+   * images do not call it. It routes through `onPermissionRequest` fan-out and
+   * resolves with the operator's {@link DecisionFrame} once a decision arrives.
    *
    * The returned promise resolves when an operator decides (via `onDecision`,
    * which fires the `reply` registered here). It never rejects: a timeout is the
-   * caller's concern (the hook fails closed on no/invalid response).
+   * caller's concern; an explicitly gated caller must fail closed.
    */
   requestApproval(frame: PermissionRequestFrame): Promise<DecisionFrame> {
     return new Promise<DecisionFrame>((resolve) => {
@@ -1316,11 +1905,9 @@ export class TerminalGateway
   }
 
   /**
-   * Connect-in non-blocking `PostToolUse` report entry point for the OUTBOUND
-   * HTTP callback (5.5). The sandbox's post-tool-use hook POSTs its file-edit
-   * report to the approvals endpoint; this records it as task activity (so a
-   * task actively editing files is not force-failed as idle) and returns. It is
-   * post-hoc only — it never gates, blocks, or reverses the executed command.
+   * Non-blocking compatibility `PostToolUse` report entry point. Current
+   * bypass-mode images do not register the historical hook caller. If explicitly
+   * invoked, it records task activity and remains post-hoc only.
    */
   reportPostToolUse(frame: PostToolUseReportFrame): void {
     // VR.3 — a tool-use report counts as activity; reset the idle window.
@@ -1338,7 +1925,7 @@ export class TerminalGateway
    */
   private onDecision(
     frame: DecisionFrame,
-    _client: WebSocket,
+    client: WebSocket,
     state: ClientState,
   ): void {
     // Lock-INDEPENDENT: no lease check here. Only require an authenticated
@@ -1347,13 +1934,19 @@ export class TerminalGateway
 
     const pending = this.pendingApprovals.get(frame.requestId);
     if (!pending) return;
+    if (!this.requireBoundTask(pending.taskId, client, state)) return;
     this.pendingApprovals.delete(frame.requestId);
 
     // Return the resolved decision to the blocked hook over its reply transport.
     pending.reply?.(frame);
     // Tell operators the request is resolved so duplicate surfaces clear.
     for (const [socket, s] of this.clients) {
-      if (s.kind === 'operator' && s.authenticated) {
+      if (
+        s.kind === 'operator' &&
+        s.authenticated &&
+        s.phase === 'attached' &&
+        s.binding?.boundTaskId === pending.taskId
+      ) {
         this.send(socket, frame);
       }
     }
@@ -1390,8 +1983,10 @@ export class TerminalGateway
    * client with an explicit `resume` control frame.
    */
   private onAck(frame: AckFrame, client: WebSocket, state: ClientState): void {
+    if (state.phase !== 'attaching' && state.phase !== 'attached') return;
+    if (!state.binding || !state.attachment) return;
     const signal = state.backpressure.onAck(frame.seq);
-    this.emitFlowSignal(signal, client);
+    this.emitFlowSignal(signal, client, state);
   }
 
   /**
@@ -1400,51 +1995,95 @@ export class TerminalGateway
    * pushed un-acknowledged bytes to the high-water mark, pause the PTY and tell
    * the client with an explicit `pause` control frame.
    *
-   * VR.3: Each PTY output chunk resets the idle window for the task, so wedged
-   * tasks that are silently producing output are not force-failed as idle.
+   * Viewer bytes are deliberately excluded from lifecycle/activity accounting:
+   * only owner output is canonical, while attach repaint/query traffic is local
+   * to this disposable browser attachment.
    */
-  private streamRawChunk(
-    chunk: string,
+  private streamViewerBytes(
+    chunk: Uint8Array,
     client: WebSocket,
     state: ClientState,
-    meta?: AgentTerminalOutputMeta,
   ): void {
-    const recordable = this.isPtyOutputRecordable(state.taskId, meta);
-    const bytes = Buffer.byteLength(chunk);
-    if (recordable) {
-      state.sentBytes += bytes;
+    if (state.phase !== 'attaching' && state.phase !== 'attached') return;
+    if (chunk.byteLength === 0) return;
+    const queryObserver = state.queryObserver;
+    if (!queryObserver) {
+      this.failAttachment(client, state, 'internal_error');
+      return;
     }
-    const rawFrame: RawFrame = {
-      channel: FRAME_CHANNEL.RAW,
-      data: Buffer.from(chunk).toString('base64'),
-      seq: state.sentBytes,
-    };
-    this.send(client, rawFrame);
-
-    // VR.3 — feed the IdleTracker so tasks actively producing terminal output
-    // are never incorrectly reclaimed as idle.
-    if (state.taskId && this.guardrails) {
-      this.guardrails.recordActivity(state.taskId);
+    // Load-bearing order: authorize every recognized response before the same
+    // trigger bytes can reach xterm and synchronously produce terminal_response.
+    // The observer is side-effect-free with respect to `chunk`; delivery below
+    // uses the exact original byte view.
+    try {
+      const observation = queryObserver.observeOutput(chunk);
+      const taskId = state.binding?.boundTaskId;
+      if (taskId) {
+        const attachmentId = this.providerStoryAttachmentId(state);
+        for (const observed of observation.observations) {
+          this.emitProviderStoryEvent(taskId, {
+            type: 'query',
+            taskId,
+            attachmentId,
+            queryId: observed.queryId,
+            responseClass: observed.query.responseClass,
+            parameters: terminalQueryParameters(observed.query),
+            bytesBase64: Buffer.from(
+              observed.rawBytes.buffer,
+              observed.rawBytes.byteOffset,
+              observed.rawBytes.byteLength,
+            ).toString('base64'),
+            admitted: observed.admitted,
+          });
+        }
+      }
+    } catch {
+      this.failAttachment(client, state, 'internal_error');
+      return;
     }
-
-    // Non-recordable attach/bootstrap bytes are intentionally live-only. They
-    // must not advance the reconnect cursor, otherwise a later reconnect asks for
-    // a byte offset that does not exist in session.log and can skip/reorder replay.
-    if (recordable) {
+    for (let offset = 0; offset < chunk.byteLength; offset += HIGH_WATER_MARK_BYTES) {
+      const length = Math.min(HIGH_WATER_MARK_BYTES, chunk.byteLength - offset);
+      const bytes = new Uint8Array(
+        chunk.buffer,
+        chunk.byteOffset + offset,
+        length,
+      );
+      state.sentBytes += length;
+      const rawFrame: RawFrame = {
+        channel: FRAME_CHANNEL.RAW,
+        data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
+          'base64',
+        ),
+        seq: state.sentBytes,
+      };
+      this.send(client, rawFrame);
       const signal = state.backpressure.onSent(state.sentBytes);
-      this.emitFlowSignal(signal, client);
+      this.emitFlowSignal(signal, client, state);
     }
+
   }
 
   /** Translate a {@link FlowSignal} into the matching pause/resume frame. */
-  private emitFlowSignal(signal: FlowSignal, client: WebSocket): void {
+  private emitFlowSignal(
+    signal: FlowSignal,
+    client: WebSocket,
+    state: ClientState,
+  ): void {
     if (signal === 'pause') {
+      if (!state.metricsViewerPaused) {
+        state.metricsViewerPaused = true;
+        this.terminalMetrics?.viewerPaused();
+      }
       const frame: PauseFrame = {
         channel: FRAME_CHANNEL.CONTROL,
         type: 'pause',
       };
       this.send(client, frame);
     } else if (signal === 'resume') {
+      if (state.metricsViewerPaused) {
+        state.metricsViewerPaused = false;
+        this.terminalMetrics?.viewerResumed();
+      }
       const frame: ResumeFrame = {
         channel: FRAME_CHANNEL.CONTROL,
         type: 'resume',
@@ -1453,7 +2092,13 @@ export class TerminalGateway
     }
   }
 
-  private isPtyOutputRecordable(
+  /**
+   * Producer/provenance eligibility, not a durable-artifact switch. Bootstrap
+   * and resize repaint bytes are excluded from both failure evidence and raw
+   * artifacts; disabling raw artifacts never makes eligible agent bytes vanish
+   * from activity or runtime classification.
+   */
+  private isOwnerOutputEligible(
     taskId: string | null,
     meta?: AgentTerminalOutputMeta,
   ): boolean {
@@ -1520,108 +2165,357 @@ export class TerminalGateway
   }
 
   // -------------------------------------------------------------------------
-  // Reconnect: snapshot + tail-replay (5.4)
+  // Native viewer attachment handshake (one WebSocket -> one provider PTY)
   // -------------------------------------------------------------------------
 
   /**
-   * Restore a reconnecting client: join it to the claimed task's session, then
-   * deliver the latest SerializeAddon snapshot followed by the `session.log`
-   * tail appended after it (reconciling size differences via the snapshot's
-   * recorded cols/rows). Live streaming resumes once the final tail frame is
-   * sent.
+   * Synchronous acceptance point. The phase, principal, task and generation are
+   * frozen before any owner/provider promise is observed. The async continuation
+   * can only operate while that exact binding remains current.
    */
-  private async onReconnect(
-    frame: ReconnectFrame,
-    client: WebSocket,
-    state: ClientState,
-  ): Promise<void> {
-    const taskId = state.taskId;
-    if (!taskId) {
-      this.logger.warn(
-        `client ${state.clientId}: reconnect before joining a task`,
-      );
-      return;
-    }
-    const session = this.sessions.get(taskId);
-    if (!session) return;
-
-    // Sync the sandbox PTY (and snapshot headless) to the reconnecting operator's
-    // terminal geometry so codex renders at the client's cols/rows, not the AIO
-    // default 80×24 — without this codex's cursor-addressed history misaligns in a
-    // wider browser grid. The reconnect frame carries cols/rows for exactly this
-    // reconciliation; the explicit resize frame the client also sends on open is
-    // belt-and-suspenders. Guarded to an authenticated operator, mirroring onResize.
-    if (
-      state.authenticated &&
-      state.kind === 'operator' &&
-      typeof frame.cols === 'number' &&
-      typeof frame.rows === 'number'
-    ) {
-      this.beginResizeRepaintSuppression(taskId);
-      session.pty.resize(frame.cols, frame.rows);
-      session.snapshots.resizeHeadless(frame.cols, frame.rows);
-    }
-
-    // `onPtyOutput` streams to live operators synchronously but persists
-    // `session.log` through a per-task async append chain. Reconnect is the
-    // durable replay boundary, so wait for already-observed output to land before
-    // reading the log; otherwise a fast reconnect can see live bytes on the old
-    // socket and an empty tail on the new socket.
-    await this.flushSessionLog(taskId);
-    await this.flushSessionCast(taskId);
-
-    const frames: WsControlFrame[] = await session.snapshots.buildReconnectFrames(
-      {
-        fromSeq: frame.lastSeq,
-        clientCols: frame.cols,
-        clientRows: frame.rows,
-      },
-    );
-
-    for (const f of frames) {
-      this.send(client, f);
-    }
-    // The client now holds everything up to the snapshot manager's offset;
-    // align its sent counter and rebase backpressure so the un-acknowledged
-    // total restarts from zero and subsequent accounting stays monotonic.
-    let lastSeq = 0;
-    let hasSeq = false;
-    for (const f of frames) {
-      if ('seq' in f) {
-        lastSeq = f.seq;
-        hasSeq = true;
-      }
-    }
-    if (hasSeq) {
-      state.sentBytes = lastSeq;
-      state.backpressure.rebase(lastSeq);
-    }
-    // Begin live streaming for this client from here on.
-    this.attachPty(session, client, state);
-  }
-
-  /**
-   * Subscribe a client to a session's live PTY output, streaming each chunk as a
-   * backpressure-accounted raw frame. Idempotent per client: a prior
-   * subscription is disposed first so a reconnect re-attaches cleanly.
-   *
-   * VR.9: Wire the real PTY into the client's BackpressureController so
-   * `pty.pause()` / `pty.resume()` actually halt the producer when the client
-   * backlog reaches the 500k high-water mark. Without this the controller's
-   * `pty?.pause()` / `pty?.resume()` calls silently no-op.
-   */
-  private attachPty(
-    session: TerminalSession,
+  private onTerminalAttach(
+    frame: TerminalAttachFrame,
     client: WebSocket,
     state: ClientState,
   ): void {
-    state.ptySubscription?.dispose();
-    state.taskId = session.taskId;
-    // VR.9 — inject the PTY into the backpressure controller now that we know it.
-    state.backpressure.setPty(session.pty);
-    state.ptySubscription = session.pty.onData((chunk, meta) => {
-      this.streamRawChunk(chunk, client, state, meta);
+    if (
+      state.phase !== 'unattached' ||
+      !state.authenticated ||
+      !state.principalIdentity ||
+      !state.requestedTaskId
+    ) {
+      this.failPolicyViolation(client, state, 'terminal attachment is not admissible');
+      return;
+    }
+
+    const generation = state.generation + 1;
+    const binding: FrozenClientBinding = Object.freeze({
+      principalIdentity: Object.freeze({ ...state.principalIdentity }),
+      boundTaskId: state.requestedTaskId,
+      generation,
     });
+    state.phase = 'attaching';
+    state.binding = binding;
+    state.generation = generation;
+    state.authAttemptEpoch += 1;
+    state.abortController = new AbortController();
+    state.desiredGeometry = { cols: frame.cols, rows: frame.rows };
+    state.sentBytes = 0;
+    state.metricsAttachAttempted = true;
+    state.metricsAttachOutcomeRecorded = false;
+    state.backpressure.reset();
+    state.queryObserver?.close();
+    state.queryObserver = null;
+
+    const negotiation = negotiateTerminalAttach(frame);
+    if (!negotiation.ok) {
+      this.recordTerminalAttachOutcome(state, negotiation.frame.reason);
+      this.send(client, negotiation.frame);
+      this.invalidateAttachment(state);
+      this.closeReloadRequired(client);
+      return;
+    }
+
+    try {
+      state.queryObserver = this.createTerminalQueryObserver(state);
+    } catch {
+      this.logger.warn(
+        `client ${state.clientId}: native terminal query configuration rejected`,
+      );
+      this.failAttachment(client, state, 'internal_error');
+      return;
+    }
+
+    const session = this.sessions.get(binding.boundTaskId);
+    if (!session) {
+      this.unavailableAttachment(client, state, 'session_absent');
+      return;
+    }
+
+    if (this.viewerCount(binding.boundTaskId) > this.viewerLimitPerTask) {
+      this.unavailableAttachment(client, state, 'viewer_limit');
+      return;
+    }
+
+    this.activateMetricsViewer(state);
+    this.sendAttachmentState(client, state, { state: 'attaching' });
+    // Establish lease authority only after principal and task are immutable.
+    // Granting from mutable pre-attach auth state could strand task A's lease
+    // after a legitimate pre-attach retarget to task B.
+    this.grantWriteLeaseIfFree(state);
+    if (this.isWriter(binding.boundTaskId, state.clientId)) {
+      this.applyAuthoritativeGeometry(binding.boundTaskId, state.desiredGeometry);
+    } else {
+      this.sendGeometry(client, session.geometry);
+    }
+
+    void this.completeTerminalAttach(client, state, session, generation);
+  }
+
+  private async completeTerminalAttach(
+    client: WebSocket,
+    state: ClientState,
+    session: TerminalSession,
+    generation: number,
+  ): Promise<void> {
+    let ownerDecision: AgentTerminalLaunchOutcome;
+    try {
+      ownerDecision = await session.launchDecision;
+    } catch {
+      if (this.isCurrentAttachment(client, state, session, generation)) {
+        this.failAttachment(client, state, 'internal_error');
+      }
+      return;
+    }
+    if (!this.isCurrentAttachment(client, state, session, generation)) return;
+
+    if (ownerDecision.kind === 'absent') {
+      this.unavailableAttachment(client, state, 'session_absent');
+      return;
+    }
+    if (ownerDecision.kind === 'indeterminate') {
+      this.unavailableAttachment(client, state, 'session_indeterminate');
+      return;
+    }
+    if (ownerDecision.kind !== 'launched' && ownerDecision.kind !== 'attached') {
+      this.unavailableAttachment(client, state, 'provider_unavailable');
+      return;
+    }
+
+    // A resize accepted while the owner launch decision was pending may have
+    // raced a not-yet-existing tmux pane. Re-assert the canonical grid now that
+    // launch/attach is proven, without recording a second cast resize event.
+    session.ownerPty.resize(session.geometry.cols, session.geometry.rows);
+
+    let attachment: TerminalViewerAttachment;
+    try {
+      attachment = session.viewerFactory.open({
+        cols: session.geometry.cols,
+        rows: session.geometry.rows,
+        signal: state.abortController?.signal,
+      });
+    } catch {
+      this.failAttachment(client, state, 'provider_failed');
+      return;
+    }
+    const attachmentId = this.providerStoryAttachmentId(state);
+    this.emitProviderStoryEvent(session.taskId, {
+      type: 'viewer_opened',
+      taskId: session.taskId,
+      attachmentId,
+    });
+    if (!this.isCurrentAttachment(client, state, session, generation)) {
+      this.closeViewerAttachment(attachment);
+      this.emitProviderStoryEvent(session.taskId, {
+        type: 'viewer_closed',
+        taskId: session.taskId,
+        attachmentId,
+      });
+      return;
+    }
+
+    state.attachment = attachment;
+    state.backpressure.setPty(attachment);
+    state.attachmentSubscriptions.push(
+      attachment.onData((chunk) => {
+        if (!this.isCurrentAttachment(client, state, session, generation)) return;
+        this.streamViewerBytes(chunk, client, state);
+      }),
+      attachment.onClose(() => {
+        if (
+          this.isCurrentAttachment(client, state, session, generation) &&
+          state.phase === 'attached'
+        ) {
+          this.failAttachment(client, state, 'transport_closed');
+        }
+      }),
+      attachment.onError((_error) => {
+        this.logger.warn(
+          `client ${state.clientId}: provider viewer attachment error`,
+        );
+        if (
+          this.isCurrentAttachment(client, state, session, generation) &&
+          state.phase === 'attached'
+        ) {
+          this.failAttachment(client, state, 'provider_failed');
+        }
+      }),
+    );
+
+    let outcome: TerminalViewerAttachmentOutcome | 'timeout';
+    try {
+      outcome = await this.waitForAttachmentDecision(
+        attachment,
+        state.abortController?.signal,
+      );
+    } catch {
+      if (this.isCurrentAttachment(client, state, session, generation)) {
+        this.failAttachment(client, state, 'internal_error');
+      }
+      return;
+    }
+    if (!this.isCurrentAttachment(client, state, session, generation)) {
+      this.closeViewerAttachment(attachment);
+      return;
+    }
+    this.finishAttachmentDecision(outcome, client, state, session);
+  }
+
+  private async waitForAttachmentDecision(
+    attachment: TerminalViewerAttachment,
+    signal?: AbortSignal,
+  ): Promise<TerminalViewerAttachmentOutcome | 'timeout'> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        attachment.attachmentDecision,
+        new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), this.viewerAttachTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (signal?.aborted) this.closeViewerAttachment(attachment);
+    }
+  }
+
+  private finishAttachmentDecision(
+    outcome: TerminalViewerAttachmentOutcome | 'timeout',
+    client: WebSocket,
+    state: ClientState,
+    session: TerminalSession,
+  ): void {
+    if (outcome === 'timeout') {
+      state.abortController?.abort();
+      this.failAttachment(client, state, 'attach_timeout');
+      return;
+    }
+    switch (outcome.kind) {
+      case 'ready':
+        if (state.attachment?.opaqueInputCapability !== 'byte-preserving') {
+          this.failAttachment(client, state, 'provider_failed');
+          return;
+        }
+        state.phase = 'attached';
+        this.recordTerminalAttachOutcome(state, 'ready');
+        this.sendAttachmentState(client, state, { state: 'ready' });
+        this.sendGeometry(client, session.geometry);
+        this.broadcastLeaseState(session.taskId);
+        return;
+      case 'absent':
+        this.unavailableAttachment(client, state, 'session_absent');
+        return;
+      case 'indeterminate':
+        this.unavailableAttachment(client, state, 'session_indeterminate');
+        return;
+      case 'failed':
+        if (outcome.reason === 'aborted' && state.phase === 'closed') return;
+        this.failAttachment(
+          client,
+          state,
+          outcome.reason === 'blank-redraw'
+            ? 'attach_timeout'
+            : outcome.reason === 'transport'
+              ? 'provider_failed'
+              : 'internal_error',
+        );
+    }
+  }
+
+  private onTerminalResponse(
+    frame: TerminalResponseFrame,
+    client: WebSocket,
+    state: ClientState,
+  ): void {
+    if (
+      (state.phase !== 'attaching' && state.phase !== 'attached') ||
+      !state.binding ||
+      !state.attachment ||
+      !state.queryObserver
+    ) {
+      return;
+    }
+    const session = this.sessions.get(state.binding.boundTaskId);
+    if (!session) return;
+    const generation = state.binding.generation;
+    if (!this.isCurrentAttachment(client, state, session, generation)) return;
+
+    const attachment = state.attachment;
+    const observer = state.queryObserver;
+    const response = decodeCanonicalBase64Bytes(frame.data);
+    const geometry = { ...session.geometry };
+    const attachmentId = this.providerStoryAttachmentId(state);
+    const bytesBase64 = Buffer.from(
+      response.buffer,
+      response.byteOffset,
+      response.byteLength,
+    ).toString('base64');
+    void observer
+      .consumeAndWriteResponse(
+        response,
+        geometry,
+        (bytes) => {
+          // Consume and write are one synchronous authorization transaction. The
+          // queue token is already gone; re-check every live identity immediately
+          // before touching the captured provider PTY and never restore on failure.
+          if (
+            !this.isCurrentAttachment(client, state, session, generation) ||
+            state.attachment !== attachment ||
+            state.queryObserver !== observer
+          ) {
+            throw new Error('stale terminal response generation');
+          }
+          let outcome: TerminalTransportWriteOutcome;
+          try {
+            outcome = attachment.writeTerminalResponse(bytes);
+          } catch {
+            this.emitProviderStoryEvent(session.taskId, {
+              type: 'provider_write',
+              taskId: session.taskId,
+              attachmentId,
+              source: 'terminal_response',
+              bytesBase64,
+              outcome: 'threw',
+            });
+            this.failAttachment(client, state, 'provider_failed');
+            throw new Error('terminal response provider write threw');
+          }
+          this.emitProviderStoryEvent(session.taskId, {
+            type: 'provider_write',
+            taskId: session.taskId,
+            attachmentId,
+            source: 'terminal_response',
+            bytesBase64,
+            outcome,
+          });
+          if (outcome !== 'written') {
+            this.handleViewerWriteOutcome(outcome, client, state);
+            throw new Error('terminal response provider write rejected');
+          }
+        },
+        () =>
+          this.isCurrentAttachment(client, state, session, generation) &&
+          state.attachment === attachment &&
+          state.queryObserver === observer,
+      )
+      .then((result) => {
+        this.emitProviderStoryEvent(session.taskId, {
+          type: 'response',
+          taskId: session.taskId,
+          attachmentId,
+          bytesBase64,
+          accepted: result.accepted,
+          ...(result.classification
+            ? { responseClass: result.classification.responseClass }
+            : {}),
+          ...(!result.accepted ? { reason: result.reason } : {}),
+        });
+      })
+      .catch(() => {
+        if (this.isCurrentAttachment(client, state, session, generation)) {
+          this.failAttachment(client, state, 'internal_error');
+        }
+      });
   }
 
   // -------------------------------------------------------------------------
@@ -1635,82 +2529,89 @@ export class TerminalGateway
    * making the "identical cols and rows" parity precondition unreachable (VR.8).
    */
   private onResize(frame: ResizeFrame, state: ClientState): void {
-    if (!state.authenticated || state.kind !== 'operator') return;
-    if (!state.taskId) return;
-    const session = this.sessions.get(state.taskId);
+    if (state.phase !== 'attached' || !state.binding) return;
+    state.desiredGeometry = { cols: frame.cols, rows: frame.rows };
+    const authoritative = this.isWriter(
+      state.binding.boundTaskId,
+      state.clientId,
+    );
+    this.emitProviderStoryEvent(state.binding.boundTaskId, {
+      type: 'resize',
+      taskId: state.binding.boundTaskId,
+      attachmentId: this.providerStoryAttachmentId(state),
+      cols: frame.cols,
+      rows: frame.rows,
+      authoritative,
+    });
+    if (!authoritative) return;
+    this.applyAuthoritativeGeometry(
+      state.binding.boundTaskId,
+      state.desiredGeometry,
+    );
+  }
+
+  private applyAuthoritativeGeometry(
+    taskId: string,
+    geometry: Readonly<MutableTerminalGeometry>,
+  ): void {
+    const session = this.sessions.get(taskId);
     if (!session) return;
-    // Forward the resize to the sandbox PTY (AioPtyClient → AIO `resize` frame)
-    // so cols/rows stay in sync with the browser (VR.8). Also update the
-    // SnapshotManager's headless terminal so subsequent snapshots record the
-    // updated geometry.
-    this.beginResizeRepaintSuppression(state.taskId);
-    session.pty.resize(frame.cols, frame.rows);
-    session.snapshots.resizeHeadless(frame.cols, frame.rows);
-    // session-terminal-replay — record the resize as an asciicast `r` event so
-    // the timing player re-sizes the replay terminal at the right moment.
-    const castEntry = this.sessionCasts.get(state.taskId);
-    if (castEntry) {
-      this.appendCastEvent(
-        state.taskId,
-        'r',
-        castResizeData(frame.cols, frame.rows),
-      );
+    const changed =
+      session.geometry.cols !== geometry.cols ||
+      session.geometry.rows !== geometry.rows;
+    session.geometry.cols = geometry.cols;
+    session.geometry.rows = geometry.rows;
+
+    if (changed) this.beginResizeRepaintSuppression(taskId);
+    session.ownerPty.resize(geometry.cols, geometry.rows);
+    for (const state of this.clients.values()) {
+      if (
+        state.binding?.boundTaskId === taskId &&
+        (state.phase === 'attaching' || state.phase === 'attached')
+      ) {
+        state.attachment?.resize(geometry.cols, geometry.rows);
+      }
+    }
+    this.broadcastGeometry(taskId);
+
+    if (changed && this.terminalRecordingPolicy.sessionCast.enabled) {
+      const resizeData = castResizeData(geometry.cols, geometry.rows);
+      if (this.sessionCasts.has(taskId)) {
+        this.appendCastEvent(taskId, 'r', resizeData);
+      } else {
+        const pending = this.pendingCastResizeEvents.get(taskId) ?? [];
+        pending.push(resizeData);
+        this.pendingCastResizeEvents.set(taskId, pending);
+      }
     }
   }
 
   // -------------------------------------------------------------------------
-  // PTY-output fan-out + SnapshotManager feeding (VR.10)
+  // Owner PTY output: lifecycle/activity/classification + durable artifacts only
   // -------------------------------------------------------------------------
 
   /**
-   * Handle a chunk of live PTY output produced by the task's {@link AioPtyClient}
-   * (subscribed in {@link openSession}). This is the SINGLE code path where raw
-   * PTY output is received, so it is where the two byte-offset consumers are kept
-   * in lockstep (D9 / 3.1):
-   *   1. the bytes are APPENDED to `workspaces/<taskId>/session.log` (the durable
-   *      tail-replay source — there is no in-sandbox runner producer under
-   *      connect-in), and
-   *   2. the SAME bytes (same `byteLen`) are fed to `snapshots.feed`, advancing
-   *      the snapshot byte-offset by exactly what was written to the file.
-   * Because the file append and the offset advance both use the identical
-   * `payload` buffer, the snapshot boundary (`seq`) and the replayed tail align.
-   *
-   * It also streams the chunk to every operator watching the task who has NOT yet
-   * reconnected/attached (operators that have called `attachPty` receive the same
-   * bytes through their own `ptySubscription`).
+   * Handle a chunk of live PTY output produced by the task's {@link SandboxTerminalSession}
+   * (subscribed in {@link openSession}). Browser bytes never pass through this
+   * method: each viewer receives only its own fresh tmux attachment stream.
    */
   private onPtyOutput(
     taskId: string,
     chunk: string,
     meta?: AgentTerminalOutputMeta,
   ): void {
-    const session = this.sessions.get(taskId);
-    const recordable = this.isPtyOutputRecordable(taskId, meta);
-    // Encode ONCE so the bytes written to disk are byte-for-byte the bytes the
-    // snapshot offset advances by (UTF-8 char length can differ from byte length).
-    const payload = Buffer.from(chunk, 'utf8');
-    const byteLen = payload.byteLength;
+    const eligible = this.isOwnerOutputEligible(taskId, meta);
 
-    if (recordable) {
-      // 3.1 — persist the raw PTY output to session.log BEFORE advancing the
-      // snapshot offset, so the file and the offset move together (lockstep).
-      this.appendSessionLog(taskId, payload);
-
-      // session-terminal-replay — ALSO record to session.cast (asciicast v2),
-      // independent of the lockstep above; best-effort, never blocks streaming.
-      this.appendCast(taskId, chunk);
-
-      if (session) {
-        // VR.10 — Feed the SnapshotManager so the byte-offset tracks session.log.
-        session.snapshots.feed(chunk, byteLen);
+    if (eligible) {
+      // Classification/evidence is load-bearing and independent of optional
+      // artifact gates. Update it before enqueueing any best-effort disk write.
+      this.inspectRuntimeFailure(taskId, chunk);
+      if (this.terminalRecordingPolicy.sessionLog.enabled) {
+        this.appendSessionLog(taskId, Buffer.from(chunk, 'utf8'));
       }
-    } else if (session) {
-      // Attach/bootstrap bytes are live-only and must not move the durable log
-      // cursor, but they still describe the current terminal frame after an API
-      // restart/readoption. Feed the transient headless terminal with a zero
-      // byte delta so snapshots can restore the visible screen without replaying
-      // duplicate bootstrap bytes from session.log.
-      session.snapshots.feed(chunk, 0);
+      if (this.terminalRecordingPolicy.sessionCast.enabled) {
+        this.appendCast(taskId, chunk);
+      }
     }
 
     // VR.3 — feed the IdleTracker.
@@ -1718,33 +2619,17 @@ export class TerminalGateway
       this.guardrails.recordActivity(taskId);
     }
 
-    // Directly stream to any operator watching this task who has NOT yet called
-    // reconnect/attachPty (i.e. no ptySubscription set up yet) so they receive
-    // live output from the moment they connect.
-    for (const [socket, s] of this.clients) {
-      if (
-        s.kind === 'operator' &&
-        s.authenticated &&
-        s.ptySubscription === null &&
-        (s.taskId === null || s.taskId === taskId)
-      ) {
-        this.streamRawChunk(chunk, socket, s, meta);
-      }
-    }
-
-    // Runtime-auth failures may leave an interactive TUI resident instead of
-    // exiting. Inspect the same recordable stream after it has been forwarded so
-    // the operator still receives the decisive error chunk. Classification is
-    // delegated to the selected AgentRuntime; this shared gateway never parses
-    // Codex/Claude-specific envelopes.
-    if (recordable) this.inspectRuntimeFailure(taskId, chunk);
   }
 
   private inspectRuntimeFailure(taskId: string, chunk: string): void {
-    if (!this.guardrails || this.runtimeFailuresReported.has(taskId)) return;
     const previous = this.runtimeFailureBuffers.get(taskId) ?? '';
-    const rolling = `${previous}${chunk}`.slice(-8 * 1024);
+    const rolling = appendBoundedUtf8Tail(
+      previous,
+      chunk,
+      this.terminalRecordingPolicy.failureEvidenceMaxBytes,
+    );
     this.runtimeFailureBuffers.set(taskId, rolling);
+    if (!this.guardrails || this.runtimeFailuresReported.has(taskId)) return;
     if (
       this.runtimeFailureChecks.has(taskId) ||
       !TerminalGateway.mayContainRuntimeAuthFailure(rolling)
@@ -1809,30 +2694,57 @@ export class TerminalGateway
 
   /**
    * Append a raw PTY-output payload to the task's `session.log` (3.1), serializing
-   * appends per task so concurrent chunks land in order (the bytes on disk match
-   * the bytes fed to `snapshots.feed`). The workspace directory is created lazily
-   * on the first append. Append failures are logged but never throw into the hot
-   * output path — a missing tail degrades reconnect, it does not break streaming.
+   * appends per task so concurrent chunks land in order. The workspace directory
+   * is created lazily on the first append. Append failures are logged but never
+   * throw into the owner lifecycle/classification path.
    */
   private appendSessionLog(taskId: string, payload: Buffer): void {
     const entry = this.sessionLogs.get(taskId);
-    if (!entry) return;
+    if (!entry || entry.truncated) return;
     const { logPath } = entry;
+    const truncation = Buffer.from(
+      TERMINAL_RAW_RECORDING_TRUNCATION_TEXT,
+      'utf8',
+    );
+    let writePayload = payload;
+    if (
+      entry.reservedBytes + payload.byteLength + truncation.byteLength >
+        entry.maxBytes ||
+      entry.pendingWrites + 1 >= entry.maxPendingWrites
+    ) {
+      entry.truncated = true;
+      writePayload =
+        entry.reservedBytes + truncation.byteLength <= entry.maxBytes
+          ? truncation
+          : Buffer.alloc(0);
+      this.logger.warn(
+        `task ${taskId}: session.log reached its configured byte/pending-write capacity; recording stopped`,
+      );
+    }
+    if (writePayload.byteLength === 0) return;
+    // Reserve synchronously before capturing the payload in the append chain.
+    // Once the budget is exhausted, later chunks allocate no queued closures.
+    entry.reservedBytes += writePayload.byteLength;
+    entry.pendingWrites += 1;
     // Chain on the prior append so writes are strictly ordered (no interleaving),
-    // keeping the on-disk byte stream identical to the fed-offset byte stream.
-    entry.tail = entry.tail.then(async () => {
-      try {
-        if (!entry.ensured) {
-          await mkdir(path.dirname(logPath), { recursive: true });
-          entry.ensured = true;
+    // while the synchronous reservation above bounds the outstanding backlog.
+    entry.tail = entry.tail
+      .then(async () => {
+        try {
+          if (!entry.ensured) {
+            await mkdir(path.dirname(logPath), { recursive: true });
+            entry.ensured = true;
+          }
+          await appendFile(logPath, writePayload);
+        } catch (err) {
+          this.logger.warn(
+            `task ${taskId}: session.log append failed: ${(err as Error).message}`,
+          );
         }
-        await appendFile(logPath, payload);
-      } catch (err) {
-        this.logger.warn(
-          `task ${taskId}: session.log append failed: ${(err as Error).message}`,
-        );
-      }
-    });
+      })
+      .finally(() => {
+        entry.pendingWrites -= 1;
+      });
   }
 
   private async flushSessionLog(taskId: string): Promise<void> {
@@ -1842,21 +2754,7 @@ export class TerminalGateway
       await entry.tail;
     } catch (err) {
       this.logger.warn(
-        `task ${taskId}: session.log flush failed before reconnect: ${
-          (err as Error).message
-        }`,
-      );
-    }
-  }
-
-  private async flushSessionCast(taskId: string): Promise<void> {
-    const entry = this.sessionCasts.get(taskId);
-    if (!entry) return;
-    try {
-      await entry.tail;
-    } catch (err) {
-      this.logger.warn(
-        `task ${taskId}: session.cast flush failed before reconnect: ${
+        `task ${taskId}: session.log flush failed before audit read: ${
           (err as Error).message
         }`,
       );
@@ -1872,9 +2770,13 @@ export class TerminalGateway
   private initCast(
     taskId: string,
     workspaceDir: string,
-    cols: number,
-    rows: number,
+    initialCols: number,
+    initialRows: number,
   ): void {
+    if (!this.terminalRecordingPolicy.sessionCast.enabled) {
+      this.pendingCastResizeEvents.delete(taskId);
+      return;
+    }
     if (this.sessionCasts.has(taskId)) return;
     // headless-task-conversation-view: a HEADLESS task has NO terminal record —
     // its review surface is the polled conversation, and a recorded codex-exec
@@ -1886,8 +2788,22 @@ export class TerminalGateway
     // honestly returns empty for it. `resolveExecutionModeForTask` never throws (it
     // defaults to interactive-pty), so a resolution hiccup safely still records.
     void this.resolveExecutionModeForTask(taskId).then((mode) => {
-      if (mode === 'headless-exec') return;
-      this.armCast(taskId, workspaceDir, cols, rows);
+      if (mode === 'headless-exec') {
+        this.pendingCastResizeEvents.delete(taskId);
+        return;
+      }
+      if (!this.sessions.has(taskId)) return;
+      this.armCast(taskId, workspaceDir, initialCols, initialRows);
+      const entry = this.sessionCasts.get(taskId);
+      const initialized = entry?.tail;
+      void initialized?.then(() => {
+        if (this.sessionCasts.get(taskId) !== entry) return;
+        const pending = this.pendingCastResizeEvents.get(taskId) ?? [];
+        this.pendingCastResizeEvents.delete(taskId);
+        for (const resizeData of pending) {
+          this.appendCastEvent(taskId, 'r', resizeData);
+        }
+      });
     });
   }
 
@@ -1898,37 +2814,80 @@ export class TerminalGateway
     cols: number,
     rows: number,
   ): void {
+    if (!this.terminalRecordingPolicy.sessionCast.enabled) return;
     if (this.sessionCasts.has(taskId)) return;
     const castPath = path.join(workspaceDir, SESSION_CAST_FILENAME);
+    const existingBytes = existingFileSize(castPath);
+    const initialHeader = buildCastHeaderLine(
+      cols,
+      rows,
+      Math.floor(Date.now() / 1000),
+    );
     const entry: SessionCastState = {
       castPath,
       tail: Promise.resolve(),
       startMs: Date.now(),
+      ready: false,
+      // Reserve a prospective header before any event can queue. The init tail
+      // writes it first; existing files already include their one header.
+      reservedBytes:
+        existingBytes > 0
+          ? existingBytes
+          : Buffer.byteLength(initialHeader, 'utf8'),
+      maxBytes: this.terminalRecordingPolicy.sessionCast.maxBytes,
+      pendingWrites: 1,
+      maxPendingWrites: this.terminalRecordingPolicy.maxPendingWrites,
+      truncated: false,
     };
     this.sessionCasts.set(taskId, entry);
-    entry.tail = entry.tail.then(async () => {
-      try {
-        await mkdir(path.dirname(castPath), { recursive: true });
-        const resume = await inspectCastResumeState(castPath);
-        const now = Date.now();
-        if (resume.hasHeader) {
-          entry.startMs = now - resume.lastTimeSec * 1000;
-          return;
-        }
-        entry.startMs = now;
-        if (resume.hasBytes) {
+    entry.tail = entry.tail
+      .then(async () => {
+        try {
+          await mkdir(path.dirname(castPath), { recursive: true });
+          const resume = await inspectCastResumeState(castPath);
+          entry.reservedBytes = Math.max(entry.reservedBytes, resume.sizeBytes);
+          const now = Date.now();
+          if (resume.sizeBytes > entry.maxBytes) {
+            entry.truncated = true;
+            this.logger.warn(
+              `task ${taskId}: existing session.cast exceeds the configured ${entry.maxBytes}-byte budget; recording remains stopped`,
+            );
+            return;
+          }
+          if (resume.hasHeader) {
+            entry.startMs = now - resume.lastTimeSec * 1000;
+            entry.ready = true;
+            return;
+          }
+          entry.startMs = now;
+          if (resume.hasBytes) {
+            entry.truncated = true;
+            this.logger.warn(
+              `task ${taskId}: existing session.cast has no valid header; not appending a second header`,
+            );
+            return;
+          }
+          const header = initialHeader;
+          const headerBytes = Buffer.byteLength(header, 'utf8');
+          if (headerBytes > entry.maxBytes) {
+            entry.truncated = true;
+            this.logger.warn(
+              `task ${taskId}: session.cast header exceeds the configured byte budget`,
+            );
+            return;
+          }
+          await appendFile(castPath, header);
+          entry.ready = true;
+        } catch (err) {
+          entry.truncated = true;
           this.logger.warn(
-            `task ${taskId}: existing session.cast has no valid header; not appending a second header`,
+            `task ${taskId}: session.cast header write failed: ${(err as Error).message}`,
           );
-          return;
         }
-        await appendFile(castPath, buildCastHeaderLine(cols, rows, Math.floor(now / 1000)));
-      } catch (err) {
-        this.logger.warn(
-          `task ${taskId}: session.cast header write failed: ${(err as Error).message}`,
-        );
-      }
-    });
+      })
+      .finally(() => {
+        entry.pendingWrites -= 1;
+      });
   }
 
   /**
@@ -1941,28 +2900,55 @@ export class TerminalGateway
     data: string,
   ): void {
     const entry = this.sessionCasts.get(taskId);
-    if (!entry) return;
-    entry.tail = entry.tail.then(async () => {
-      try {
-        await appendFile(
-          entry.castPath,
-          buildCastEventLine(
-            Math.max(0, (Date.now() - entry.startMs) / 1000),
-            code,
-            data,
-          ),
-        );
-      } catch (err) {
-        this.logger.warn(
-          `task ${taskId}: session.cast append failed: ${(err as Error).message}`,
-        );
-      }
-    });
+    if (!entry || entry.truncated) return;
+    const time = Math.max(0, (Date.now() - entry.startMs) / 1000);
+    const eventLine = buildCastEventLine(time, code, data);
+    const truncationLine = buildCastEventLine(
+      time,
+      'o',
+      TERMINAL_RAW_RECORDING_TRUNCATION_TEXT,
+    );
+    const eventBytes = Buffer.byteLength(eventLine, 'utf8');
+    const truncationBytes = Buffer.byteLength(truncationLine, 'utf8');
+    let line = eventLine;
+    if (
+      entry.reservedBytes + eventBytes + truncationBytes > entry.maxBytes ||
+      entry.pendingWrites + 1 >= entry.maxPendingWrites
+    ) {
+      entry.truncated = true;
+      line =
+        entry.reservedBytes + truncationBytes <= entry.maxBytes
+          ? truncationLine
+          : '';
+      this.logger.warn(
+        `task ${taskId}: session.cast reached its configured byte/pending-write capacity; recording stopped`,
+      );
+    }
+    if (line.length === 0) return;
+    entry.reservedBytes += Buffer.byteLength(line, 'utf8');
+    entry.pendingWrites += 1;
+    entry.tail = entry.tail
+      .then(async () => {
+        // Header validation/write is the first operation on this same chain.
+        // If it failed or found an invalid legacy file, do not create headerless
+        // events; the synchronously reserved queue remains capacity-bounded.
+        if (!entry.ready) return;
+        try {
+          await appendFile(entry.castPath, line);
+        } catch (err) {
+          this.logger.warn(
+            `task ${taskId}: session.cast append failed: ${(err as Error).message}`,
+          );
+        }
+      })
+      .finally(() => {
+        entry.pendingWrites -= 1;
+      });
   }
 
   /**
    * Record a chunk of PTY output as an asciicast `o` event. `chunk` is an
-   * already-decoded UTF-8 string (the AioPtyClient decodes the PTY byte stream
+   * already-decoded UTF-8 string (the SandboxTerminalSession decodes the PTY byte stream
    * before emitting), so JSON-escaping yields valid UTF-8 `data` with no
    * split-multibyte risk at this layer.
    */
@@ -1974,6 +2960,339 @@ export class TerminalGateway
   // Low-level send + helpers
   // -------------------------------------------------------------------------
 
+  private clientTaskId(state: ClientState): string | null {
+    return state.binding?.boundTaskId ?? state.requestedTaskId;
+  }
+
+  private isWriter(taskId: string, clientId: string): boolean {
+    return this.writeLock?.isWriter(taskId, clientId) ?? false;
+  }
+
+  private viewerCount(taskId: string): number {
+    let count = 0;
+    for (const state of this.clients.values()) {
+      if (
+        state.binding?.boundTaskId === taskId &&
+        (state.phase === 'attaching' || state.phase === 'attached')
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private isCurrentAttachment(
+    client: WebSocket,
+    state: ClientState,
+    session: TerminalSession,
+    generation: number,
+  ): boolean {
+    return (
+      this.clients.get(client) === state &&
+      (state.phase === 'attaching' || state.phase === 'attached') &&
+      state.generation === generation &&
+      state.binding?.generation === generation &&
+      state.binding.boundTaskId === session.taskId &&
+      this.sessions.get(session.taskId) === session &&
+      state.abortController?.signal.aborted === false
+    );
+  }
+
+  private requireBoundTask(
+    taskId: string,
+    client: WebSocket,
+    state: ClientState,
+  ): boolean {
+    if (
+      state.authenticated &&
+      state.binding?.boundTaskId === taskId &&
+      (state.phase === 'attaching' || state.phase === 'attached')
+    ) {
+      return true;
+    }
+    this.failPolicyViolation(client, state, 'cross-task or unbound terminal frame');
+    return false;
+  }
+
+  private sendAttachmentState(
+    client: WebSocket,
+    state: ClientState,
+    details: AttachmentStateDetails,
+  ): void {
+    const taskId = state.binding?.boundTaskId;
+    const geometry =
+      (taskId ? this.sessions.get(taskId)?.geometry : undefined) ??
+      state.desiredGeometry;
+    const frame: TerminalAttachmentStateFrame = {
+      channel: FRAME_CHANNEL.CONTROL,
+      type: 'terminal_attachment_state',
+      protocolVersion: TERMINAL_PROTOCOL_VERSION,
+      cols: geometry.cols,
+      rows: geometry.rows,
+      ...details,
+    };
+    this.send(client, frame);
+    if (taskId) {
+      this.emitProviderStoryEvent(taskId, {
+        type: 'attachment_state',
+        taskId,
+        attachmentId: this.providerStoryAttachmentId(state),
+        state: details.state,
+        ...('reason' in details ? { reason: details.reason } : {}),
+        cols: geometry.cols,
+        rows: geometry.rows,
+      });
+    }
+  }
+
+  private sendGeometry(
+    client: WebSocket,
+    geometry: Readonly<MutableTerminalGeometry>,
+  ): void {
+    const frame: TerminalGeometryFrame = {
+      channel: FRAME_CHANNEL.CONTROL,
+      type: 'terminal_geometry',
+      protocolVersion: TERMINAL_PROTOCOL_VERSION,
+      cols: geometry.cols,
+      rows: geometry.rows,
+    };
+    this.send(client, frame);
+  }
+
+  private broadcastGeometry(taskId: string): void {
+    const geometry = this.sessions.get(taskId)?.geometry;
+    if (!geometry) return;
+    for (const [client, state] of this.clients) {
+      if (
+        state.binding?.boundTaskId === taskId &&
+        (state.phase === 'attaching' || state.phase === 'attached')
+      ) {
+        this.sendGeometry(client, geometry);
+      }
+    }
+  }
+
+  private unavailableAttachment(
+    client: WebSocket,
+    state: ClientState,
+    reason: Extract<
+      AttachmentStateDetails,
+      { state: 'unavailable' }
+    >['reason'],
+  ): void {
+    this.recordTerminalAttachOutcome(state, reason);
+    this.sendAttachmentState(client, state, {
+      state: 'unavailable',
+      reason,
+      reloadRequired: false,
+    });
+    this.invalidateAttachment(state);
+  }
+
+  private failAttachment(
+    client: WebSocket,
+    state: ClientState,
+    reason: Extract<AttachmentStateDetails, { state: 'failed' }>['reason'],
+  ): void {
+    this.recordTerminalAttachOutcome(state, reason);
+    this.sendAttachmentState(client, state, {
+      state: 'failed',
+      reason,
+      reloadRequired: false,
+    });
+    this.invalidateAttachment(state);
+  }
+
+  private handleViewerWriteOutcome(
+    outcome: TerminalTransportWriteOutcome,
+    client: WebSocket,
+    state: ClientState,
+  ): void {
+    if (outcome === 'written') return;
+    this.failAttachment(
+      client,
+      state,
+      outcome === 'unsupported' ? 'provider_failed' : 'transport_closed',
+    );
+  }
+
+  private createTerminalQueryObserver(state: ClientState): TerminalQueryObserver {
+    return new TerminalQueryObserver({
+      ...this.terminalQueryConfig,
+      onQueueFull: ({ capacity, pending, requested }) => {
+        this.logger.warn(
+          `client ${state.clientId}: terminal query queue full ` +
+            `(capacity=${capacity}, pending=${pending}, requested=${requested})`,
+        );
+      },
+      onResponseRateLimited: ({ limit, windowMs, attemptsInWindow }) => {
+        this.logger.warn(
+          `client ${state.clientId}: terminal response rate limited ` +
+            `(limit=${limit}, windowMs=${windowMs}, attempts=${attemptsInWindow})`,
+        );
+      },
+    });
+  }
+
+  private recordTerminalAttachOutcome(
+    state: ClientState,
+    outcome: TerminalAttachOutcome,
+  ): void {
+    if (
+      !state.metricsAttachAttempted ||
+      state.metricsAttachOutcomeRecorded
+    ) {
+      return;
+    }
+    state.metricsAttachOutcomeRecorded = true;
+    this.terminalMetrics?.observeAttachOutcome(outcome);
+  }
+
+  private activateMetricsViewer(state: ClientState): void {
+    if (state.metricsViewerActive) return;
+    state.metricsViewerActive = true;
+    state.metricsViewerPaused = false;
+    this.terminalMetrics?.viewerActivated();
+  }
+
+  private deactivateMetricsViewer(state: ClientState): void {
+    if (!state.metricsViewerActive) return;
+    const wasPaused = state.metricsViewerPaused;
+    state.metricsViewerActive = false;
+    state.metricsViewerPaused = false;
+    this.terminalMetrics?.viewerDeactivated(wasPaused);
+  }
+
+  private invalidateAttachment(state: ClientState): void {
+    if (state.phase === 'closed') return;
+    this.recordTerminalAttachOutcome(state, 'cancelled');
+    const taskId = state.binding?.boundTaskId ?? null;
+    state.phase = 'closed';
+    state.generation += 1;
+    state.authAttemptEpoch += 1;
+    state.abortController?.abort();
+    state.abortController = null;
+    const queryObserver = state.queryObserver;
+    state.queryObserver = null;
+    queryObserver?.close();
+    this.deactivateMetricsViewer(state);
+    state.backpressure.reset();
+    state.backpressure.setPty(undefined);
+    for (const subscription of state.attachmentSubscriptions.splice(0)) {
+      subscription.dispose();
+    }
+    const attachment = state.attachment;
+    state.attachment = null;
+    if (attachment) {
+      this.closeViewerAttachment(attachment);
+      if (taskId) {
+        this.emitProviderStoryEvent(taskId, {
+          type: 'viewer_closed',
+          taskId,
+          attachmentId: this.providerStoryAttachmentId(state),
+        });
+      }
+    }
+    if (
+      taskId &&
+      this.writeLock?.releaseOnDisconnect(taskId, state.clientId) &&
+      this.sessions.has(taskId)
+    ) {
+      // The closed state above excludes this client from selection even when
+      // WebSocket teardown has not yet removed it from `clients`.
+      this.regrantWriteLeaseToRemaining(taskId);
+      this.broadcastLeaseState(taskId);
+    }
+  }
+
+  private closeViewerAttachment(attachment: TerminalViewerAttachment): void {
+    if (this.closedViewerAttachments.has(attachment)) return;
+    this.closedViewerAttachments.add(attachment);
+    this.trackTerminalCleanup('viewer', attachment.cleanupDecision);
+    try {
+      attachment.close();
+    } catch {
+      this.logger.warn('terminal viewer close threw');
+    }
+  }
+
+  private trackTerminalCleanup(
+    source: TerminalCleanupSource,
+    decision: Promise<TerminalTransportCleanupSettlement> | undefined,
+  ): void {
+    const tracked: TrackedTerminalCleanup = {
+      source,
+      decision: normalizeTerminalCleanupDecision(decision),
+      metricsOutcomeRecorded: false,
+    };
+    this.pendingTerminalCleanups.add(tracked);
+    void tracked.decision.then((settlement) => {
+      this.recordTerminalCleanupOutcome(tracked, settlement.kind);
+      this.pendingTerminalCleanups.delete(tracked);
+    });
+  }
+
+  private recordTerminalCleanupOutcome(
+    tracked: TrackedTerminalCleanup,
+    outcome: 'confirmed' | 'indeterminate',
+  ): void {
+    if (tracked.metricsOutcomeRecorded) return;
+    tracked.metricsOutcomeRecorded = true;
+    this.terminalMetrics?.observeCleanupOutcome(outcome);
+  }
+
+  private providerStoryAttachmentId(state: ClientState): string {
+    const generation = state.binding?.generation ?? state.generation;
+    return `${state.clientId}:${generation}`;
+  }
+
+  private emitProviderStoryEvent(
+    taskId: string,
+    event: ProviderTerminalStoryTelemetryEvent,
+  ): void {
+    const observers = this.providerStoryObservers.get(taskId);
+    if (!observers || observers.size === 0) return;
+    for (const observer of [...observers]) {
+      try {
+        observer.onEvent(event);
+      } catch {
+        // Verification telemetry must never alter terminal delivery or cleanup.
+        this.logger.warn(
+          `task ${taskId}: provider terminal story telemetry observer failed`,
+        );
+      }
+    }
+  }
+
+  private failAuthentication(client: WebSocket, state: ClientState): void {
+    state.authenticated = false;
+    state.principalIdentity = null;
+    this.invalidateAttachment(state);
+    this.closeUnauthenticated(client);
+  }
+
+  private failPolicyViolation(
+    client: WebSocket,
+    state: ClientState,
+    reason: string,
+  ): void {
+    this.logger.warn(`client ${state.clientId}: ${reason}`);
+    if (state.binding && state.phase !== 'closed') {
+      this.recordTerminalAttachOutcome(state, 'internal_error');
+      this.sendAttachmentState(client, state, {
+        state: 'failed',
+        reason: 'internal_error',
+        reloadRequired: false,
+      });
+    }
+    this.invalidateAttachment(state);
+    try {
+      client.close(1008, 'terminal attachment policy violation');
+    } catch {
+      // Best-effort; the socket may already be closing.
+    }
+  }
+
   /** Serialize and send a frame to a client if the socket is open. */
   private send(client: WebSocket, frame: RawFrame | ControlFrame): void {
     if (client.readyState !== client.OPEN) return;
@@ -1984,6 +3303,19 @@ export class TerminalGateway
   private closeUnauthenticated(client: WebSocket): void {
     try {
       client.close(1008, 'unauthorized');
+    } catch {
+      // Best-effort; the socket may already be closing.
+    }
+  }
+
+  /**
+   * A negotiated protocol/profile mismatch consumes this socket's sole attach
+   * attempt. Closing with 1008 stops automatic reconnect while preserving the
+   * already-sent reload-required control frame for the Web client.
+   */
+  private closeReloadRequired(client: WebSocket): void {
+    try {
+      client.close(1008, 'terminal client reload required');
     } catch {
       // Best-effort; the socket may already be closing.
     }
@@ -2011,11 +3343,58 @@ export class TerminalGateway
   }
 }
 
-function readSessionLogSize(workspaceDir: string): number {
-  try {
-    return statSync(path.join(workspaceDir, SESSION_LOG_FILENAME)).size;
-  } catch {
-    return 0;
+function waitForTerminalCleanup(
+  cleanup: TrackedTerminalCleanup,
+  timeoutMs: number,
+): Promise<BoundedTerminalCleanupResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ kind: 'timeout', source: cleanup.source });
+    }, timeoutMs);
+    void cleanup.decision.then((settlement) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ kind: 'settled', source: cleanup.source, settlement });
+    });
+  });
+}
+
+function principalIdentityOf(principal: OperatorPrincipal): PrincipalIdentity {
+  return Object.freeze({
+    kind: principal.kind,
+    userId: principal.user?.id ?? null,
+    keyId: principal.keyId ?? null,
+  });
+}
+
+function samePrincipalIdentity(
+  left: PrincipalIdentity,
+  right: PrincipalIdentity,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.userId === right.userId &&
+    left.keyId === right.keyId
+  );
+}
+
+function terminalQueryParameters(
+  query: TerminalQueryExpectation,
+): Readonly<Record<string, string | number | boolean>> {
+  switch (query.responseClass) {
+    case 'decrqm_ansi':
+    case 'decrqm_private':
+      return { mode: query.mode };
+    case 'decrqss':
+      return { subtype: query.subtype };
+    case 'osc_4':
+      return { colorIndex: query.colorIndex };
+    default:
+      return {};
   }
 }
 
@@ -2026,13 +3405,23 @@ async function inspectCastResumeState(
   try {
     handle = await open(castPath, 'r');
   } catch {
-    return { hasHeader: false, hasBytes: false, lastTimeSec: 0 };
+    return {
+      hasHeader: false,
+      hasBytes: false,
+      lastTimeSec: 0,
+      sizeBytes: 0,
+    };
   }
 
   try {
     const { size } = await handle.stat();
     if (size === 0) {
-      return { hasHeader: false, hasBytes: false, lastTimeSec: 0 };
+      return {
+        hasHeader: false,
+        hasBytes: false,
+        lastTimeSec: 0,
+        sizeBytes: 0,
+      };
     }
 
     const headLength = Math.min(size, CAST_RESUME_HEAD_BYTES);
@@ -2043,7 +3432,12 @@ async function inspectCastResumeState(
       ? parseAsciicastHeader(firstLine) !== null
       : false;
     if (!hasHeader) {
-      return { hasHeader: false, hasBytes: true, lastTimeSec: 0 };
+      return {
+        hasHeader: false,
+        hasBytes: true,
+        lastTimeSec: 0,
+        sizeBytes: size,
+      };
     }
 
     const tailStart = Math.max(0, size - CAST_RESUME_TAIL_BYTES);
@@ -2054,10 +3448,44 @@ async function inspectCastResumeState(
       hasHeader: true,
       hasBytes: true,
       lastTimeSec: findLastCastEventTime(tail.toString('utf8')),
+      sizeBytes: size,
     };
   } finally {
     await handle.close();
   }
+}
+
+function existingFileSize(filePath: string): number {
+  try {
+    const size = statSync(filePath).size;
+    return Number.isSafeInteger(size) && size > 0 ? size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function appendBoundedUtf8Tail(
+  previous: string,
+  chunk: string,
+  maxBytes: number,
+): string {
+  const combined = Buffer.from(`${previous}${chunk}`, 'utf8');
+  if (combined.byteLength <= maxBytes) return combined.toString('utf8');
+  // Decode only a fixed-size suffix. If the byte boundary lands inside one
+  // multibyte code point, drop the decoder's leading replacement marker.
+  return combined
+    .subarray(combined.byteLength - maxBytes)
+    .toString('utf8')
+    .replace(/^\uFFFD+/, '');
+}
+
+function formatFailureEvidenceTail(input: string): string {
+  const lines = stripAnsi(input)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+  const tail = lines.slice(-20).join('\n');
+  return tail.length > 2_000 ? tail.slice(-2_000) : tail;
 }
 
 function firstNonBlankLine(text: string): string | null {
@@ -2104,8 +3532,8 @@ function toUtf8(payload: unknown): string | null {
 
 /**
  * Resolve the workspace directory for a task, mirroring the runner's
- * `createTaskWorkspace` logic. The gateway needs this path to point the
- * SnapshotManager at the correct `session.log` for tail-replay (VR.10).
+ * `createTaskWorkspace` logic. The gateway records owner output and reads failure
+ * audit excerpts from the same persistent task workspace.
  *
  * The root is read from `WORKSPACES_DIR` — the env var every deploy target sets
  * to the persistent-volume mount (docker-compose.yml, fly.toml, Dockerfile) — so

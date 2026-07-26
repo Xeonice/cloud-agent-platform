@@ -192,6 +192,27 @@ await test('command executor helpers normalize provider command results', async 
     mod.normalizeSandboxCommandResult({ exit_code: 0, timedOut: true }).timedOut,
     true,
   );
+  assert.equal(
+    mod.normalizeSandboxCommandResult({
+      exit_code: -1,
+      status: 'no_change_timeout',
+    }).timedOut,
+    true,
+  );
+  assert.equal(
+    mod.normalizeSandboxCommandResult({
+      exit_code: -1,
+      status: 'hard_timeout',
+    }).timedOut,
+    true,
+  );
+  assert.equal(
+    mod.normalizeSandboxCommandResult({
+      exit_code: -1,
+      status: 'terminated',
+    }).timedOut,
+    false,
+  );
 
   const executor = mod.createSandboxCommandExecutor(async (request) => ({
     exitCode: 0,
@@ -1243,9 +1264,113 @@ await test('provider-neutral private archive contains one mode-0600 file', () =>
     'archive-body-only',
   );
   assert.equal(archive.subarray(512 + content.length).every((byte) => byte === 0), true);
-  assert.throws(
-    () => mod.createSandboxMode0600FileArchive('../credential', content),
-    /secret archive file name is invalid/u,
+  const hidden = Buffer.from(
+    mod.createSandboxMode0600FileArchive('.claude.json', content),
+  );
+  assert.equal(
+    hidden.toString('utf8', 0, '.claude.json'.length),
+    '.claude.json',
+  );
+  for (const invalidName of ['.', '..', '../credential', 'dir/credential', 'dir\\credential']) {
+    assert.throws(
+      () => mod.createSandboxMode0600FileArchive(invalidName, content),
+      /secret archive file name is invalid/u,
+    );
+  }
+  for (const ownership of [
+    { uid: -1, gid: 0 },
+    { uid: 0, gid: -1 },
+    { uid: 0o10000000, gid: 0 },
+    { uid: 0, gid: 0o10000000 },
+  ]) {
+    assert.throws(
+      () =>
+        mod.createSandboxMode0600FileArchive(
+          'credential.config',
+          content,
+          ownership,
+        ),
+      /secret archive ownership is invalid/u,
+    );
+  }
+});
+
+await test('runtime private files are opaque, one-shot, bounded to the configured root, and zeroed', async () => {
+  const secret = 'CAP_RUNTIME_PRIVATE_CANARY_2ce1';
+  const secretB64 = Buffer.from(secret).toString('base64');
+  const file = mod.createSandboxRuntimePrivateFile(
+    '/home/gem/.codex/auth.json',
+    secret,
+  );
+  assert.doesNotMatch(JSON.stringify(file), new RegExp(`${secret}|${secretB64}`, 'u'));
+  assert.equal(String(file).includes(secret), false);
+
+  let providerBytes;
+  let providerRequestJson;
+  let copiedContent;
+  const port = mod.createSandboxRuntimePrivateFilePort({
+    rootDirectory: '/home/gem',
+    transport: {
+      async writeFile(request) {
+        providerBytes = request.content;
+        copiedContent = Buffer.from(request.content).toString('utf8');
+        providerRequestJson = JSON.stringify(request);
+        assert.equal(request.path, '/home/gem/.codex/auth.json');
+        assert.equal(request.mode, 0o600);
+      },
+      async deleteFile() {},
+    },
+  });
+  await port.writeFile(file);
+  assert.equal(copiedContent, secret);
+  assert.doesNotMatch(providerRequestJson, new RegExp(`${secret}|${secretB64}`, 'u'));
+  assert.equal(providerBytes.every((byte) => byte === 0), true);
+  await assert.rejects(
+    port.writeFile(file),
+    /runtime private file is invalid or already consumed/u,
+  );
+
+  const forged = Object.freeze({ kind: 'sandbox-runtime-private-file' });
+  await assert.rejects(
+    port.writeFile(forged),
+    /runtime private file is invalid or already consumed/u,
+  );
+  for (const path of [
+    '/home/gem/../root/secret',
+    '/home/gem/./secret',
+    '/home/gemstone/secret',
+    '/tmp/secret',
+  ]) {
+    const invalid = mod.createSandboxRuntimePrivateFile(path, secret);
+    await assert.rejects(port.writeFile(invalid), /runtime private file/u);
+    await assert.rejects(
+      port.writeFile(invalid),
+      /runtime private file is invalid or already consumed/u,
+    );
+  }
+});
+
+await test('runtime private bytes are zeroed and handles consumed when provider transfer rejects', async () => {
+  const file = mod.createSandboxRuntimePrivateFile(
+    '/home/gem/.claude/launch-env',
+    'CAP_RUNTIME_PRIVATE_REJECT_CANARY',
+  );
+  let providerBytes;
+  const port = mod.createSandboxRuntimePrivateFilePort({
+    rootDirectory: '/home/gem',
+    transport: {
+      async writeFile(request) {
+        providerBytes = request.content;
+        throw new Error('provider-private failure detail');
+      },
+      async deleteFile() {},
+    },
+  });
+  await assert.rejects(port.writeFile(file), /provider-private failure detail/u);
+  assert.equal(providerBytes.every((byte) => byte === 0), true);
+  await assert.rejects(
+    port.writeFile(file),
+    /runtime private file is invalid or already consumed/u,
   );
 });
 
@@ -2197,4 +2322,5 @@ await test('cleanup evidence is strict, bounded, and cannot accept raw provider 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 
+await import('./sandbox-core-regressions.test.mjs');
 await import('./detached-jobs.test.mjs');

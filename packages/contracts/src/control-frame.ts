@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import { PauseFrameSchema, ResumeFrameSchema, AckFrameSchema, RawFrameSchema } from './ws-frames.js';
 import {
-  SnapshotFrameSchema,
-  TailReplayFrameSchema,
-  ReconnectFrameSchema,
+  TerminalAttachFrameSchema,
+  TerminalAttachmentStateFrameSchema,
+  TerminalGeometryFrameSchema,
+  TerminalResponseFrameSchema,
   ResizeFrameSchema,
-} from './snapshot-frames.js';
+} from './terminal-attachment-frames.js';
 import {
   PermissionRequestFrameSchema,
   DecisionFrameSchema,
@@ -20,21 +21,22 @@ import {
 import { ConnectAuthFrameSchema } from './auth.js';
 
 /**
- * The discriminated control-frame union (realtime-terminal spec, D4).
+ * The closed control-frame union (realtime-terminal spec, D4).
  *
  * Every control frame shares `channel: "control"` and is further discriminated
  * by its `type` literal. Because raw frames live under the disjoint
  * `channel: "raw"` tag, a raw frame can never be parsed as a control frame.
  */
-export const ControlFrameSchema = z.discriminatedUnion('type', [
+export const ControlFrameSchema = z.union([
   // flow control
   PauseFrameSchema,
   ResumeFrameSchema,
   AckFrameSchema,
-  // reconnect / snapshot / resize
-  SnapshotFrameSchema,
-  TailReplayFrameSchema,
-  ReconnectFrameSchema,
+  // native viewer attachment / authoritative geometry / response / resize
+  TerminalAttachFrameSchema,
+  TerminalAttachmentStateFrameSchema,
+  TerminalGeometryFrameSchema,
+  TerminalResponseFrameSchema,
   ResizeFrameSchema,
   // approvals
   PermissionRequestFrameSchema,

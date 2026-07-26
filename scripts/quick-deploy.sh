@@ -502,6 +502,15 @@ has_env_key(){
   local key="$1"
   [ -f "$ENV_FILE" ] && awk -F= -v k="$key" '$1 == k { found = 1 } END { exit found ? 0 : 1 }' "$ENV_FILE" 2>/dev/null
 }
+boxlite_path_prefix_value(){
+  if [ "${BOXLITE_PATH_PREFIX+x}" = "x" ]; then
+    printf '%s\n' "$BOXLITE_PATH_PREFIX"
+  elif has_env_key BOXLITE_PATH_PREFIX; then
+    env_file_value BOXLITE_PATH_PREFIX
+  else
+    printf '%s\n' "default"
+  fi
+}
 set_env_if_missing(){
   local key="$1" value="$2"
   [ -n "$value" ] || return 0
@@ -513,6 +522,23 @@ set_env_if_missing(){
 set_env_value(){
   local key="$1" value="$2" tmp
   [ -n "$value" ] || return 0
+  if [ ! -f "$ENV_FILE" ]; then
+    printf '%s=%s\n' "$key" "$value" >"$ENV_FILE"
+    echo "  set $key in $ENV_FILE"
+    return
+  fi
+  tmp="${ENV_FILE}.captmp"
+  awk -F= -v k="$key" -v v="$value" '
+    $1 == k { if (!done) print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$ENV_FILE" >"$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$ENV_FILE"
+  echo "  set $key in $ENV_FILE"
+}
+set_env_value_allow_empty(){
+  local key="$1" value="$2" tmp
   if [ ! -f "$ENV_FILE" ]; then
     printf '%s=%s\n' "$key" "$value" >"$ENV_FILE"
     echo "  set $key in $ENV_FILE"
@@ -1216,7 +1242,7 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   fi
   set_env_value BOXLITE_PROTOCOL_MODE "$boxlite_protocol_mode"
   set_env_value BOXLITE_RUNTIME_REQUIRED_TOOLS "$(boxlite_runtime_required_tools | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-  set_env_value BOXLITE_PATH_PREFIX "$(value_or_default BOXLITE_PATH_PREFIX default)"
+  set_env_value_allow_empty BOXLITE_PATH_PREFIX "$(boxlite_path_prefix_value)"
   set_env_value BOXLITE_PROVIDER_ID "$(value_or_default BOXLITE_PROVIDER_ID boxlite)"
   set_env_value BOXLITE_PROVIDER_PRIORITY "$(value_or_default BOXLITE_PROVIDER_PRIORITY 100)"
   set_env_value BOXLITE_PROVIDER_LOCATION "$(value_or_default BOXLITE_PROVIDER_LOCATION local)"
@@ -1277,7 +1303,7 @@ boxlite_readiness_url(){
   path="$(value_or_default BOXLITE_READINESS_PATH "")"
   if [ -z "$path" ]; then
     case "$protocol" in
-      native) path="/v1/default/boxes" ;;
+      native) path="$(boxlite_native_api_path)/boxes" ;;
       cap-rest) path="/health" ;;
       *) die "unsupported BOXLITE_PROTOCOL_MODE=$protocol (expected native|cap-rest)" ;;
     esac
@@ -1291,7 +1317,7 @@ boxlite_readiness_url(){
 
 boxlite_native_api_path(){
   local prefix
-  prefix="$(value_or_default BOXLITE_PATH_PREFIX default)"
+  prefix="$(boxlite_path_prefix_value)"
   prefix="${prefix#/}"
   prefix="${prefix%/}"
   if [ -n "$prefix" ]; then

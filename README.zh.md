@@ -49,7 +49,7 @@ Node/pnpm 由工作区统一管理（pnpm 10，Node ≥ 22）。请在仓库根�
 | 任务 | 命令 |
 | --- | --- |
 | 安装 | `pnpm install` |
-| 校验所有内容 | `pnpm verify` (= `turbo typecheck lint build`) |
+| 校验所有内容 | `pnpm verify` (= `turbo typecheck lint build` + 终端响应 profile 源一致性门禁) |
 | Web 开发服务器 | `pnpm --filter @cap/web dev` (端口 3000) |
 | Web 生产构建 | `pnpm --filter @cap/web build` |
 | Web 类型检查 | `pnpm --filter @cap/web typecheck` |

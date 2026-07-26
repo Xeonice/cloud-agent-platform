@@ -22,12 +22,13 @@ ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 
 COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs scripts/runtime-artifact-checksum.mjs /usr/local/bin/
+COPY --chmod=0755 scripts/terminal-pty-byte-bridge.py /usr/local/bin/cap-pty-byte-bridge
 
 ENV NODE_ENV=production
 ENV CAP_VERSION=${CAP_VERSION}
 ENV GIT_SHA=${GIT_SHA}
 ENV BUILD_TIME=${BUILD_TIME}
-ENV CODEX_LAUNCH_ARGV="codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox"
+ENV CODEX_LAUNCH_ARGV="codex -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -38,6 +39,7 @@ RUN apt-get update \
     gzip \
     openssh-client \
     procps \
+    python3 \
     tar \
     tmux \
     xz-utils \

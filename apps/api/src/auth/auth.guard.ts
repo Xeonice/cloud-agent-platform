@@ -31,16 +31,12 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  * route handler, so a rejected request never reaches business logic: NO state
  * change occurs on a denial.
  *
- * Connect-in sandbox callback exemption (migrate-execution-to-aio-sandbox, 5.5):
- * `/internal/sandbox/approvals` is ALSO exempt — but NOT because it is an
- * identity entry point. Under the connect-in model the per-task AIO sandbox's
- * baked Codex hook POSTs its approval/report callback IN to the orchestrator over
- * the private `cap-net` network. The sandbox is NOT a human operator and holds no
- * operator credential (neither a session nor the legacy `AUTH_TOKEN`);
- * its security boundary is network isolation plus the controller's direct-private
- * peer check (the public reverse proxy blocks the exact path), NOT an operator
- * principal. Gating it with this guard would 401 every hook callback and deadlock
- * the approval round-trip. See {@link ApprovalsController}.
+ * Sandbox compatibility-callback exemption:
+ * `/internal/sandbox/approvals` remains exempt from operator identity because any
+ * explicit adapter caller is a sandbox process, not a human operator. Current
+ * bypass-mode images do not bake/register such a caller. The dormant surface is
+ * still constrained by the controller's direct-private-peer check and the public
+ * reverse proxy's exact-path block. See {@link ApprovalsController}.
  *
  * Trust-domain boundary (task 2.8): the legacy `AUTH_TOKEN` is a DISTINCT domain
  * from the runner `TASK_TOKEN` (which authenticates a sandbox dialling back, not
@@ -55,9 +51,8 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  *     return 401 on their own when there is no session;
  *   - the local password/OTP login and first-login password-change endpoints.
  *
- * Plus the network-isolation exemption (NOT an identity probe):
- * `/internal/sandbox/approvals`,
- * the connect-in sandbox hook callback described above.
+ * Plus the private-peer compatibility-callback exemption (NOT an identity probe):
+ * `/internal/sandbox/approvals`, described above.
  *
  * Configuration is read at CHECK time, not module load, so the fail-closed
  * posture (e.g. `AUTH_TOKEN` unset while legacy auth is enabled) is evaluated
@@ -97,14 +92,9 @@ export class AuthGuard implements CanActivate {
   ];
 
   /**
-   * Paths exempt because the caller is a connect-in AIO sandbox dialling back IN
-   * over `cap-net`, NOT a human operator (migrate-execution-to-aio-sandbox, 5.5):
-   *   - `/internal/sandbox/approvals` — the baked Codex hook POSTs its callback
-   *     to the orchestrator by container name on `cap-net`. The sandbox holds no
-   *     operator credential; its security boundary is network isolation plus the
-   *     controller's direct-private peer check, so requiring an operator principal
-   *     here would 401 every callback and deadlock the approval round-trip. See
-   *     {@link ApprovalsController}.
+   * Compatibility callback path exempt because an explicit sandbox adapter is not
+   * a human operator. Current bypass-mode images have no caller. The controller's
+   * direct-private-peer check remains authoritative for this dormant surface.
    */
   private static readonly SANDBOX_EXEMPT_PATHS: readonly string[] = [
     '/internal/sandbox/approvals',
@@ -256,9 +246,9 @@ export class AuthGuard implements CanActivate {
   }
 
   /**
-   * True when the request targets a connect-in AIO sandbox callback endpoint
-   * (`/internal/sandbox/approvals`), whose controller independently enforces a
-   * direct private peer with no forwarding headers. See
+   * True when the request targets the dormant sandbox compatibility callback,
+   * whose controller independently enforces a direct private peer with no
+   * forwarding headers. See
    * {@link SANDBOX_EXEMPT_PATHS}.
    */
   private static isSandboxCallback(request: Request): boolean {

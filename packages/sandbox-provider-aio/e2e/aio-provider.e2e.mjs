@@ -86,6 +86,11 @@ test(
       await second.provider.teardownSandbox(taskId, {
         providerSandboxId: selected.providerSandboxId,
       });
+      await assertContainerStopped(
+        docker,
+        containerName,
+        selected.providerSandboxId,
+      );
       await second.provider.removeSandbox(taskId, {
         providerSandboxId: selected.providerSandboxId,
       });
@@ -210,6 +215,29 @@ async function assertContainerRemoved(docker, containerName) {
     return;
   }
   throw new Error(`AIO e2e container ${containerName} still exists after cleanup`);
+}
+
+async function assertContainerStopped(
+  docker,
+  containerName,
+  expectedContainerId,
+) {
+  const inspection = await docker.getContainer(containerName).inspect();
+  assert.equal(
+    inspection.Id,
+    expectedContainerId,
+    'teardown must retain the exact selected AIO container generation',
+  );
+  assert.equal(
+    inspection.State?.Running,
+    false,
+    `expected ${containerName} to be stopped and retained before explicit cleanup`,
+  );
+  assert.notEqual(
+    inspection.State?.Status,
+    'removing',
+    `expected ${containerName} to remain inspectable before explicit cleanup`,
+  );
 }
 
 async function forceRemoveContainer(docker, containerName) {

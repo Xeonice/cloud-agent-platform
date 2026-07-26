@@ -1,5 +1,6 @@
 import type {
   SandboxRuntimePreflightCommandDescriptor,
+  SandboxRuntimePrivateFile,
   SandboxRuntimeSetupCommandDescriptor,
   TaskModelLaunchMaterial,
 } from '@cap/sandbox';
@@ -189,6 +190,13 @@ export interface AuthMaterial {
 export interface SandboxSetupCommand {
   readonly command: string;
   readonly tolerateUnresolvedExit: boolean;
+  /**
+   * Private files staged through the provider archive/file channel before the
+   * fixed verification command runs. Their bytes never enter shell command
+   * text, argv, env, stdin, or diagnostics; the shared runner zeroes each
+   * buffer immediately after the provider settles the write.
+   */
+  readonly privateFiles?: readonly SandboxRuntimePrivateFile[];
   /** Stable diagnostic identity; callers never derive it from `command`. */
   readonly descriptor: SandboxRuntimeSetupCommandDescriptor;
 }
@@ -211,9 +219,10 @@ export interface SandboxRuntimePreflightProbe {
 
 /**
  * The runtime's declarative provision-time setup plan. `ok:false` fails the task
- * closed BEFORE any command runs (claude with no token); `ok:true` carries the
- * ORDERED commands the provider runs over the shared exec. The runtime owns NO I/O —
- * it returns commands as data; the provider (mechanism) runs them.
+ * closed BEFORE any operation runs (claude with no token); `ok:true` carries the
+ * ORDERED setup entries. Each entry first stages its private files through the
+ * provider's archive/file port and then runs a content-free verification command.
+ * The runtime owns NO I/O; the provider mechanism performs both operations.
  */
 export type SandboxSetupPlan =
   | { readonly ok: false; readonly reason: string }
@@ -232,7 +241,7 @@ export interface SandboxSetupContext {
 
 /**
  * Declarative terminal-startup POLICY (refactor-agent-runtime-policy-mechanism).
- * The SHARED pty mechanism (`AioPtyClient`) reads this to decide whether to reply to
+ * The shared provider-neutral terminal session reads this to decide whether to reply to
  * the crossterm startup DSR with a synthetic CPR and whether to inject a single
  * zero-touch Enter once output quiesces. The MECHANISM is identical for every
  * runtime; only these PARAMETERS are agent-specific, so the shared scaffolding never
@@ -348,10 +357,11 @@ export interface AgentRuntime {
 
   /**
    * Emit the pre-stop HOME-trim commands (drop caches/credentials, KEEP the
-   * transcript) the provider runs best-effort (FAIL-OPEN — a trim failure never
-   * blocks stop+retain). codex trims `~/.codex` keeping `sessions/`; claude trims
-   * `~/.claude` keeping `projects/`. Pure data; the provider owns the exec + the
-   * fail-open dispatch (timeout, warn-only). (replaces inline `trimCodexHomeBeforeStop`.)
+   * transcript). Every command must prove credential-bearing paths absent.
+   * AIO may stop+retain only after all commands settle successfully; otherwise
+   * the provider removes the exact sandbox generation. Codex keeps `sessions/`;
+   * Claude keeps `projects/`. Pure data; the provider owns execution and the
+   * force-remove fallback. (replaces inline `trimCodexHomeBeforeStop`.)
    */
   preStopTrimCommands(): readonly string[];
 

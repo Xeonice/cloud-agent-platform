@@ -3,6 +3,7 @@ import {
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
 } from '../terminal/codex-launch';
+import { createSandboxRuntimePrivateFile } from '@cap/sandbox';
 import { claudeProjectSlug } from './claude-transcript';
 import type {
   AgentRuntime,
@@ -96,13 +97,13 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    * Build the detached-tmux launch line for Claude (task 2.4):
    *
    *   tmux -u new-session -d -s task<id> -c <workspace> \
-   *     'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 CLAUDE_CODE_SANDBOXED=1 \
+   *     'CLAUDE_CODE_SANDBOXED=1 \
    *      CLAUDE_CONFIG_DIR=/home/gem/.claude \
    *      . <auth-env-file>; P="$(cat <prompt-file>)"; \
    *      claude --session-id <uuid> --dangerously-skip-permissions "$P"'
    *
-   *   - `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` keeps the TUI in the normal
-   *     buffer so the existing asciicast capture (no alt-screen branch) replays it.
+   *   - No alternate-screen override is exported for interactive execution;
+   *     Claude may use its default native terminal mode.
    *   - `CLAUDE_CODE_SANDBOXED=1` short-circuits the workspace trust gate.
    *   - `CLAUDE_CONFIG_DIR=/home/gem/.claude` pins the config/home so the
    *     pre-seeded onboarding/trust and the transcript live where we expect.
@@ -114,8 +115,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    *     AUTO-RUNS the positional prompt, so there is no Enter to inject.
    *
    * It NEVER uses `claude attach`, `claude agents`, `--bare`,
-   * or `--no-session-persistence` (each breaks the inline-buffer, auth, or
-   * transcript assumptions, or hard-refuses root).
+   * or `--no-session-persistence` (each breaks auth/session/transcript
+   * assumptions or hard-refuses root).
    */
   buildLaunchLine(ctx: LaunchContext): string {
     const sessionId = ctx.sessionId;
@@ -133,6 +134,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         (model ? ` ${model.argument}` : '') +
         ` "$P"`,
       model?.guard,
+      { disableAlternateScreen: false },
     );
     // SHARED launch mechanism: claude supplies only the inner agent line; the
     // detached-tmux wrapper is identical for every runtime (refactor step 4).
@@ -156,13 +158,11 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     // `.claude.json` pre-seed as ONE command, byte-identical to the prior
     // `injectAuth` shape. tolerateUnresolvedExit is TRUE to preserve `injectAuth`'s
     // `code !== null && code !== 0` (an unresolved exit code was treated as success).
-    const tokenB64 = Buffer.from(token, 'utf8').toString('base64');
     const snippet =
-      `export CLAUDE_CODE_OAUTH_TOKEN="$(printf %s '${tokenB64}' | base64 -d)"\n` +
+      `export CLAUDE_CODE_OAUTH_TOKEN=${shellSingleQuote(token)}\n` +
       'unset ANTHROPIC_API_KEY\n' +
       'unset ANTHROPIC_AUTH_TOKEN\n' +
       'unset apiKeyHelper\n';
-    const snippetB64 = Buffer.from(snippet, 'utf8').toString('base64');
     const file = ClaudeCodeRuntime.AUTH_ENV_FILE_PATH;
     const preseed = JSON.stringify({
       theme: 'dark',
@@ -177,34 +177,43 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         },
       },
     });
-    const preseedB64 = Buffer.from(preseed, 'utf8').toString('base64');
     const settings = JSON.stringify({
       permissions: { skipDangerousModePermissionPrompt: true },
     });
-    const settingsB64 = Buffer.from(settings, 'utf8').toString('base64');
     const claudeJson = ClaudeCodeRuntime.CLAUDE_JSON_PATH;
     const configDirClaudeJson = ClaudeCodeRuntime.CLAUDE_CONFIG_DIR_JSON_PATH;
     const settingsJson = `${dir}/settings.json`;
     commands.push({
       descriptor: { commandKind: 'credential_setup', ordinal: 1 },
       command:
-        `mkdir -p ${dir} && ` +
-        `printf %s '${snippetB64}' | base64 -d > ${file} && chmod 600 ${file} && ` +
-        `printf %s '${settingsB64}' | base64 -d > ${settingsJson} && chmod 600 ${settingsJson} && ` +
-        `printf %s '${preseedB64}' | base64 -d > ${claudeJson} && chmod 600 ${claudeJson} && ` +
-        `printf %s '${preseedB64}' | base64 -d > ${configDirClaudeJson} && chmod 600 ${configDirClaudeJson}`,
+        [file, settingsJson, claudeJson, configDirClaudeJson]
+          .map(
+            (path) =>
+              `test -s ${path} && test "$(stat -c %a ${path})" = 600`,
+          )
+          .join(' && '),
       tolerateUnresolvedExit: true,
+      privateFiles: [
+        createSandboxRuntimePrivateFile(file, snippet),
+        createSandboxRuntimePrivateFile(settingsJson, settings),
+        createSandboxRuntimePrivateFile(claudeJson, preseed),
+        createSandboxRuntimePrivateFile(configDirClaudeJson, preseed),
+      ],
     });
 
     // prompt-file write — OMITTED when there is no prompt; STRICT (an unresolved exit
     // fails closed), byte-identical to the prior adapter `injectClaudePrompt`.
     if (ctx.prompt) {
-      const b64 = Buffer.from(ctx.prompt, 'utf8').toString('base64');
       const promptFile = ClaudeCodeRuntime.PROMPT_FILE_PATH;
       commands.push({
         descriptor: { commandKind: 'runtime_setup', ordinal: 2 },
-        command: `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${promptFile} && chmod 600 ${promptFile}`,
+        command:
+          `test -s ${promptFile} && ` +
+          `test "$(stat -c %a ${promptFile})" = 600`,
         tolerateUnresolvedExit: false,
+        privateFiles: [
+          createSandboxRuntimePrivateFile(promptFile, ctx.prompt),
+        ],
       });
     }
     return { ok: true, commands };
@@ -248,10 +257,14 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   preStopTrimCommands(): readonly string[] {
     const dir = ClaudeCodeRuntime.CONFIG_DIR;
     // Drop `~/.claude` bulk but KEEP `projects/` (the session transcript) — the
-    // defense-in-depth analog of codex's `~/.codex` trim. Byte-identical to the
-    // prior adapter `trimBeforeStop`.
+    // defense-in-depth analog of codex's `~/.codex` trim. The global onboarding
+    // file is removed too; absence of the OAuth launch env is the retention gate.
     return [
-      `find ${dir} -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + 2>/dev/null; true`,
+      `find ${dir} -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + && ` +
+        `rm -f ${ClaudeCodeRuntime.CLAUDE_JSON_PATH} && ` +
+        `test ! -e ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} && ` +
+        `test ! -e ${ClaudeCodeRuntime.PROMPT_FILE_PATH} && ` +
+        `test ! -e ${ClaudeCodeRuntime.CLAUDE_JSON_PATH}`,
     ];
   }
 
@@ -353,6 +366,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         (model ? ` ${model.argument}` : '') +
         ` < /dev/null`,
       model?.guard,
+      { disableAlternateScreen: true },
     );
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
@@ -361,6 +375,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   buildResumeLine(ctx: LaunchContext, prevSessionId: string): string {
     const inner = this.guardedInner(
       `claude -p "$P" --resume ${prevSessionId} --output-format stream-json --verbose --dangerously-skip-permissions < /dev/null`,
+      '',
+      { disableAlternateScreen: true },
     );
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
@@ -370,9 +386,19 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    * The prompt remains optional, but Claude never runs unless the injected auth
    * file is readable, non-empty, sources successfully, and exports a token.
    */
-  private guardedInner(claudeCmd: string, modelGuard = ''): string {
+  private guardedInner(
+    claudeCmd: string,
+    modelGuard: string | undefined,
+    options: { readonly disableAlternateScreen: boolean },
+  ): string {
+    // Keep the pre-native headless launch bytes unchanged. Only the interactive
+    // caller opts out so Claude can select its default alternate-screen mode.
+    const terminalModeEnv = options.disableAlternateScreen
+      ? 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 '
+      : '';
     return (
-      'export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 ' +
+      'export ' +
+      terminalModeEnv +
       'CLAUDE_CODE_SANDBOXED=1 ' +
       `CLAUDE_CONFIG_DIR=${ClaudeCodeRuntime.CONFIG_DIR} && ` +
       `test -r ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} && ` +
@@ -381,8 +407,12 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null && ` +
       'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && ' +
       `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null || true)" && ` +
-      modelGuard +
+      (modelGuard ?? '') +
       claudeCmd
     );
   }
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

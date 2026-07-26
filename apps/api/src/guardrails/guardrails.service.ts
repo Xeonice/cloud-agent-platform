@@ -251,9 +251,8 @@ export interface ITerminalGateway {
   /** Remove a task's terminal session (e.g. on completion/teardown). */
   unregisterSession(taskId: string): void;
   /**
-   * Sample the tail of a task's API-side `session.log` for the failure-detail
-   * audit (record-task-failure-reason). Returns `''` when no transcript exists;
-   * never throws. Reads the API-side log, so it works after sandbox teardown.
+   * Compatibility-named seam returning bounded owner-output failure evidence.
+   * It does not require full raw `session.log` recording to be enabled.
    */
   readSessionLogTail(taskId: string): Promise<string>;
 }
@@ -1759,10 +1758,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   /**
    * Emit the `task.exited` failure-detail audit (exit code + mapped reason +
    * sampled transcript tail) for a non-success exit (record-task-failure-reason).
-   * Fire-and-forget + best-effort: it reads the API-SIDE `session.log` tail (so
-   * it works after sandbox teardown) and records a DETAIL event ALONGSIDE the
-   * central `task.failed` transition. ANY failure is swallowed so it can never
-   * affect the lifecycle transition, teardown, or slot release.
+   * Fire-and-forget + best-effort: it reads the Gateway's bounded owner-output
+   * evidence and records a DETAIL event ALONGSIDE the central `task.failed`
+   * transition. Full raw terminal recording may be disabled. ANY failure is
+   * swallowed so it can never affect lifecycle, teardown, or slot release.
    */
   private async recordExitDetail(
     taskId: string,

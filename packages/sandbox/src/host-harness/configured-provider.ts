@@ -4,6 +4,7 @@ import type {
   SandboxCommandExecutionResult,
   SandboxPreflightResult,
   SandboxProviderDescriptor,
+  SandboxRuntimePrivateFilePort,
   SandboxTranscriptSourceBase,
 } from '@cap/sandbox-core';
 import {
@@ -36,8 +37,8 @@ import {
 } from '@cap/sandbox-provider-boxlite';
 import {
   buildSandboxImageParameterSetupCommands,
+  removeSandboxImageParameterFile,
   removeSandboxImageParameterFileBestEffort,
-  scrubSandboxImageParameterSecrets,
   type SandboxHostImageParameterProfile,
 } from './image-parameters.js';
 import { materializeTaskModel } from './model-material.js';
@@ -138,6 +139,10 @@ export function createConfiguredSandboxProvider<
         readBoxLiteRuntimeRequiredTools(),
       ),
       workspacePath: boxlite.config.workspacePath,
+      requireTerminalByteBridge:
+        boxlite.config.protocolMode === 'native' &&
+        (boxlite.config.capabilities.includes('terminal.websocket') ||
+          boxlite.config.capabilities.includes('terminal.interactive')),
     });
     providers.push(
       defineBoxLiteSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>({
@@ -170,6 +175,7 @@ export function createConfiguredSandboxProvider<
           executor,
           workspacePath,
           runtimeId,
+          runtimePrivateFiles,
         }) =>
           runBoxLiteRuntimeSetup({
             taskId,
@@ -177,6 +183,7 @@ export function createConfiguredSandboxProvider<
             executor,
             workspacePath,
             runtimeId,
+            runtimePrivateFiles,
             host,
           }),
         transcriptRead: ({ taskId, runtimeId, executor, workspacePath }) =>
@@ -280,12 +287,12 @@ function createAioProviderDescriptor<
           provisionRuntimes.set(taskId, runtime);
           return runtime.id as TRuntimeId;
         },
-        getResolvedEnvironment: (taskId, runtimeId) =>
-          host.provisionLookup.getResolvedEnvironment?.(
+        getResolvedEnvironment: async (taskId, runtimeId) =>
+          (await host.provisionLookup.getResolvedEnvironment?.(
             taskId,
             'aio',
             runtimeId === null || runtimeId === undefined ? null : String(runtimeId),
-          ) ?? null,
+          )) ?? null,
       },
       runtimePreflight: async ({ taskId, executor, runtimeId }) => {
         const runtime = resolveProvisionHookRuntime({
@@ -310,7 +317,13 @@ function createAioProviderDescriptor<
           metadata: { sandboxMetadata },
         };
       },
-      runtimeSetup: async ({ taskId, modelIntent, executor, runtimeId }) => {
+      runtimeSetup: async ({
+        taskId,
+        modelIntent,
+        executor,
+        runtimeId,
+        runtimePrivateFiles,
+      }) => {
         try {
           const runtime = resolveProvisionHookRuntime({
             provisionRuntimes,
@@ -321,6 +334,7 @@ function createAioProviderDescriptor<
           });
           await runImageParameterSetup({
             executor,
+            runtimePrivateFiles,
             taskId,
             host,
             logger: host.logger,
@@ -334,6 +348,7 @@ function createAioProviderDescriptor<
             executor,
             taskId,
             runtime,
+            runtimePrivateFiles,
             workspaceDir: AIO_SANDBOX_WORKSPACE_DIR,
             host,
             logger: host.logger,
@@ -353,15 +368,9 @@ function createAioProviderDescriptor<
           host,
         }),
       preStopTrim: async ({ taskId, executor }) => {
-        await captureAndPersistAioCodexAuth({
-          host,
+        await removeSandboxImageParameterFile({
           executor,
           taskId,
-        });
-        await removeSandboxImageParameterFileBestEffort({
-          executor,
-          taskId,
-          warn: (message) => host.logger?.warn?.(message),
         });
         await trimRuntimeHomeBeforeStop({
           host,
@@ -392,11 +401,9 @@ async function resolveRuntime<
 }): Promise<SandboxHostRuntime<TAuthMaterial> | undefined> {
   try {
     return (await args.host.runtimeRegistry.resolveForTask?.(args.taskId)) ?? undefined;
-  } catch (err) {
+  } catch {
     args.host.logger?.warn?.(
-      `could not resolve AgentRuntime for ${args.providerLabel} task ${args.taskId} (defaulting): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `could not resolve AgentRuntime for ${args.providerLabel} task ${args.taskId} (defaulting)`,
     );
     return undefined;
   }
@@ -440,11 +447,9 @@ function resolveRuntimeFromId<
 }): SandboxHostRuntime<TAuthMaterial> {
   try {
     return args.host.runtimeRegistry.resolve(args.runtimeId ?? null);
-  } catch (err) {
+  } catch {
     args.host.logger?.warn?.(
-      `could not resolve AgentRuntime "${String(args.runtimeId ?? 'default')}" for ${args.providerLabel} (defaulting): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `could not resolve AgentRuntime "${String(args.runtimeId ?? 'default')}" for ${args.providerLabel} (defaulting)`,
     );
     return args.host.runtimeRegistry.resolve(null);
   }
@@ -509,6 +514,7 @@ async function runImageParameterSetup<
   TAuthMaterial,
 >(args: {
   readonly executor: SandboxCommandExecutor;
+  readonly runtimePrivateFiles: SandboxRuntimePrivateFilePort;
   readonly taskId: string;
   readonly host: SandboxHostHarness<
     TCloneSpec,
@@ -519,7 +525,7 @@ async function runImageParameterSetup<
   readonly logger?: SandboxHostLogger;
   readonly providerLabel: string;
   readonly providerFamily: 'aio' | 'boxlite';
-  readonly runtimeId?: string | null;
+  readonly runtimeId: string;
   readonly scrubOutput: (output: string) => string;
 }): Promise<void> {
   const profile = await resolveImageParameterProfile({
@@ -532,16 +538,20 @@ async function runImageParameterSetup<
   const commands = buildSandboxImageParameterSetupCommands(profile);
   if (commands.length === 0) return;
 
-  for (const { command, tolerateUnresolvedExit } of commands) {
-    const { exitCode, output } = await runSandboxCommand(args.executor, command);
-    if (setupCommandFailed(exitCode, tolerateUnresolvedExit)) {
-      const scrubbed = scrubSandboxImageParameterSecrets(
-        args.scrubOutput(output),
-        profile,
-      ).trim();
+  for (const { command, tolerateUnresolvedExit, privateFiles } of commands) {
+    try {
+      for (const file of privateFiles) {
+        await args.runtimePrivateFiles.writeFile(file);
+      }
+    } catch {
       throw new Error(
-        `image parameter setup for ${args.providerLabel} task ${args.taskId} failed: exit_code ${exitCode}` +
-          (scrubbed ? ` - ${scrubbed}` : ''),
+        `image parameter setup for ${args.providerLabel} task ${args.taskId} failed: private file write did not settle`,
+      );
+    }
+    const { exitCode } = await runSandboxCommand(args.executor, command);
+    if (setupCommandFailed(exitCode, tolerateUnresolvedExit)) {
+      throw new Error(
+        `image parameter setup for ${args.providerLabel} task ${args.taskId} failed: exit_code ${exitCode}`,
       );
     }
   }
@@ -564,7 +574,7 @@ async function resolveImageParameterProfile<
   >;
   readonly taskId: string;
   readonly providerFamily: 'aio' | 'boxlite';
-  readonly runtimeId?: string | null;
+  readonly runtimeId: string;
   readonly logger?: SandboxHostLogger;
 }): Promise<SandboxHostImageParameterProfile | null> {
   if (!args.host.provisionLookup.getTaskImageParameterProfile) return null;
@@ -573,15 +583,13 @@ async function resolveImageParameterProfile<
       (await args.host.provisionLookup.getTaskImageParameterProfile(
         args.taskId,
         args.providerFamily,
-        args.runtimeId ?? null,
+        args.runtimeId,
       )) ??
       null
     );
-  } catch (err) {
+  } catch {
     args.logger?.warn?.(
-      `task ${args.taskId}: could not resolve image parameters (skipping): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `task ${args.taskId}: could not resolve image parameters (skipping)`,
     );
     return null;
   }
@@ -649,7 +657,7 @@ async function readSandboxMetadata(args: {
   } catch (error) {
     throw new Error(
       `sandbox metadata preflight for ${args.providerLabel} task ${args.taskId} failed: ` +
-        args.scrubOutput(error instanceof Error ? error.message : String(error)),
+        args.scrubOutput(String(error)),
     );
   }
   const key = args.runtimeId === 'claude' ? 'claude-code' : args.runtimeId;
@@ -671,6 +679,7 @@ async function runRuntimeSetup<
   readonly executor: SandboxCommandExecutor;
   readonly taskId: string;
   readonly runtime: SandboxHostRuntime<TAuthMaterial>;
+  readonly runtimePrivateFiles: SandboxRuntimePrivateFilePort;
   readonly workspaceDir: string;
   readonly host: SandboxHostHarness<
     TCloneSpec,
@@ -710,6 +719,19 @@ async function runRuntimeSetup<
       command.descriptor,
       index + 1,
     );
+    try {
+      for (const file of command.privateFiles ?? []) {
+        await args.runtimePrivateFiles.writeFile(file);
+      }
+    } catch {
+      throw new SandboxRuntimeCommandExecutionError(descriptor, {
+        settlement: 'indeterminate',
+        outcome: 'indeterminate',
+        cause: 'settlement_unknown',
+        retryable: true,
+        exitCode: null,
+      });
+    }
     const classification = await classifySandboxRuntimeCommandExecution({
       executor: args.executor,
       request: { command: command.command },
@@ -760,11 +782,9 @@ async function preinstallSkills<
   let skills: readonly string[] = [];
   try {
     skills = await args.host.provisionLookup.getTaskSkills(args.taskId);
-  } catch (err) {
+  } catch {
     args.host.logger?.warn?.(
-      `task ${args.taskId}: could not resolve selected skills (skipping preinstall): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `task ${args.taskId}: could not resolve selected skills (skipping preinstall)`,
     );
     return;
   }
@@ -789,71 +809,24 @@ async function preinstallSkills<
       .command(AIO_SANDBOX_WORKSPACE_DIR)
       .join(' ')} < /dev/null`;
     try {
-      const { exitCode, output } = await args.executor.exec({
+      const { exitCode } = await args.executor.exec({
         command,
         timeoutMs: AIO_SANDBOX_SKILL_INSTALL_TIMEOUT_MS,
       });
       if (exitCode !== 0) {
-        const scrubbed = scrubAioExecSecrets(output);
         args.host.logger?.warn?.(
-          `task ${args.taskId}: skill "${id}" (${installer.label}) installer exit_code ${exitCode} - degrading (runtime launches without it)` +
-            (scrubbed ? ` - ${scrubbed.trim().slice(0, 300)}` : ''),
+          `task ${args.taskId}: skill "${id}" (${installer.label}) installer exit_code ${exitCode} - degrading (runtime launches without it)`,
         );
         continue;
       }
       args.host.logger?.debug?.(
         `task ${args.taskId}: preinstalled skill "${id}" (${installer.label})`,
       );
-    } catch (err) {
+    } catch {
       args.host.logger?.warn?.(
-        `task ${args.taskId}: skill "${id}" (${installer.label}) preinstall failed/timed out - degrading (runtime launches without it): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `task ${args.taskId}: skill "${id}" (${installer.label}) preinstall failed/timed out - degrading (runtime launches without it)`,
       );
     }
-  }
-}
-
-async function captureAndPersistAioCodexAuth<
-  TCloneSpec,
-  TRuntimeId,
-  TTranscriptSource extends SandboxTranscriptSourceBase,
-  TAuthMaterial,
->(args: {
-  readonly host: SandboxHostHarness<
-    TCloneSpec,
-    TRuntimeId,
-    TTranscriptSource,
-    TAuthMaterial
-  >;
-  readonly executor: SandboxCommandExecutor;
-  readonly taskId: string;
-}): Promise<void> {
-  if (!args.host.codexAuthSource) return;
-  try {
-    const runtime = await resolveRuntime({
-      host: args.host,
-      taskId: args.taskId,
-      providerLabel: 'AIO',
-    });
-    if (runtime && runtime.id !== 'codex') return;
-    const res = await runSandboxCommand(
-      args.executor,
-      'cat /home/gem/.codex/auth.json 2>/dev/null',
-    );
-    if (res.exitCode !== 0) return;
-    const authJson = res.output.trim();
-    if (!authJson) return;
-    await args.host.codexAuthSource.persistRefreshedAuth(
-      args.taskId,
-      authJson,
-    );
-  } catch (err) {
-    args.host.logger?.warn?.(
-      `codex auth refresh-persist skipped for ${args.taskId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
   }
 }
 
@@ -879,36 +852,33 @@ async function trimRuntimeHomeBeforeStop<
       providerLabel: 'AIO',
     })) ?? args.host.runtimeRegistry.resolve(null);
   for (const command of runtime.preStopTrimCommands()) {
-    await runTrimCommandBestEffort({
+    await runTrimCommandStrict({
       executor: args.executor,
       taskId: args.taskId,
       command,
-      logger: args.host.logger,
     });
   }
 }
 
-async function runTrimCommandBestEffort(args: {
+async function runTrimCommandStrict(args: {
   readonly executor: SandboxCommandExecutor;
   readonly taskId: string;
   readonly command: string;
-  readonly logger?: SandboxHostLogger;
 }): Promise<void> {
+  let result: SandboxCommandExecutionResult;
   try {
-    const result = await args.executor.exec({
+    result = await args.executor.exec({
       command: args.command,
       timeoutMs: AIO_SANDBOX_TRIM_TIMEOUT_MS,
     });
-    if (result.exitCode !== 0) {
-      args.logger?.warn?.(
-        `pre-stop HOME trim for task ${args.taskId} exited ${result.exitCode} (not fatal)`,
-      );
-    }
-  } catch (err) {
-    args.logger?.warn?.(
-      `pre-stop HOME trim for task ${args.taskId} failed (not fatal): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+  } catch {
+    throw new Error(
+      `pre-stop private cleanup for task ${args.taskId} did not settle`,
+    );
+  }
+  if (result.exitCode !== 0 || result.timedOut === true) {
+    throw new Error(
+      `pre-stop private cleanup for task ${args.taskId} was not confirmed`,
     );
   }
 }
@@ -1054,6 +1024,7 @@ async function runBoxLiteRuntimeSetup<
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
   readonly runtimeId?: string | null;
+  readonly runtimePrivateFiles: SandboxRuntimePrivateFilePort;
   readonly host: SandboxHostHarness<
     TCloneSpec,
     TRuntimeId,
@@ -1070,6 +1041,7 @@ async function runBoxLiteRuntimeSetup<
   });
   await runImageParameterSetup({
     executor: args.executor,
+    runtimePrivateFiles: args.runtimePrivateFiles,
     taskId: args.taskId,
     host: args.host,
     logger: args.host.logger,
@@ -1083,6 +1055,7 @@ async function runBoxLiteRuntimeSetup<
     executor: args.executor,
     taskId: args.taskId,
     runtime,
+    runtimePrivateFiles: args.runtimePrivateFiles,
     workspaceDir: args.workspacePath,
     host: args.host,
     logger: args.host.logger,

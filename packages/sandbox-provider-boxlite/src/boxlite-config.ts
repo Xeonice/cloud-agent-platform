@@ -509,6 +509,10 @@ function parseOptionalProxyUrl(
   if (!value) return undefined;
   try {
     const url = new URL(value);
+    if (url.username || url.password) {
+      errors.push(`${label} must not contain proxy credentials`);
+      return undefined;
+    }
     if (!isSupportedProxyProtocol(url.protocol)) {
       errors.push(
         `${label} must use http, https, socks4, socks4a, socks5, or socks5h`,
@@ -516,8 +520,8 @@ function parseOptionalProxyUrl(
     }
     return value;
   } catch {
-    errors.push(`${label} must be a valid proxy URL, received: ${value}`);
-    return value;
+    errors.push(`${label} must be a valid proxy URL`);
+    return undefined;
   }
 }
 

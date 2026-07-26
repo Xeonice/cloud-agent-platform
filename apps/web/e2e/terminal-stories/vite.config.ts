@@ -10,6 +10,19 @@ const webRoot = resolve(storyRoot, "../..");
 export default defineConfig({
   root: storyRoot,
   publicDir: resolve(webRoot, "public"),
+  resolve: {
+    alias: {
+      "@tanstack/react-start/server": resolve(
+        storyRoot,
+        "src/tanstack-start-server-fixture.ts",
+      ),
+      "@tanstack/react-start": resolve(
+        storyRoot,
+        "src/tanstack-start-fixture.ts",
+      ),
+      "@": resolve(webRoot, "src"),
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: 4327,

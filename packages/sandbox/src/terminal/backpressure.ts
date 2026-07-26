@@ -171,25 +171,6 @@ export class BackpressureController {
     this.pty = pty;
   }
 
-  /**
-   * Rebase both counters to a cumulative byte offset, treating everything up to
-   * `seq` as already sent AND acknowledged. Used after a snapshot + tail-replay
-   * reconnect: the client now holds every byte up to `seq`, so the gateway's
-   * next raw frame carries a cumulative `seq` past this point and the
-   * un-acknowledged total restarts from zero. Resumes the PTY if this client had
-   * paused it before the rebase.
-   */
-  rebase(seq: number): void {
-    if (seq < 0 || !Number.isFinite(seq)) {
-      throw new RangeError(`rebase seq must be a non-negative number; got ${seq}`);
-    }
-    if (this.paused) {
-      this.paused = false;
-      this.pty?.resume();
-    }
-    this.sentSeq = seq;
-    this.ackedSeq = seq;
-  }
 }
 
 /**

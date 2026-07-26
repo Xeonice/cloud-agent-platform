@@ -79,6 +79,7 @@ await test('covers manual socket states, subscriptions, and outbound helpers', a
   assert.equal(transport.readyState, 'closed');
   transport.socket = null;
   transport.state = 'connecting';
+  transport.closedLatch = false;
   assert.equal(transport.readyState, 'connecting');
 
   const socket = new FakeSocket();
@@ -86,26 +87,66 @@ await test('covers manual socket states, subscriptions, and outbound helpers', a
   socket.readyState = 0;
   assert.equal(transport.readyState, 'connecting');
   socket.readyState = 1;
+  transport.bridgeReady = true;
   assert.equal(transport.readyState, 'open');
   assert.equal(transport.sendPong(123), true);
   assert.equal(transport.sendInput('abc'), true);
+  assert.equal(transport.opaqueInputCapability, 'byte-preserving');
+  assert.equal(
+    transport.sendInputBytes(Uint8Array.of(0x00, 0x7f, 0x80, 0xff)),
+    'written',
+  );
+  assert.deepEqual(
+    Buffer.from(socket.sent.at(-1).toString('ascii').split(' ')[2], 'base64'),
+    Buffer.from([0x00, 0x7f, 0x80, 0xff]),
+  );
+  const response = Uint8Array.of(0x1b, 0x5b, 0x30, 0x6e);
+  assert.equal(transport.sendTerminalResponseBytes(response), 'written');
+  assert.deepEqual(
+    Buffer.from(socket.sent.at(-1).toString('ascii').split(' ')[2], 'base64'),
+    Buffer.from(response),
+  );
   assert.equal(transport.sendResize(80, 24), true);
   transport.pause();
   transport.resume();
   assert.equal(socket.paused, true);
   assert.equal(socket.resumed, true);
-  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent.length, 4);
+  assert.equal(transport.sendResize(1.5, 24), false);
+  assert.equal(transport.sendResize(80, 1.5), false);
+  assert.equal(transport.sendResize(0, 24), false);
+  assert.equal(transport.sendResize(80, 0), false);
+  assert.equal(transport.sendResize(1_001, 24), false);
+  assert.equal(transport.sendResize(80, 1_001), false);
+  assert.equal(transport.sendInputBytes(new Uint8Array(0)), 'written');
+  const originalSend = socket.send.bind(socket);
+  let chunkSends = 0;
+  socket.send = (payload) => {
+    originalSend(payload);
+    chunkSends += 1;
+    socket.readyState = 3;
+  };
+  assert.equal(
+    transport.sendInputBytes(new Uint8Array(16_385)),
+    'closed',
+  );
+  assert.equal(chunkSends, 1);
+  socket.send = originalSend;
 
   socket.readyState = 2;
   assert.equal(transport.readyState, 'closing');
   socket.readyState = 3;
   assert.equal(transport.readyState, 'closed');
   assert.equal(transport.sendInput('closed'), false);
+  assert.equal(transport.sendInputBytes(Uint8Array.of(0xff)), 'closed');
+  assert.equal(transport.sendTerminalResponseBytes(response), 'closed');
   assert.equal(transport.sendResize(1, 1), false);
 
   socket.readyState = 1;
   socket.closeThrows = true;
   assert.doesNotThrow(() => transport.close());
+  transport.onMessage(Buffer.alloc(0), true);
+  transport.failBridge('ignored after close');
 
   transport.emitFrame({ type: 'output', data: 'manual' });
   transport.emitError(new Error('manual error'));
@@ -117,6 +158,59 @@ await test('covers manual socket states, subscriptions, and outbound helpers', a
   errorSub.dispose();
   transport.emitFrame({ type: 'output', data: 'after-dispose' });
   transport.emitError(new Error('after-dispose'));
+  transport.emitErrorOnce(new Error('first one-shot error'));
+  transport.emitErrorOnce(new Error('duplicate one-shot error'));
+  transport.settleExecutionCreation({ kind: 'failed' });
+  transport.settleCleanup(transport.indeterminateCleanup('cleanup-unconfirmed'));
+  assert.equal(
+    await transport.fetchExecutionCleanup('past-deadline', 'GET', Date.now() - 1),
+    null,
+  );
+
+  let closeTimerCallback;
+  let connectingTerminateCalls = 0;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback) => {
+    closeTimerCallback = callback;
+    return { unref() {} };
+  };
+  try {
+    transport.closeSocketWithEof({
+      readyState: 0,
+      once() {},
+      terminate() {
+        connectingTerminateCalls += 1;
+      },
+    });
+    closeTimerCallback();
+    transport.closeSocketWithEof({
+      readyState: 0,
+      once() {},
+      terminate() {
+        throw new Error('connecting terminate failed');
+      },
+    });
+    assert.doesNotThrow(() => closeTimerCallback());
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+  assert.equal(connectingTerminateCalls, 1);
+
+  const originalDateNow = Date.now;
+  let fakeNow = 1_000;
+  Date.now = () => {
+    fakeNow += 10;
+    return fakeNow;
+  };
+  transport.cleanupPolicy = { ...transport.cleanupPolicy, timeoutMs: 1 };
+  try {
+    assert.equal(
+      (await transport.cleanupExactExecution()).cause,
+      'identity-unavailable',
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
   assert.deepEqual(frames, [{ type: 'output', data: 'manual' }]);
   assert.deepEqual(errors, ['manual error']);
   assert.deepEqual(closes, []);
@@ -258,6 +352,13 @@ await test('covers open failures, invalid exec responses, and factory creation',
       }),
     /missing sandboxId/,
   );
+  assert.throws(
+    () =>
+      new mod.BoxLiteTerminalTransport('task-invalid-generation', descriptor(), {
+        bridgeGenerationFactory: () => 'invalid generation',
+      }),
+    /generation was invalid/,
+  );
 });
 
 await test('covers binary, control, decoder, and raw payload edge cases', async () => {
@@ -266,40 +367,71 @@ await test('covers binary, control, decoder, and raw payload edge cases', async 
   const errors = [];
   transport.onFrame((frame) => frames.push(frame));
   transport.onError((error) => errors.push(error.message));
+  transport.closedLatch = false;
+  transport.state = 'connecting';
+  transport.socket = new FakeSocket();
+  const generation = transport.bridgeGeneration;
 
-  transport.onMessage(Buffer.alloc(0), true);
-  transport.onMessage(Buffer.from([99, 1, 2]), true);
-  transport.onMessage([Buffer.from([99]), Buffer.from([1])], true);
-  transport.onMessage(new Uint8Array([99, 1]).buffer, true);
   transport.onMessage('not-json', false);
   transport.onMessage('null', false);
   transport.onMessage('{}', false);
-  transport.onMessage('{"type":"error","message":"bad control"}', false);
-  transport.onMessage('{"type":"error"}', false);
-  transport.onMessage('{"type":"exit"}', false);
-
-  const splitStdout = Buffer.from('中', 'utf8');
-  const splitStderr = Buffer.from('错', 'utf8');
+  transport.onMessage(
+    [
+      Buffer.from([mod.BOXLITE_TERMINAL_CHANNELS.stdout]),
+      Buffer.from(`R ${generation} 1 500 shell 80 24\n`, 'ascii'),
+    ],
+    true,
+  );
+  const split = Buffer.from('中', 'utf8');
+  const firstOutput = Buffer.concat([
+    Buffer.from([mod.BOXLITE_TERMINAL_CHANNELS.stdout]),
+    Buffer.from(`O ${generation} 1 ${split.subarray(0, 1).toString('base64')}\n`),
+  ]);
+  transport.onMessage(
+    new Uint8Array(firstOutput).buffer,
+    true,
+  );
   transport.onMessage(
     Buffer.concat([
       Buffer.from([mod.BOXLITE_TERMINAL_CHANNELS.stdout]),
-      splitStdout.subarray(0, 1),
+      Buffer.from(`O ${generation} 2 ${split.subarray(1).toString('base64')}\n`),
+      Buffer.from(`X ${generation} child_exit 0\n`),
     ]),
     true,
   );
-  transport.onMessage(
-    Buffer.concat([
-      Buffer.from([mod.BOXLITE_TERMINAL_CHANNELS.stderr]),
-      splitStderr.subarray(0, 1),
-    ]),
-    true,
-  );
-  transport.flushOutputDecoders();
+  transport.onMessage('{"type":"exit","exit_code":0}', false);
+  transport.onMessage('{"type":"error","message":"bad control"}', false);
 
-  assert.ok(errors.includes('bad control'));
-  assert.ok(errors.includes('BoxLite terminal control error'));
-  assert.ok(frames.some((frame) => frame.type === 'exit' && frame.data === ''));
-  assert.ok(frames.some((frame) => frame.type === 'output'));
+  assert.deepEqual(errors, ['BoxLite terminal control error']);
+  assert.equal(errors.includes('bad control'), false);
+  assert.ok(frames.some((frame) => frame.type === 'exit' && frame.data === '0'));
+  assert.equal(
+    frames
+      .filter((frame) => frame.type === 'output')
+      .map((frame) => frame.data)
+      .join(''),
+    '中',
+  );
+});
+
+await test('late cleanup response cannot settle an attempt twice', async () => {
+  let resolveLateCleanup;
+  const transport = await failingTransport(async (_url, init = {}) => {
+    if (init.method === 'GET') {
+      return new Promise((resolve) => {
+        resolveLateCleanup = resolve;
+      });
+    }
+    throw new Error('start failed');
+  });
+  const attempt = transport.fetchExecutionCleanup(
+    'late-cleanup',
+    'GET',
+    Date.now() + 20,
+  );
+  assert.equal(await attempt, null);
+  resolveLateCleanup({ status: 404 });
+  await delay(10);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
