@@ -4,9 +4,9 @@ import { ForbiddenException } from '@nestjs/common';
 
 import { AccountsController } from './accounts.controller';
 import type { AccountsService } from './accounts.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 /**
  * Admin-ness is a property of the CREDENTIAL, not only of the account behind it.

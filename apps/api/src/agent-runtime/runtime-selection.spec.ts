@@ -22,12 +22,12 @@ import { Logger } from '@nestjs/common';
 
 import { IntegrationRuntimeRegistry } from './agent-runtime.integration';
 import { UnknownRuntimeError } from './agent-runtime.port';
-import { PrismaProvisionLookup } from '../sandbox/prisma-provision-lookup';
-import type { PrismaService } from '../prisma/prisma.service';
+import { PrismaProvisionLookup } from '@/sandbox/prisma-provision-lookup';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type {
   CloneSpec,
   ProvisionLookup,
-} from '../sandbox/provision-lookup.port';
+} from '@/provision-lookup/provision-lookup.port';
 
 /**
  * A real-SHAPED `ProvisionLookup` (satisfies the FULL port — not a partial fake that

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
-import type { ModelDiscoveryClient } from '../settings/model-discovery.client';
+import type { ModelDiscoveryClient } from '@/settings/model-discovery.client';
 import { CodexCompatibleModelAdapter } from './codex-compatible-model.adapter';
 import { CodexOfficialModelAdapter } from './codex-official-model.adapter';
 import { ClaudeSubscriptionModelAdapter } from './claude-subscription-model.adapter';

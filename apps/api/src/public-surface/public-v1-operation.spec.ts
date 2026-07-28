@@ -14,9 +14,9 @@ import {
 } from '@nestjs/common';
 import { firstValueFrom, of, throwError } from 'rxjs';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import { PublicSurfaceError } from './public-surface-error';
 import {
   PUBLIC_V1_OPERATION_ID_METADATA,

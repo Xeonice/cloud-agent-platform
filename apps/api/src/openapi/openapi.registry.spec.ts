@@ -29,8 +29,8 @@ import {
   TaskProvisioningDiagnosticsResponseSchema,
   type PublicV1OperationShape,
 } from '@cap/contracts';
-import { REST_PUBLIC_ERROR_MAP } from '../public-surface/public-error-mappings';
-import { decodeTaskProvisioningDiagnosticCursor } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
+import { REST_PUBLIC_ERROR_MAP } from '@/public-surface/public-error-mappings';
+import { decodeTaskProvisioningDiagnosticCursor } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
 
 import {
   buildV1OpenApiDocument,

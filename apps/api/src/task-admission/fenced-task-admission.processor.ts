@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { GuardrailsService } from '../guardrails/guardrails.service';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
 import type {
   TaskAdmissionProcessor,
   TaskAdmissionProcessorContext,
   TaskAdmissionProcessResult,
   TaskAdmissionTerminalFailure,
   TaskAdmissionTerminalRecovery,
-} from './task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 
 /**
  * Provisioning-level detached-job marker probe triage (detach-workspace-clone
@@ -20,7 +20,7 @@ export {
   triageParkedAdmissionMarkers,
   type ParkedAdmissionMarkerProbe,
   type ParkedAdmissionMarkerTriage,
-} from './parked-admission-triage';
+} from '@/admission-coordination/parked-admission-triage';
 
 /**
  * Thin DI adapter. Guardrails remains the single owner of capacity, lifecycle,

@@ -20,17 +20,17 @@ import { ForbiddenException } from '@nestjs/common';
 
 import { V1TasksController } from './v1-tasks.controller';
 import { IdempotencyService } from './idempotency.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { TasksService } from '../tasks/tasks.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { PrismaService } from '@/prisma/prisma.service';
+import { TasksService } from '@/tasks/tasks.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   RuntimeExecutionEnvironmentSnapshotSchema,
   type TaskResponse,
 } from '@cap/contracts';
 import type { CreateTaskBody } from '@cap/contracts';
-import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 
 // ---------------------------------------------------------------------------
 // Principals

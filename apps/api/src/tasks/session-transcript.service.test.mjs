@@ -28,6 +28,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import {
   mkdtempSync,
   rmSync,
@@ -83,27 +85,13 @@ function findFile(dir, name) {
 
 function compile() {
   try {
-    execFileSync(
-      tscBin,
-      [
-        serviceSrc,
+    compileSingleSource({
+    sources: [serviceSrc,
         join(__dirname, '..', 'sandbox', 'rollout-parser.ts'),
         join(__dirname, '..', 'sandbox', 'sandbox-provider.port.ts'),
-        join(__dirname, '..', 'prisma', 'prisma.service.ts'),
-        '--outDir',
-        outDir,
-        '--module',
-        'commonjs',
-        '--moduleResolution',
-        'node',
-        '--target',
-        'ES2021',
-        '--experimentalDecorators',
-        '--esModuleInterop',
-        '--skipLibCheck',
-      ],
-      { cwd: apiRoot, stdio: 'pipe' },
-    );
+        join(__dirname, '..', 'prisma', 'prisma.service.ts')].flat(),
+    outDir,
+  });
   } catch {
     // tsc EMITS JS even on type errors (expected: `prisma.sessionTranscript`
     // is unknown until Track 1's `prisma generate`). Tolerate the non-zero exit

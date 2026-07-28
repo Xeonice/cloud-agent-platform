@@ -6,12 +6,12 @@ import {
   type V1ListReposResponse,
   type V1ListTasksResponse,
 } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   TASK_RESPONSE_INCLUDE,
   taskResponseFromRecord,
-} from '../tasks/task-response';
-import { repoRowToResponse } from '../repos/repo-response';
+} from '@/tasks/task-response';
+import { repoRowToResponse } from '@/repos/repo-response';
 import {
   buildPage,
   cursorWhere,

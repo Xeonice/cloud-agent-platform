@@ -4,8 +4,8 @@ import { MODULE_METADATA } from '@nestjs/common/constants';
 import {
   EnvironmentTaskAdmissionGate,
   TASK_ADMISSION_WAKE_TOKEN,
-} from '../tasks/task-admission-gate';
-import { TasksModule } from '../tasks/tasks.module';
+} from './task-admission-gate';
+import { TasksModule } from '@/tasks/tasks.module';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TASK_ADMISSION_WORKER_OPTIONS,
@@ -13,7 +13,7 @@ import {
 import { TaskAdmissionModule } from './task-admission.module';
 import { FencedTaskAdmissionProcessor } from './fenced-task-admission.processor';
 import { TaskAdmissionWorker } from './task-admission.worker';
-import { TASK_ADMISSION_PROCESSOR_TOKEN } from './task-admission.types';
+import { TASK_ADMISSION_PROCESSOR_TOKEN } from '@/admission-coordination/task-admission.types';
 import { TaskAdmissionCapabilityController } from './task-admission-capability.controller';
 import { TaskAdmissionCapabilityService } from './task-admission-capability.service';
 

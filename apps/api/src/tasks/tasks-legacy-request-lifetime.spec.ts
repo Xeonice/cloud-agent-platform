@@ -30,22 +30,22 @@ import {
   type SandboxProvisionContext,
 } from '@cap/sandbox';
 
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   GuardrailsService,
   type GuardrailsConfig,
-} from '../guardrails/guardrails.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+} from '@/guardrails/guardrails.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import type {
   RecordTaskProvisioningDiagnosticPrimary,
   TaskProvisioningDiagnosticAttemptContext,
   TaskProvisioningDiagnosticRecorderPort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import type { PreparedTaskCreate } from './prepared-task-create';
 import {
   TasksService,

@@ -10,10 +10,10 @@ import {
   type SandboxDetachedWorkspaceTransferJob,
   type SandboxProvisionContext,
 } from '@cap/sandbox';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { GuardrailsService } from '../guardrails/guardrails.service';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
 import { FencedTaskAdmissionProcessor } from './fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
@@ -44,7 +44,7 @@ import {
   type TaskAdmissionSettleRequest,
   type TaskAdmissionSettlement,
   type TaskAdmissionTransferProgress,
-} from './task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 import {
   TaskAdmissionWorker,
   UnboundTaskAdmissionProcessor,

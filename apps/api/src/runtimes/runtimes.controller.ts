@@ -1,5 +1,5 @@
 import { Controller, Get, Req } from '@nestjs/common';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 
 import {
   RuntimesService,

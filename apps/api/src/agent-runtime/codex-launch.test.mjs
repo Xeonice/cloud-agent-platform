@@ -15,6 +15,11 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import {
+  compileSingleSource,
+  findEmitted,
+} from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,27 +46,15 @@ function assert(condition, label) {
 const outDir = mkdtempSync(join(apiRoot, '.codex-launch-test-'));
 
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      src,
-      '--outDir',
-      outDir,
-      '--module',
-      'commonjs',
-      '--moduleResolution',
-      'node',
-      '--target',
-      'ES2021',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
-  const flat = join(outDir, 'codex-launch.js');
-  if (existsSync(flat)) return flat;
-  const nested = join(outDir, 'terminal', 'codex-launch.js');
-  if (existsSync(nested)) return nested;
+  compileSingleSource({
+    sources: [src].flat(),
+    outDir,
+  });
+  // Was a hardcoded `outDir/terminal/codex-launch.js` guess, which broke the
+  // moment the source moved directories. `findEmitted` walks the emitted tree,
+  // so where the source lives is no longer this harness's business.
+  const found = findEmitted(outDir, 'codex-launch.js');
+  if (found) return found;
   throw new Error('compiled codex-launch.js not found under ' + outDir);
 }
 

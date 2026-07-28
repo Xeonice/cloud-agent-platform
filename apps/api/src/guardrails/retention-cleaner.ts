@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { statfs } from 'node:fs/promises';
 import { createConfiguredSandboxRetentionStore } from '@cap/sandbox';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   SANDBOX_RETENTION_STORE,
   type RetainedSandbox,

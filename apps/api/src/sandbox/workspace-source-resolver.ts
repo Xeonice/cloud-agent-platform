@@ -6,8 +6,8 @@ import {
   type SandboxProviderCapability,
   type WorkspaceSource,
 } from '@cap/sandbox';
-import { PrismaService } from '../prisma/prisma.service';
-import { RepoStoreService } from '../repo-store/repo-store.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { RepoStoreService } from '@/repo-store/repo-store.service';
 
 /**
  * Workspace-source selection (add-repo-content-store D4/D5, Track 4.1).

@@ -6,12 +6,12 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { GithubImportService } from './github-import.service';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type { GithubReposClient } from './github-repos.client';
 import type { RepoResponse } from '@cap/contracts';
 import type { RepoCopyService } from './repo-copy.service';
 import type { ReposService, VerifiedRepoImport } from './repos.service';
-import { encryptToStored } from '../settings/secret-storage';
+import { encryptToStored } from '@/crypto/secret-storage';
 
 const ORIGINAL_KEY = process.env.CODEX_CRED_ENC_KEY;
 process.env.CODEX_CRED_ENC_KEY = '1'.repeat(64);

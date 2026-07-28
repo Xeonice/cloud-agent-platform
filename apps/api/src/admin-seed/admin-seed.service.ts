@@ -6,7 +6,7 @@ import {
   type OnApplicationBootstrap,
 } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 /**
  * Default-admin bootstrap (add-private-account-identity, track admin-bootstrap —

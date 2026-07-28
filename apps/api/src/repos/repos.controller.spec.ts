@@ -13,8 +13,8 @@ import {
   type CreateRepoBody,
   type RepoResponse,
 } from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import { ReposController } from './repos.controller';
 import type { ReposService } from './repos.service';
 

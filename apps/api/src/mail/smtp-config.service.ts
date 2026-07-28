@@ -1,15 +1,15 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import type { ResolvedSmtpConfig } from './mail.service';
 import {
   decryptStored,
   encryptToStored,
   isEncryptionKeyConfigured,
-} from '../settings/secret-storage';
+} from '@/crypto/secret-storage';
 import {
   EncryptionKeyUnavailableError,
   maskApiKeySuffix,
-} from '../settings/settings-crypto';
+} from '@/crypto/settings-crypto';
 
 /**
  * Persisted-DB SMTP configuration service (add-smtp-config-ui, track

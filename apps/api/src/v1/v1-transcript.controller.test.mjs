@@ -17,6 +17,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -47,24 +49,10 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.v1-transcript-test-'));
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      controllerSrc,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--experimentalDecorators',
-      '--esModuleInterop',
-      '--skipLibCheck',
-      // Must match the shared compiler baseline (@cap/tsconfig sets strict:true).
-      // Without it, discriminated-union narrowing degrades and correct code in
-      // transitively imported files reports errors the project build never sees.
-      '--strict',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [controllerSrc].flat(),
+    outDir,
+  });
   const hit = findFile(outDir, 'v1-transcript.controller.js');
   if (hit) return hit;
   throw new Error('compiled v1-transcript.controller.js not found under ' + outDir);

@@ -31,7 +31,7 @@ import { z } from 'zod';
 import {
   runWithTaskProvisioningAttemptLog,
   runWithTaskProvisioningOperationLog,
-} from '../observability/log-context';
+} from '@/observability/log-context';
 import type {
   BeginTaskProvisioningDiagnosticAttempt,
   ResumeTaskProvisioningDiagnosticAttempt,

@@ -44,12 +44,12 @@ import { ThrottlerModule, seconds } from '@nestjs/throttler';
 
 import { V1TasksController } from './v1-tasks.controller';
 import { IdempotencyService } from './idempotency.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { TasksService } from '../tasks/tasks.service';
-import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
-import { PrincipalThrottlerGuard } from '../rate-limit/principal.throttler-guard';
-import { CreateThrottleGuard } from '../rate-limit/create-throttle.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { PrismaService } from '@/prisma/prisma.service';
+import { TasksService } from '@/tasks/tasks.service';
+import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
+import { PrincipalThrottlerGuard } from '@/rate-limit/principal.throttler-guard';
+import { CreateThrottleGuard } from '@/rate-limit/create-throttle.guard';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import type { TaskResponse } from '@cap/contracts';
 
 // ---------------------------------------------------------------------------

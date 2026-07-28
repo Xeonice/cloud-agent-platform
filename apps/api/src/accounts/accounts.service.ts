@@ -5,8 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { PrismaService } from '../prisma/prisma.service';
-import { hashPassword } from '../auth/argon2';
+import { PrismaService } from '@/prisma/prisma.service';
+import { hashPassword } from '@/auth/argon2';
 
 /**
  * Admin-only account-lifecycle service (account-administration, tasks 7.1 / 7.2).

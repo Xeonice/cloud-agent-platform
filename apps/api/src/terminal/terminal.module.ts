@@ -1,19 +1,19 @@
 import { Module } from '@nestjs/common';
 import { TerminalGateway } from './terminal.gateway';
 import { ApprovalsController } from './approvals.controller';
-import { WriteLockModule } from '../write-lock/write-lock.module';
-import { TasksModule } from '../tasks/tasks.module';
-import { GuardrailsModule } from '../guardrails/guardrails.module';
-import { AuthModule } from '../auth/auth.module';
-import { SandboxModule } from '../sandbox/sandbox.module';
-import { TERMINAL_GATEWAY_TOKEN } from '../guardrails/guardrails.service';
+import { WriteLockModule } from '@/write-lock/write-lock.module';
+import { TasksModule } from '@/tasks/tasks.module';
+import { GuardrailsModule } from '@/guardrails/guardrails.module';
+import { AuthModule } from '@/auth/auth.module';
+import { SandboxModule } from '@/sandbox/sandbox.module';
+import { TERMINAL_GATEWAY_TOKEN } from '@/guardrails/guardrails.service';
 import {
   SandboxApprovalEnforcer,
   type ApprovalRouter,
-} from '../sandbox/sandbox-approval-enforcer';
+} from '@/sandbox/sandbox-approval-enforcer';
 import { ProviderTerminalStoryController } from './provider-terminal-story.controller';
 import { ProviderTerminalStoryService } from './provider-terminal-story.service';
-import { TerminalDiagnosticsMetricsModule } from '../metrics/terminal-diagnostics-metrics.module';
+import { TerminalDiagnosticsMetricsModule } from '@/metrics/terminal-diagnostics-metrics.module';
 
 /**
  * DI token for a dormant fail-closed approval primitive. There is currently no

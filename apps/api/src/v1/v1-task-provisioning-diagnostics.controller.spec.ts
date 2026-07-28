@@ -19,15 +19,15 @@ import {
   type TaskProvisioningDiagnosticsQuery,
 } from '@cap/contracts';
 
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {
   PublicV1ContractInterceptor,
   PublicV1OperationGuard,
   publicV1OperationForHandler,
-} from '../public-surface/public-v1-operation';
-import { PublicSurfaceError } from '../public-surface/public-surface-error';
-import { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
+} from '@/public-surface/public-v1-operation';
+import { PublicSurfaceError } from '@/public-surface/public-surface-error';
+import { TaskProvisioningDiagnosticsPublicQueryService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
 import { V1TaskProvisioningDiagnosticsController } from './v1-task-provisioning-diagnostics.controller';
 
 const OWNER_ID = '10000000-0000-4000-8000-000000000002';

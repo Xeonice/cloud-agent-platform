@@ -95,7 +95,7 @@ import {
   readTerminalRecordingPolicy,
   TERMINAL_RAW_RECORDING_TRUNCATION_TEXT,
   type TerminalRecordingPolicy,
-} from './terminal-recording-policy';
+} from '@/session-recording/recording-policy';
 import {
   TerminalQueryObserver,
   type TerminalQueryExpectation,
@@ -127,7 +127,7 @@ import {
   type TerminalViewerAttachmentOutcome,
 } from '@cap/sandbox';
 import type { SelectedSandboxRun } from '@cap/sandbox';
-import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
+import type { SandboxConnection } from '@/sandbox/sandbox-provider.port';
 // add-claude-code-runtime Track 3 (3.2): the gateway resolves the task's selected
 // AgentRuntime (Track 2's RuntimeRegistry) and threads it into the SandboxTerminalSession so
 // the launch / autosubmit / exit-detection seams dispatch to it. Optional injection
@@ -137,29 +137,29 @@ import {
   RUNTIME_REGISTRY,
   type AgentRuntime,
   type RuntimeRegistry,
-} from '../agent-runtime/agent-runtime.integration';
-import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
-import { WriteLockService } from '../write-lock/write-lock.service';
+} from '@/agent-runtime/agent-runtime.integration';
+import type { ExecutionMode } from '@/agent-runtime/agent-runtime.port';
+import { WriteLockService } from '@/write-lock/write-lock.service';
 // Connect-time operator SESSION authentication (replaces
 // the AUTH_TOKEN-only operator check). `resolveOperatorPrincipal` is the shared,
 // transport-agnostic decision point (also used by the REST guard), and it performs
 // the constant-time legacy-bearer comparison internally, so the gateway needs no
 // direct `constantTimeEqual` import.
-import { AuthSessionService } from '../auth/auth-session.service';
+import { AuthSessionService } from '@/auth/auth-session.service';
 import {
   resolveOperatorPrincipal,
   type OperatorPrincipal,
   type PrincipalKind,
-} from '../auth/operator-principal';
-import { readCookie, SESSION_COOKIE_NAME } from '../auth/session-token';
-import { GuardrailsService } from '../guardrails/guardrails.service';
+} from '@/principal/operator-principal';
+import { readCookie, SESSION_COOKIE_NAME } from '@/auth/session-token';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
 import {
   PROVISION_LOOKUP,
   type ProvisionLookup,
   type TaskLaunchContext,
-} from '../sandbox/provision-lookup.port';
-import { stableJson } from '../runtime-models/runtime-model-catalog.util';
-import { TerminalDiagnosticsMetricsService } from '../metrics/terminal-diagnostics-metrics.service';
+} from '@/provision-lookup/provision-lookup.port';
+import { stableJson } from '@/runtime-models/runtime-model-catalog.util';
+import { TerminalDiagnosticsMetricsService } from '@/metrics/terminal-diagnostics-metrics.service';
 
 /** A node-pty handle: a pausable producer the gateway streams to clients. */
 export interface TerminalPty extends AgentTerminalPty {

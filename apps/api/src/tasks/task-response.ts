@@ -13,7 +13,7 @@ import {
   type TaskSandboxProvider,
   type TaskStatus,
 } from '@cap/contracts';
-import { taskFailureFromRecord } from './task-failure';
+import { taskFailureFromRecord } from '@/task-failure/task-failure';
 
 /** Relations required by every full TaskResponse projection. */
 export const TASK_RESPONSE_INCLUDE = {

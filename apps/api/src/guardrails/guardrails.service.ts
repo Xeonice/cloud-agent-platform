@@ -17,20 +17,21 @@ import type {
   TaskStatus,
 } from '@cap/contracts';
 import {
-  TasksService,
   AdmissionTransitionIndeterminateError,
+  TASK_OPERATIONS,
   type AdmissionTransitionResult,
-} from '../tasks/tasks.service';
+  type TaskOperationsPort,
+} from '@/task-operations/task-operations.port';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { PrismaService } from '../prisma/prisma.service';
-import { SessionCredentialsService } from '../creds/session-credentials.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
   type SandboxProvider,
   type SelectedSandboxRun,
-} from '../sandbox/sandbox-provider.port';
+} from '@/sandbox/sandbox-provider.port';
 import {
   buildSandboxProvisionPlan,
   createExactHostGitCredential,
@@ -70,64 +71,64 @@ import {
   type TaskAdmissionProcessResult,
   type TaskAdmissionTerminalFailure,
   type TaskAdmissionTerminalRecovery,
-} from '../task-admission/task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 import {
   createThrottledTransferProgressWriter,
   type ThrottledTransferProgressWriter,
-} from '../task-admission/transfer-progress-throttle';
-import { triageParkedAdmissionMarkers } from '../task-admission/parked-admission-triage';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+} from './transfer-progress-throttle';
+import { triageParkedAdmissionMarkers } from '@/admission-coordination/parked-admission-triage';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
   type ProvisioningAuditFailure,
-} from '../audit/audit-recorder.port';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
+} from '@/audit/audit-recorder.port';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   TaskBranchResolutionError,
   TaskBranchResolver,
   isTaskBranchResolutionError,
-} from '../forge/task-branch-resolver';
-import { isWorkspaceSourceResolutionError } from '../sandbox/workspace-source-resolver';
+} from '@/forge/task-branch-resolver';
+import { isWorkspaceSourceResolutionError } from '@/sandbox/workspace-source-resolver';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
 import { CircuitBreaker, type FailureKind } from './circuit-breaker';
-import type { SemaphoreProjectionSource } from '../metrics/metrics-projection';
+import type { SemaphoreProjectionSource } from '@/runner-metrics/metrics-projection';
 import {
   RunnerMinutesLedger,
   type RunningInterval,
-} from '../metrics/runner-minutes';
+} from '@/runner-metrics/runner-minutes';
 import {
   runWithTaskLog,
   runWithTaskProvisioningAttemptLog,
-} from '../observability/log-context';
-import type { RuntimeOutputFailure } from '../agent-runtime/agent-runtime.port';
+} from '@/observability/log-context';
+import type { RuntimeOutputFailure } from '@/agent-runtime/agent-runtime.port';
 import {
   isProvisioningTaskFailureCode,
   isRuntimeTaskFailureCode,
   taskFailureFromRecord,
   type ProvisioningTaskFailureCode,
   type RuntimeTaskFailureCode,
-} from '../tasks/task-failure';
+} from '@/task-failure/task-failure';
 import {
   classifyRuntimeModelRejectionEvidence,
   type RuntimeModelRejectionEvidence,
-} from '../agent-runtime/runtime-model-rejection-evidence';
-import { isValidMaxConcurrentTasks } from '../settings/settings-logic';
+} from '@/agent-runtime/runtime-model-rejection-evidence';
+import { isValidMaxConcurrentTasks } from '@/task-concurrency/limit';
 import {
   TASK_PROVISIONING_DIAGNOSTIC_RECORDER,
   type TaskProvisioningDiagnosticRecorderPort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
 import {
   TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
   type TaskProvisioningDiagnosticsWriteGatePort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import {
   classifyTaskProvisioningDiagnosticPrimaryFailure,
   taskProvisioningDiagnosticCauseFromFailureCode,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
 import {
   tryBeginTaskProvisioningDiagnosticObserver,
   tryResumeTaskProvisioningDiagnosticObserver,
@@ -137,7 +138,7 @@ import {
   type ResumeTaskProvisioningDiagnosticObserverInput,
   type TaskProvisioningDiagnosticSettlementController,
   type TaskProvisioningDiagnosticPrimarySettlementInput,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter';
 
 const EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS = 2_000;
 const TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS = 2_000;
@@ -370,14 +371,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(GuardrailsService.name);
 
   /**
-   * `TasksService` is resolved lazily in {@link onModuleInit} (not injected in the
+   * The task operations are resolved lazily in {@link onModuleInit} (not injected in the
    * constructor) to BREAK the Tasks<->Guardrails construction cycle: TasksService
    * @Optional-injects GuardrailsService (GUARDRAILS_SERVICE_TOKEN), and a
    * constructor-time dependency back on TasksService made NestFactory.create()
    * deadlock — the app silently exited 0 mid-bootstrap (no listen). Resolving it
    * after all providers are instantiated gives both sides the real instance.
    */
-  private tasks!: TasksService;
+  private tasks!: TaskOperationsPort;
 
   /**
    * The terminal gateway, resolved lazily in {@link onModuleInit} (not injected
@@ -626,7 +627,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * Resolve `TasksService` and the terminal gateway after all providers are
+   * Resolve the task-operations port and the terminal gateway after all providers are
    * instantiated, breaking the construction cycles (see the `tasks`/`gateway`
    * field docs). `strict: false` lets the lookup cross module boundaries to the
    * TasksModule / TerminalModule providers.
@@ -637,7 +638,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * opening a session (4.2).
    */
   onModuleInit(): void {
-    this.tasks = this.moduleRef.get(TasksService, { strict: false });
+    this.tasks = this.moduleRef.get<TaskOperationsPort>(TASK_OPERATIONS, {
+      strict: false,
+    });
     try {
       this.gateway = this.moduleRef.get<ITerminalGateway>(TERMINAL_GATEWAY_TOKEN, {
         strict: false,
@@ -3668,7 +3671,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
   private async armDurableRuntime(
     taskId: string,
-    lease: import('../task-admission/task-admission.types').TaskAdmissionLeaseControls,
+    lease: import('@/admission-coordination/task-admission.types').TaskAdmissionLeaseControls,
   ): Promise<void> {
     if (this.durableRuntimeArmed.has(taskId)) return;
     await lease.authorize();

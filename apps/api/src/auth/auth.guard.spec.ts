@@ -33,8 +33,8 @@ import {
   MCP_RESOURCE_URI,
   type McpAuthInfo,
 } from './auth-session.service';
-import { McpTokensController } from '../mcp-tokens/mcp-tokens.controller';
-import { V1SchedulesController } from '../v1/v1-schedules.controller';
+import { McpTokensController } from '@/mcp-tokens/mcp-tokens.controller';
+import { V1SchedulesController } from '@/v1/v1-schedules.controller';
 
 // ---------------------------------------------------------------------------
 // Fakes

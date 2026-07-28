@@ -7,8 +7,8 @@ import {
   type TaskProvisioningDiagnosticsResponse,
 } from '@cap/contracts';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { zodParam, zodQuery } from '../repos/zod-validation.pipe';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { zodParam, zodQuery } from '@/http/zod-validation.pipe';
 import { TaskProvisioningDiagnosticsConsoleQueryService } from './task-provisioning-diagnostics-console-query.service';
 
 /**

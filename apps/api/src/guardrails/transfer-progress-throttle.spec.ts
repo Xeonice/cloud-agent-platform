@@ -11,11 +11,11 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskAdmissionTransferProgress } from './task-admission.types';
+import type { TaskAdmissionTransferProgress } from '@/admission-coordination/task-admission.types';
 import {
   createThrottledTransferProgressWriter,
   TRANSFER_PROGRESS_WRITE_INTERVAL_MS,
-} from './transfer-progress-throttle';
+} from '@/guardrails/transfer-progress-throttle';
 
 function snapshot(receivedBytes: number): TaskAdmissionTransferProgress {
   return {

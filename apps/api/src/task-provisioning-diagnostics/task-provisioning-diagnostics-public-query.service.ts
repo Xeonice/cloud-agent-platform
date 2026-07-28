@@ -4,7 +4,7 @@ import {
   type TaskProvisioningDiagnosticsResponse,
 } from '@cap/contracts';
 
-import { PublicSurfaceError } from '../public-surface/public-surface-error';
+import { PublicSurfaceError } from '@/public-surface/public-surface-error';
 import {
   assertTaskProvisioningDiagnosticsReadOpen,
   TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import {
   encryptSecret,
   resolveEncryptionKey,
-} from '../settings/settings-crypto';
+} from '@/crypto/settings-crypto';
 import { EnvClaudeAuthSource } from './env-claude-auth-source';
 import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
 

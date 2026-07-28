@@ -10,9 +10,9 @@ import {
   type UpdateScheduleRequest,
 } from '@cap/contracts';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { ScheduledTasksController } from './scheduled-tasks.controller';
 import type { ScheduledTasksService } from './scheduled-tasks.service';
 

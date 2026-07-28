@@ -19,10 +19,10 @@ import {
   type TestSmtpConfigRequest,
   type TestSmtpConfigResponse,
 } from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { isAdminPrincipal } from '../auth/admin';
-import { PrismaService } from '../prisma/prisma.service';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { isAdminPrincipal } from '@/principal/admin';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { SmtpConfigService } from './smtp-config.service';
 
 /**

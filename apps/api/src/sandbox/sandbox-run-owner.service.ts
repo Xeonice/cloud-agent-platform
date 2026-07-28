@@ -44,7 +44,7 @@ import {
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 const ACTIVE_SANDBOX_RUN_STATUSES: readonly SandboxRunOwnerStatus[] = [
   'provisioning',

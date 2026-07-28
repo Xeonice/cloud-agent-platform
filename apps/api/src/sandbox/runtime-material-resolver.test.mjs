@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,31 +35,10 @@ function findFile(root, fileName) {
 
 function compile() {
   mkdirSync(outDir, { recursive: true });
-  execFileSync(
-    'pnpm',
-    [
-      'exec',
-      'tsc',
-      '--module',
-      'commonjs',
-      '--moduleResolution',
-      'node',
-      '--target',
-      'ES2021',
-      '--skipLibCheck',
-      '--esModuleInterop',
-      '--types',
-      'node',
-      '--outDir',
-      outDir,
-      'src/sandbox/runtime-material-resolver.ts',
-      'src/sandbox/codex-auth-source.port.ts',
-      'src/sandbox/claude-auth-source.port.ts',
-      'src/agent-runtime/agent-runtime.port.ts',
-      'src/settings/assert-safe-provider-url.ts',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [resolve(apiRoot, 'src/sandbox/runtime-material-resolver.ts'), resolve(apiRoot, 'src/sandbox/codex-auth-source.port.ts'), resolve(apiRoot, 'src/sandbox/claude-auth-source.port.ts'), resolve(apiRoot, 'src/agent-runtime/agent-runtime.port.ts'), resolve(apiRoot, 'src/settings/assert-safe-provider-url.ts')],
+    outDir,
+  });
   const compiled = findFile(outDir, 'runtime-material-resolver.js');
   assert(compiled && existsSync(compiled), 'compiled runtime-material-resolver.js exists');
   return compiled;

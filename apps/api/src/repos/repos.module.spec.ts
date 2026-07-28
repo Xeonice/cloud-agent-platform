@@ -14,8 +14,8 @@ import { Global, Module } from '@nestjs/common';
 import { MODULE_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 
-import { PrismaService } from '../prisma/prisma.service';
-import { RepoStoreService } from '../repo-store/repo-store.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { RepoStoreService } from '@/repo-store/repo-store.service';
 import { LocalRepoImportService } from './local-import.service';
 import { RepoCopyController } from './repo-copy.controller';
 import { RepoCopyService } from './repo-copy.service';

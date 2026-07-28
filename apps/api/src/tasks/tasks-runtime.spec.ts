@@ -22,12 +22,12 @@ import {
   type IAgentRuntimeRegistry,
   type IRuntimeReadiness,
 } from './tasks.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import type { Runtime, RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
-import type { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
+import type { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
 
 // ---------------------------------------------------------------------------
 // Helpers

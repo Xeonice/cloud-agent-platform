@@ -12,7 +12,7 @@ import {
   type TaskProvisioningDiagnosticsResponse,
 } from '@cap/contracts';
 
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type { TaskProvisioningDiagnosticRecorderResult } from './task-provisioning-diagnostic-recorder.port';
 import { TaskProvisioningDiagnosticsConsoleQueryService } from './task-provisioning-diagnostics-console-query.service';
 import type { TaskProvisioningDiagnosticsCapabilityGatePort } from './task-provisioning-diagnostics-deployment-gate.port';

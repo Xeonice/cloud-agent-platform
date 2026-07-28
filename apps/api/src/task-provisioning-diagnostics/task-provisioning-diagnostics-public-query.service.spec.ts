@@ -7,7 +7,7 @@ import {
   type TaskProvisioningDiagnosticsResponse,
 } from '@cap/contracts';
 
-import { PublicSurfaceError } from '../public-surface/public-surface-error';
+import { PublicSurfaceError } from '@/public-surface/public-surface-error';
 import type { TaskProvisioningDiagnosticRecorderResult } from './task-provisioning-diagnostic-recorder.port';
 import type { TaskProvisioningDiagnosticsCapabilityGatePort } from './task-provisioning-diagnostics-deployment-gate.port';
 import { TaskProvisioningDiagnosticsPublicQueryService } from './task-provisioning-diagnostics-public-query.service';

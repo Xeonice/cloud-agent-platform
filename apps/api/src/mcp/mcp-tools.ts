@@ -57,12 +57,12 @@ import {
   type V1ListTasksResponse,
   type V1ScheduleListQuery,
 } from '@cap/contracts';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import {
   PublicSurfaceError,
   normalizePublicSurfaceFailure,
   projectPublicSurfaceErrorToMcp,
-} from '../public-surface/public-surface-error';
+} from '@/public-surface/public-surface-error';
 
 /**
  * The NARROW slice of `McpServer.registerTool` the tools use. Declared as a local

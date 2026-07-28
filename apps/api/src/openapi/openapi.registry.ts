@@ -33,7 +33,7 @@ import {
 import {
   PUBLIC_ERROR_SEMANTICS,
   REST_PUBLIC_ERROR_MAP,
-} from '../public-surface/public-error-mappings';
+} from '@/public-surface/public-error-mappings';
 
 /** The public API surface version, independent of the deployed build version. */
 export const V1_OPENAPI_INFO = {

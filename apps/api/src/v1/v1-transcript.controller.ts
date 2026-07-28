@@ -1,5 +1,5 @@
-import { type IAgentRuntimeRegistry } from '../tasks/tasks.service';
-import { RUNTIME_REGISTRY } from '../sandbox/sandbox.module';
+import { type IAgentRuntimeRegistry } from '@/tasks/tasks.service';
+import { RUNTIME_REGISTRY } from '@/sandbox/sandbox.module';
 import {
   Get,
   Inject,
@@ -11,20 +11,20 @@ import {
   PublicV1Input,
   PublicV1Operation,
   requirePublicV1Principal,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
-import { TasksService } from '../tasks/tasks.service';
+} from '@/sandbox/sandbox-provider.port';
+import { TasksService } from '@/tasks/tasks.service';
 import {
   TRANSCRIPT_STORE,
   type TranscriptStore,
   AUDIT_TIMELINE_READER,
   type AuditTimelineReader,
-} from '../tasks/session-history.controller';
-import { readTaskTranscript } from '../tasks/task-transcript-reader';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+} from '@/tasks/session-history.controller';
+import { readTaskTranscript } from '@/tasks/task-transcript-reader';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 
 /**
  * `/v1` transcript surface (public-v1-api, D1) — `GET /v1/tasks/:id/transcript`,

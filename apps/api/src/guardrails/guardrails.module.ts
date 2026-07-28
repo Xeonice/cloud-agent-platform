@@ -1,6 +1,6 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { TasksModule } from '../tasks/tasks.module';
+import { TasksModule } from '@/tasks/tasks.module';
 import {
   DEFAULT_GUARDRAILS_CONFIG,
   GuardrailsConfig,
@@ -8,28 +8,28 @@ import {
   TRANSCRIPT_SERVICE_TOKEN,
   type ITranscriptCapture,
 } from './guardrails.service';
-import { SessionTranscriptService } from '../tasks/session-transcript.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { SessionTranscriptService } from '@/tasks/session-transcript.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { RetentionCleaner } from './retention-cleaner';
 import {
   SANDBOX_RETENTION_STORE,
 } from './sandbox-retention-store';
 import { createConfiguredSandboxRetentionStore } from '@cap/sandbox';
-import { SessionCredentialsService } from '../creds/session-credentials.service';
-import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { PROVISION_LOOKUP, type ProvisionLookup } from '../sandbox/provision-lookup.port';
+import { SessionCredentialsService } from '@/creds/session-credentials.service';
+import { SANDBOX_PROVIDER, type SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { PROVISION_LOOKUP, type ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
-} from '../audit/audit-recorder.port';
+} from '@/audit/audit-recorder.port';
 import {
   TASK_PROVISIONING_DIAGNOSTIC_RECORDER,
   type TaskProvisioningDiagnosticRecorderPort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
 import {
   TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
   type TaskProvisioningDiagnosticsWriteGatePort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 
 /**
  * Guardrails module (integration 12.1b).

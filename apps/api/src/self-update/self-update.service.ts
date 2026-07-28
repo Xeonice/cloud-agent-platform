@@ -2,11 +2,11 @@ import os from 'node:os';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import Docker from 'dockerode';
 
-import { UpdateStatusService } from '../update-status/update-status.service';
+import { UpdateStatusService } from '@/update-status/update-status.service';
 import {
   SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
   type SandboxEnvironmentsService,
-} from '../sandbox-environments/sandbox-environments.service';
+} from '@/sandbox-environments/sandbox-environments.service';
 
 /**
  * The env var that HARD-GATES self-update (self-update-action, design D1).

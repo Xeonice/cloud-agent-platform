@@ -11,10 +11,10 @@ import {
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { AuthSessionResponse } from '@cap/contracts';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
-import { buildSessionCookies } from '../auth/session-cookie';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
+import { buildSessionCookies } from '@/auth/session-cookie';
 import { EmailOtpService } from './email-otp.service';
-import { MailService } from '../mail/mail.service';
+import { MailService } from '@/mail/mail.service';
 
 /**
  * Request body for `POST /auth/otp/request` — just the email a code is requested

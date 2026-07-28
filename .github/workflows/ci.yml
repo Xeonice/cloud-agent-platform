@@ -206,6 +206,14 @@ jobs:
       - name: Provider contract parity gate
         run: pnpm test:provider-parity
 
+      # The layout contract `monorepo-foundation` now states: package-internal
+      # imports go through the alias (814 `../` traversals made every directory
+      # unmovable), and directories do not depend on each other outside DI
+      # composition (14 pairs did). The composition exemption is about the
+      # IMPORTING file — a cycle with any ordinary-source import fails.
+      - name: API module layout gate
+        run: pnpm test:module-layout
+
       # App suites through the task graph. Previously three hand-named `pnpm
       # --filter` steps, which is the same allowlist failure mode one level up —
       # a new app owning tests would simply not run here. The directory filter

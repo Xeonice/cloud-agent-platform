@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 /**
  * The single tier this guard enforces — the global per-request cap. The `create`

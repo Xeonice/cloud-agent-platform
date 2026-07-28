@@ -19,8 +19,8 @@ import {
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@/sandbox/sandbox-provider.port';
+import { PrismaService } from '@/prisma/prisma.service';
 import { TerminalGateway } from './terminal.gateway';
 import type {
   ProviderTerminalStoryGatewayResourceState,

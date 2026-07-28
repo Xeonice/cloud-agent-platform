@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   decryptSecret,
   resolveEncryptionKey,
-} from '../settings/settings-crypto';
+} from '@/crypto/settings-crypto';
 import type {
   ClaudeAuthMaterial,
   ClaudeAuthSource,

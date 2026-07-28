@@ -16,9 +16,9 @@ import {
   type Scope,
   type TaskResponse,
 } from '@cap/contracts';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
-import { type AuthenticatedRequest } from '../auth/auth.guard';
-import { hasScope } from '../auth/operator-principal';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
+import { type AuthenticatedRequest } from '@/auth/auth.guard';
+import { hasScope } from '@/principal/operator-principal';
 import { TasksService } from './tasks.service';
 
 /**

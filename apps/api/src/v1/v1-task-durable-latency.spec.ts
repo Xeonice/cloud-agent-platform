@@ -8,19 +8,19 @@ import {
 } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import { PrismaService } from '../prisma/prisma.service';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import type { TaskBranchResolver } from '../forge/task-branch-resolver';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import { PrismaService } from '@/prisma/prisma.service';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
 import {
   TasksService,
   type TaskAcceptanceClient,
-} from '../tasks/tasks.service';
+} from '@/tasks/tasks.service';
 import type {
   TaskAdmissionGatePort,
   TaskAdmissionWakePort,
-} from '../tasks/task-admission-gate';
+} from '@/task-admission/task-admission-gate';
 import { IdempotencyService } from './idempotency.service';
 import { V1TasksController } from './v1-tasks.controller';
 

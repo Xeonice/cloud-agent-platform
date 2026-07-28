@@ -24,13 +24,13 @@ import { ClaudeCodeRuntime } from './claude-code-runtime';
 import {
   type LaunchContext,
 } from './agent-runtime.port';
-import { parseClaudeTranscript } from '../sandbox/claude-transcript-parser';
-import { parseTranscript } from '../sandbox/parse-transcript';
+import { parseClaudeTranscript } from '@/sandbox/claude-transcript-parser';
+import { parseTranscript } from '@/sandbox/parse-transcript';
 import {
   CODEX_PROMPT_FILE_PATH,
   headlessExitFile,
   wrapHeadlessDetachedSession,
-} from '../terminal/codex-launch';
+} from './codex-launch';
 import {
   exitCodeFromExecBody,
   selectLaunch,

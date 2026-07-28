@@ -13,13 +13,13 @@ import {
   type CreateTaskBody,
   type UpdateScheduleRequest,
 } from '@cap/contracts';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type {
   PostCommitAdmissionResult,
   TasksService,
-} from '../tasks/tasks.service';
-import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+} from '@/tasks/tasks.service';
+import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import { ScheduledTasksService } from './scheduled-tasks.service';
 
 const USER_A = 'acct-a';

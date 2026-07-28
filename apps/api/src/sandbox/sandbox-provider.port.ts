@@ -21,9 +21,9 @@ import {
   type SandboxProvisionContext,
   type SelectedSandboxRun,
 } from '@cap/sandbox';
-import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
+import type { RuntimeId } from '@/agent-runtime/agent-runtime.port';
 import type { TranscriptSource } from './transcript-source';
-import type { CloneSpec } from './provision-lookup.port';
+import type { CloneSpec } from '@/provision-lookup/provision-lookup.port';
 
 /**
  * SandboxProvider port (sandbox-provider-port, design D).

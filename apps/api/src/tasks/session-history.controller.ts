@@ -1,11 +1,11 @@
 import { type IAgentRuntimeRegistry } from './tasks.service';
-import { RUNTIME_REGISTRY } from '../sandbox/sandbox.module';
+import { RUNTIME_REGISTRY } from '@/sandbox/sandbox.module';
 import { Controller, Get, Inject, Param } from '@nestjs/common';
 import type { SessionHistory } from '@cap/contracts';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
+} from '@/sandbox/sandbox-provider.port';
 import { TasksService } from './tasks.service';
 import {
   AUDIT_TIMELINE_READER,

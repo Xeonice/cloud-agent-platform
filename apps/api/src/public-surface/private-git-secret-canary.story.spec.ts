@@ -42,48 +42,48 @@ import {
 import { createGeneratedPrivateGitFixture } from '@cap/sandbox/testing';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { AuditService } from '../audit/audit.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
-import { basicAuthHeader, type ForgeTarget } from '../forge/forge.port';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { GiteeForge } from '../forge/gitee-forge';
+import { AuditService } from '@/audit/audit.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
+import { basicAuthHeader, type ForgeTarget } from '@/forge/forge.port';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { GiteeForge } from '@/forge/gitee-forge';
 import {
   assertGitRuntimeAvailable,
   GitRuntimePreflightError,
-} from '../forge/git-runtime-preflight';
-import { GithubForge } from '../forge/github-forge';
-import { GitlabForge } from '../forge/gitlab-forge';
+} from '@/forge/git-runtime-preflight';
+import { GithubForge } from '@/forge/github-forge';
+import { GitlabForge } from '@/forge/gitlab-forge';
 import {
   RemoteRefsCommandRunner,
   type RemoteRefsCommandRequest,
   type RemoteRefsCommandResult,
-} from '../forge/remote-refs-command-runner';
-import { GitRemoteRefsProbe } from '../forge/remote-refs-probe';
-import { NodeRemoteRefsSecretStore } from '../forge/remote-refs-secret-store';
-import { TaskBranchResolver } from '../forge/task-branch-resolver';
-import { McpServerFactory } from '../mcp/mcp.server';
-import { buildV1OpenApiDocument } from '../openapi/openapi.registry';
-import { PrismaService } from '../prisma/prisma.service';
-import { ReposController } from '../repos/repos.controller';
+} from '@/forge/remote-refs-command-runner';
+import { GitRemoteRefsProbe } from '@/forge/remote-refs-probe';
+import { NodeRemoteRefsSecretStore } from '@/forge/remote-refs-secret-store';
+import { TaskBranchResolver } from '@/forge/task-branch-resolver';
+import { McpServerFactory } from '@/mcp/mcp.server';
+import { buildV1OpenApiDocument } from '@/openapi/openapi.registry';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ReposController } from '@/repos/repos.controller';
 import type { RepoResponse } from '@cap/contracts';
-import { ReposService } from '../repos/repos.service';
-import type { RepoCopyService } from '../repos/repo-copy.service';
-import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import type { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
-import { TaskProvisioningDiagnosticsMetricsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
-import { TaskProvisioningDiagnosticsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.service';
-import { TasksController } from '../tasks/tasks.controller';
+import { ReposService } from '@/repos/repos.service';
+import type { RepoCopyService } from '@/repos/repo-copy.service';
+import { SandboxRunOwnerService } from '@/sandbox/sandbox-run-owner.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import type { TaskProvisioningDiagnosticsPublicQueryService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
+import { TaskProvisioningDiagnosticsMetricsService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
+import { TaskProvisioningDiagnosticsService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.service';
+import { TasksController } from '@/tasks/tasks.controller';
 import {
   taskResponseFromRecord,
   type TaskResponseRecord,
-} from '../tasks/task-response';
-import { TasksService } from '../tasks/tasks.service';
-import { IdempotencyService } from '../v1/idempotency.service';
-import { V1TaskProvisioningDiagnosticsController } from '../v1/v1-task-provisioning-diagnostics.controller';
-import { V1TasksController } from '../v1/v1-tasks.controller';
+} from '@/tasks/task-response';
+import { TasksService } from '@/tasks/tasks.service';
+import { IdempotencyService } from '@/v1/idempotency.service';
+import { V1TaskProvisioningDiagnosticsController } from '@/v1/v1-task-provisioning-diagnostics.controller';
+import { V1TasksController } from '@/v1/v1-tasks.controller';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const REPO_ID = '22222222-2222-4222-8222-222222222222';

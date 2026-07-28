@@ -4,7 +4,7 @@ import {
   TASK_ADMISSION_V2_ENABLED_ENV,
   TaskAdmissionCapabilityService,
   evaluateTaskAdmissionV2Environment,
-} from '../task-admission/task-admission-capability.service';
+} from '@/task-admission/task-admission-capability.service';
 
 /** Rollout switch for the durable task-admission acceptance boundary. */
 export {

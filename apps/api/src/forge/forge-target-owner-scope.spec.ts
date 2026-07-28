@@ -16,9 +16,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ForgeTargetResolver } from './forge-target-resolver';
-import { encryptToStored } from '../settings/secret-storage';
+import { encryptToStored } from '@/crypto/secret-storage';
 import type { DefaultForgeRegistry, ForgeLocation } from './forge-registry';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 
 const ENV: NodeJS.ProcessEnv = { CODEX_CRED_ENC_KEY: '0'.repeat(64) };
 

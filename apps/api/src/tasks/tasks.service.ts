@@ -11,11 +11,25 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import {
+  AdmissionTransitionIndeterminateError,
+  TASK_OPERATIONS,
+  type AdmissionTransitionResult,
+  type TaskOperationsPort,
+} from '@/task-operations/task-operations.port';
+
+// Re-exported: these are the admission contract guardrails drives, and they now
+// live with the port so guardrails does not have to name this service.
+export {
+  AdmissionTransitionIndeterminateError,
+  TASK_OPERATIONS,
+  type AdmissionTransitionResult,
+};
 import type {
   ExecutionMode,
   RuntimeOutputFailure,
   TranscriptFormat,
-} from '../agent-runtime/agent-runtime.port';
+} from '@/agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
   TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
@@ -31,23 +45,23 @@ import {
   type TaskStatus,
 } from '@cap/contracts';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   IllegalTaskTransitionError,
   assertTransition,
   isTerminal,
-} from './task-lifecycle';
+} from '@/task-lifecycle/task-lifecycle';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
   type ProvisioningAuditFailure,
-} from '../audit/audit-recorder.port';
+} from '@/audit/audit-recorder.port';
 import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
   type SandboxProviderCapability,
   type SelectedSandboxRun,
-} from '../sandbox/sandbox-provider.port';
+} from '@/sandbox/sandbox-provider.port';
 import {
   selectReadoptionSandboxProvider,
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
@@ -57,42 +71,42 @@ import {
   type SandboxEnvironmentSelection,
   type SandboxResourceSnapshot,
 } from '@cap/sandbox';
-import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+import { SandboxRunOwnerService } from '@/sandbox/sandbox-run-owner.service';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
   TaskFailureWrite,
   ProvisioningTaskFailureCode,
   RuntimeTaskFailureCode,
-} from './task-failure';
-import { taskFailureFromRecord } from './task-failure';
+} from '@/task-failure/task-failure';
+import { taskFailureFromRecord } from '@/task-failure/task-failure';
 import {
   TASK_RESPONSE_INCLUDE,
   taskResponseFromRecord,
 } from './task-response';
-import { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import type { PreparedTaskCreate } from './prepared-task-create';
 import { assertRepoCopyReadyForTaskCreate } from './task-repo-copy-gate';
-import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
+import { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
 import {
   TASK_ADMISSION_CANCELLATION_TOKEN,
   type TaskAdmissionCancellationPort,
-} from '../task-admission/task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 import {
   TASK_ADMISSION_GATE_TOKEN,
   TASK_ADMISSION_WAKE_TOKEN,
   type TaskAdmissionGatePort,
   type TaskAdmissionWakePort,
-} from './task-admission-gate';
+} from '@/task-admission/task-admission-gate';
 import {
   TaskBranchResolutionError,
   TaskBranchResolver,
-} from '../forge/task-branch-resolver';
+} from '@/forge/task-branch-resolver';
 import {
   taskCreatedAuditData,
   taskCreatedAuditDedupeKey,
-} from '../audit/task-created-audit';
-import { isValidMaxConcurrentTasks } from '../settings/settings-logic';
+} from '@/audit/task-created-audit';
+import { isValidMaxConcurrentTasks } from '@/settings/settings-logic';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -149,10 +163,6 @@ export interface IGuardrailsService {
 /** DI token used when injecting the guardrails service into the tasks service. */
 export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
 
-export type AdmissionTransitionResult =
-  | 'transitioned'
-  | 'already-transitioned'
-  | 'superseded';
 
 export interface DurableAdmissionCapacityRequest {
   readonly taskId: string;
@@ -203,17 +213,6 @@ export type TaskAcceptanceClient = Pick<
  * did not receive its acknowledgement. Callers must retry resolution with the
  * same transition token and must not release their local reservation meanwhile.
  */
-export class AdmissionTransitionIndeterminateError extends Error {
-  constructor(
-    readonly taskId: string,
-    readonly next: Extract<TaskStatus, 'queued' | 'running'>,
-    readonly transitionToken: string,
-    readonly cause?: unknown,
-  ) {
-    super(`Admission transition outcome is indeterminate: ${taskId} -> ${next}`);
-    this.name = 'AdmissionTransitionIndeterminateError';
-  }
-}
 
 class DurableAdmissionAtomicSettlementError extends Error {
   constructor() {
@@ -448,6 +447,7 @@ export class RuntimeNotConfiguredException extends ServiceUnavailableException {
 @Injectable()
 export class TasksService
   implements
+    TaskOperationsPort,
     OnApplicationBootstrap,
     BeforeApplicationShutdown,
     OnApplicationShutdown

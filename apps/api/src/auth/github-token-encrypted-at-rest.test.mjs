@@ -14,10 +14,12 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
-const DIST_SETTINGS = path.resolve(here, '../../dist/settings');
+// secret-storage moved out of settings/ into crypto/ — it is a general
+// encryption concern that four directories reach for, not a settings detail.
+const DIST_CRYPTO = path.resolve(here, '../../dist/crypto');
 
 const { storeMaybeEncrypted, readMaybeEncrypted } = require(
-  path.join(DIST_SETTINGS, 'secret-storage.js'),
+  path.join(DIST_CRYPTO, 'secret-storage.js'),
 );
 
 // Valid 32-byte AES-256 key as 64 hex chars.

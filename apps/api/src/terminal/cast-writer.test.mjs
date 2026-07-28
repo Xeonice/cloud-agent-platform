@@ -8,6 +8,8 @@
  * Run: `node cast-writer.test.mjs` (no prior build needed — it self-compiles).
  */
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,19 +37,10 @@ function findFile(dir, name) {
 
 const outDir = mkdtempSync(join(apiRoot, '.cast-writer-test-'));
 try {
-  execFileSync(
-    tscBin,
-    [
-      src,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [src].flat(),
+    outDir,
+  });
   const compiled = findFile(outDir, 'cast-writer.js');
   if (!compiled) throw new Error('compiled cast-writer.js not found');
   const { buildCastHeaderLine, buildCastEventLine, castResizeData } = await import(

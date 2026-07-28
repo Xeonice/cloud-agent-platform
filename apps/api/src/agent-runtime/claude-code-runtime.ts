@@ -2,7 +2,7 @@ import {
   buildHasSessionCommand,
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
-} from '../terminal/codex-launch';
+} from './codex-launch';
 import { createSandboxRuntimePrivateFile } from '@cap/sandbox';
 import { claudeProjectSlug } from './claude-transcript';
 import type {

@@ -12,8 +12,8 @@ import {
   type ImportRepoRequest,
   type RepoResponse,
 } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { decryptStored } from '../settings/secret-storage';
+import { PrismaService } from '@/prisma/prisma.service';
+import { decryptStored } from '@/crypto/secret-storage';
 import {
   githubDedupKey,
   pickDefaultRepo,
@@ -26,7 +26,7 @@ import { GithubReposClient } from './github-repos.client';
 import { RepoCopyService } from './repo-copy.service';
 import { repoRowToResponse, type RepoRowProjection } from './repo-response';
 import { ReposService } from './repos.service';
-import { basicAuthHeader } from '../forge/forge.port';
+import { basicAuthHeader } from '@/forge/forge.port';
 
 /**
  * GitHub-import orchestration (be-github-import, 4.1–4.5).

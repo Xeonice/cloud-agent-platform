@@ -40,7 +40,7 @@ import type {
 import {
   PROVISION_LOOKUP,
   type ProvisionLookup,
-} from '../sandbox/provision-lookup.port';
+} from '@/provision-lookup/provision-lookup.port';
 
 /**
  * DI token the integration registry is bound under. The provider

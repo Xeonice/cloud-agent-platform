@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TaskFailureCode } from '@cap/contracts';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import { taskFailureFromRecord } from './task-failure';
-import { taskResponseFromRecord } from './task-response';
-import { TasksService } from './tasks.service';
+import { taskResponseFromRecord } from '@/tasks/task-response';
+import { TasksService } from '@/tasks/tasks.service';
 
 const FAILURE_AT = new Date('2026-07-12T12:32:31.000Z');
 

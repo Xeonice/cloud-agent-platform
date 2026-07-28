@@ -18,13 +18,13 @@ import {
 import {
   isTaskBranchResolutionError,
   type TaskBranchResolutionError,
-} from '../forge/task-branch-resolver';
-import { TaskAdmissionProcessingError } from '../task-admission/task-admission.types';
+} from '@/forge/task-branch-resolver';
+import { TaskAdmissionProcessingError } from '@/admission-coordination/task-admission.types';
 import {
   isWorkspaceSourceResolutionError,
   type WorkspaceSourceResolutionError,
-} from '../sandbox/workspace-source-resolver';
-import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
+} from '@/sandbox/workspace-source-resolver';
+import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
 
 type ClassifiedPrimaryOutcome = 'failed' | 'timed_out' | 'cancelled';
 

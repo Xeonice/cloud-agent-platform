@@ -6,15 +6,15 @@ import * as path from 'node:path';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
-import { parseTranscript } from '../sandbox/parse-transcript';
-import type { TranscriptSource } from '../sandbox/transcript-source';
-import { type RuntimeId } from '../agent-runtime/agent-runtime.port';
+} from '@/sandbox/sandbox-provider.port';
+import { parseTranscript } from '@/sandbox/parse-transcript';
+import type { TranscriptSource } from '@/sandbox/transcript-source';
+import { type RuntimeId } from '@/agent-runtime/agent-runtime.port';
 import {
   AGENT_RUNTIME_REGISTRY_TOKEN,
   type IAgentRuntimeRegistry,
 } from './tasks.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);

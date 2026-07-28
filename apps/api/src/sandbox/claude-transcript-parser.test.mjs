@@ -29,6 +29,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -48,19 +50,10 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.claude-transcript-test-'));
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      parserSrc,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [parserSrc].flat(),
+    outDir,
+  });
   const hit = findFile(outDir, 'claude-transcript-parser.js');
   if (hit) return hit;
   throw new Error('compiled claude-transcript-parser.js not found under ' + outDir);

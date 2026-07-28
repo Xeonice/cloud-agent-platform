@@ -3,7 +3,7 @@ import type {
   TaskStatus,
 } from '@cap/contracts';
 import type { SandboxResourceSnapshot } from '@cap/sandbox';
-import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
+import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
 
 export type TaskAdmissionClaimSourceState =
   | 'accepted'

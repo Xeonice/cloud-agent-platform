@@ -27,7 +27,7 @@ import {
   SmtpEnvMigrationService,
 } from './smtp-env-migration.service';
 import { SMTP_CONFIG_ROW_ID, SmtpConfigService } from './smtp-config.service';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 
 const KEY = '0'.repeat(64);
 

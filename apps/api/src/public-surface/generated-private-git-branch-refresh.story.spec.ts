@@ -3,26 +3,26 @@ import test from 'node:test';
 import { HttpException } from '@nestjs/common';
 import type { ModuleRef } from '@nestjs/core';
 import { createGeneratedPrivateGitFixture } from '@cap/sandbox/testing';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
-import type { ForgeTarget } from '../forge/forge.port';
-import type { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { GiteeForge } from '../forge/gitee-forge';
-import { GithubForge } from '../forge/github-forge';
-import { GitlabForge } from '../forge/gitlab-forge';
-import { NodeRemoteRefsCommandRunner } from '../forge/remote-refs-command-runner';
-import { GitRemoteRefsProbe } from '../forge/remote-refs-probe';
-import { NodeRemoteRefsSecretStore } from '../forge/remote-refs-secret-store';
-import { TaskBranchResolver } from '../forge/task-branch-resolver';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
+import type { ForgeTarget } from '@/forge/forge.port';
+import type { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { GiteeForge } from '@/forge/gitee-forge';
+import { GithubForge } from '@/forge/github-forge';
+import { GitlabForge } from '@/forge/gitlab-forge';
+import { NodeRemoteRefsCommandRunner } from '@/forge/remote-refs-command-runner';
+import { GitRemoteRefsProbe } from '@/forge/remote-refs-probe';
+import { NodeRemoteRefsSecretStore } from '@/forge/remote-refs-secret-store';
+import { TaskBranchResolver } from '@/forge/task-branch-resolver';
 import {
   GuardrailsService,
   type GuardrailsConfig,
-} from '../guardrails/guardrails.service';
-import type { PrismaService } from '../prisma/prisma.service';
+} from '@/guardrails/guardrails.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type { RepoResponse } from '@cap/contracts';
-import { ReposService } from '../repos/repos.service';
-import type { RepoCopyService } from '../repos/repo-copy.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import { ReposService } from '@/repos/repos.service';
+import type { RepoCopyService } from '@/repos/repo-copy.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const REPO_ID = '22222222-2222-4222-8222-222222222222';

@@ -1,5 +1,5 @@
 import type { TaskProvisioningStage } from '@cap/contracts';
-import type { TaskAdmissionTransferProgress } from './task-admission.types';
+import type { TaskAdmissionTransferProgress } from '@/admission-coordination/task-admission.types';
 
 /**
  * Time-throttled transfer-progress writer

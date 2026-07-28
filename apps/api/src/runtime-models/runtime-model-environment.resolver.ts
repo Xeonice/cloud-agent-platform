@@ -15,12 +15,12 @@ import {
   type ResolvedSandboxEnvironment,
   type SandboxEnvironmentSelection,
 } from '@cap/sandbox';
-import { PrismaService } from '../prisma/prisma.service';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
   SandboxEnvironmentValidationRunner,
   SandboxEnvironmentValidationTarget,
-} from '../sandbox-environments/sandbox-environments.validator';
+} from '@/sandbox-environments/sandbox-environments.validator';
 import type {
   RuntimeModelDeploymentEnvironmentResolver,
   RuntimeModelEnvironmentResolver,

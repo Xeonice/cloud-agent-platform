@@ -2,7 +2,7 @@ import type {
   PublicErrorCode,
   PublicV1OperationShape,
 } from '@cap/contracts';
-import type { McpAdapterMap } from '../mcp/mcp-tools';
+import type { McpAdapterMap } from '@/mcp/mcp-tools';
 
 /**
  * Compile-fail fixtures for the two exhaustive public-surface records.

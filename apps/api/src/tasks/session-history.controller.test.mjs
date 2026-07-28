@@ -33,6 +33,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -63,26 +65,12 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.session-history-test-'));
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      controllerSrc,
+  compileSingleSource({
+    sources: [controllerSrc,
       join(__dirname, '..', 'sandbox', 'rollout-parser.ts'),
-      join(__dirname, '..', 'sandbox', 'sandbox-provider.port.ts'),
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--experimentalDecorators', // legacy decorators (no emitDecoratorMetadata)
-      '--esModuleInterop',
-      '--skipLibCheck',
-      // Must match the shared compiler baseline (@cap/tsconfig sets strict:true).
-      // Without it, discriminated-union narrowing degrades and correct code in
-      // transitively imported files reports errors the project build never sees.
-      '--strict',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+      join(__dirname, '..', 'sandbox', 'sandbox-provider.port.ts')].flat(),
+    outDir,
+  });
   const hit = findFile(outDir, 'session-history.controller.js');
   if (hit) return hit;
   throw new Error('compiled session-history.controller.js not found under ' + outDir);

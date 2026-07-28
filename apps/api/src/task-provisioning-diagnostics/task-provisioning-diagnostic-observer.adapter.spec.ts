@@ -12,7 +12,7 @@ import {
 import {
   getTaskLogContext,
   runWithTaskProvisioningAttemptLog,
-} from '../observability/log-context';
+} from '@/observability/log-context';
 import type {
   TaskProvisioningDiagnosticAttemptContext,
   TaskProvisioningDiagnosticRecorderResult,

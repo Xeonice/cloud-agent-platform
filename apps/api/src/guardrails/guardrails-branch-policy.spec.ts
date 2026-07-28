@@ -3,12 +3,12 @@ import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
 
 import type { SandboxProvisionPlan } from '@cap/sandbox';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import { TaskBranchResolutionError } from '../forge/task-branch-resolver';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import { TaskBranchResolutionError } from '@/forge/task-branch-resolver';
 import type {
   CloneSpec,
   ProvisionLookup,
-} from '../sandbox/provision-lookup.port';
+} from '@/provision-lookup/provision-lookup.port';
 import {
   GuardrailsService,
   type GuardrailsConfig,

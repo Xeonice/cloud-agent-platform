@@ -31,12 +31,12 @@ import {
   RepoCopyNotReadyException,
   classifyRepoCopyGate,
 } from './task-repo-copy-gate';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   normalizePublicSurfaceFailure,
   projectPublicSurfaceErrorToMcp,
   projectPublicV1SurfaceErrorToRest,
-} from '../public-surface/public-surface-error';
+} from '@/public-surface/public-surface-error';
 
 const REPO_ID = '00000000-0000-4000-c000-000000000001';
 const TASK_ID = '00000000-0000-4000-c000-000000000002';

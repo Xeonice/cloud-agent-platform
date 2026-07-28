@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { decryptStored } from '../settings/secret-storage';
+import { PrismaService } from '@/prisma/prisma.service';
+import { decryptStored } from '@/crypto/secret-storage';
 import {
   DefaultForgeRegistry,
   type ForgeRepoInput,

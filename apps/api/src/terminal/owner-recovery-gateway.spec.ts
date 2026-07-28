@@ -15,14 +15,14 @@ import {
   type TerminalTransportWriteOutcome,
   type TerminalViewerAttachmentFactory,
 } from '@cap/sandbox';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import {
   GuardrailsService,
   type ExitStatus,
   type GuardrailsConfig,
-} from '../guardrails/guardrails.service';
+} from '@/guardrails/guardrails.service';
 import {
   TerminalGateway,
   type TerminalSession,

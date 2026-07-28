@@ -3,7 +3,7 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   CLAUDE_AUTH_SOURCE,
   type ClaudeAuthSource,
-} from '../sandbox/claude-auth-source.port';
+} from '@/sandbox/claude-auth-source.port';
 
 /**
  * Per-runtime readiness fact surfaced by `GET /runtimes` (add-claude-code-runtime

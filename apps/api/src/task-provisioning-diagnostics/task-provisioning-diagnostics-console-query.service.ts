@@ -12,7 +12,7 @@ import {
   type TaskProvisioningDiagnosticsResponse,
 } from '@cap/contracts';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   assertTaskProvisioningDiagnosticsReadOpen,
   TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,

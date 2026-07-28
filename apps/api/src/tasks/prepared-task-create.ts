@@ -3,7 +3,7 @@ import type {
   Runtime,
   RuntimeExecutionEnvironmentSnapshot,
 } from '@cap/contracts';
-import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
+import type { ExecutionMode } from '@/agent-runtime/agent-runtime.port';
 import type { SandboxResourceSnapshot } from '@cap/sandbox';
 
 export type PreparedTaskAdmissionMode = 'legacy' | 'durable-v2';

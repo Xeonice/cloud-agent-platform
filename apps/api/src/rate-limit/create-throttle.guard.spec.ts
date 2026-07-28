@@ -38,7 +38,7 @@ import { ThrottlerModule, Throttle, seconds } from '@nestjs/throttler';
 
 import { CreateThrottleGuard } from './create-throttle.guard';
 import { CREATE_THROTTLE_NAME } from './throttler.options';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 /**
  * The create cap exercised here. Kept tiny so a window is exhausted in a handful of

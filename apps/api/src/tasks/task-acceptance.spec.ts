@@ -5,10 +5,10 @@ import {
   type CreateTaskBody,
   type TaskResponse,
 } from '@cap/contracts';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { TaskBranchResolver } from '../forge/task-branch-resolver';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
 import { TasksController } from './tasks.controller';
 import {
   TasksService,
@@ -21,11 +21,11 @@ import {
   taskAdmissionV2Enabled,
   type TaskAdmissionGatePort,
   type TaskAdmissionWakePort,
-} from './task-admission-gate';
-import { McpServerFactory } from '../mcp/mcp.server';
-import type { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
-import type { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
-import { buildRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
+} from '@/task-admission/task-admission-gate';
+import { McpServerFactory } from '@/mcp/mcp.server';
+import type { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
+import type { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
+import { buildRuntimeExecutionEnvironmentSnapshot } from '@/runtime-models/runtime-model-snapshot';
 
 const REPO_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';

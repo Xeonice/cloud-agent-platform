@@ -5,7 +5,7 @@ import {
   TaskProvisioningDiagnosticCommandKindSchema,
 } from '@cap/contracts';
 import type { Params } from 'nestjs-pino';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { getTaskLogContext } from './log-context';
 
 /**

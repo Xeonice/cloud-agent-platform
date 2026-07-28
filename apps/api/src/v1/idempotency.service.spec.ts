@@ -19,7 +19,7 @@ import {
   IdempotencyService,
   type TaskCreator,
 } from './idempotency.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import type { TaskResponse } from '@cap/contracts';
 
 // ---------------------------------------------------------------------------

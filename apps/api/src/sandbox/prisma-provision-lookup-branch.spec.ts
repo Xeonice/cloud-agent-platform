@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { PrismaService } from '../prisma/prisma.service';
-import type { DefaultForgeRegistry } from '../forge/forge-registry';
-import type { ForgeTargetResolver } from '../forge/forge-target-resolver';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { DefaultForgeRegistry } from '@/forge/forge-registry';
+import type { ForgeTargetResolver } from '@/forge/forge-target-resolver';
 import {
   TaskBranchResolutionError,
   type TaskBranchResolver,
-} from '../forge/task-branch-resolver';
+} from '@/forge/task-branch-resolver';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
 
 const TASK_ID = 'task-clone-branch';

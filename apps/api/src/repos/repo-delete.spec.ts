@@ -21,20 +21,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ConflictException, HttpException, NotFoundException } from '@nestjs/common';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import type { PrismaService } from '@/prisma/prisma.service';
 import {
   NodeRepoStoreCommandRunner,
   NodeRepoStoreCredentialStore,
-} from '../repo-store/repo-store-git';
+} from '@/repo-store/repo-store-git';
 import {
   REPO_STORE_DIR_ENV,
   REPO_STORE_STAGING_DIRNAME,
   RepoStoreService,
-} from '../repo-store/repo-store.service';
+} from '@/repo-store/repo-store.service';
 import type { LocalRepoImportService } from './local-import.service';
 import { RepoCopyController } from './repo-copy.controller';
 import { RepoCopyService } from './repo-copy.service';

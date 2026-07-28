@@ -53,7 +53,7 @@ import {
   PrincipalThrottlerGuard,
   principalTrackerKey,
 } from './principal.throttler-guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 /**
  * The per-principal request cap exercised here. Kept tiny so a window is

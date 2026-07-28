@@ -11,24 +11,24 @@ import {
   defineLocalSandboxProvider,
   type SandboxProvisionContext,
 } from '@cap/sandbox';
-import type { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import { AuditService } from '@/audit/audit.service';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   GuardrailsService,
   type GuardrailsConfig,
   type ITerminalGateway,
-} from '../guardrails/guardrails.service';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { FencedTaskAdmissionProcessor } from '../task-admission/fenced-task-admission.processor';
+} from '@/guardrails/guardrails.service';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
   TaskAdmissionScheduler,
   type TaskAdmissionTimer,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionLeaseLostError,
@@ -49,8 +49,8 @@ import {
   type TaskAdmissionSettleRequest,
   type TaskAdmissionTerminalFailure,
   type TaskAdmissionTerminalRecovery,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
 import type { PreparedTaskCreate } from './prepared-task-create';
 import { TasksService } from './tasks.service';
 

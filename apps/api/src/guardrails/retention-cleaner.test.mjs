@@ -15,6 +15,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,13 +36,11 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.retention-cleaner-test-'));
 function compile() {
-  execFileSync(tscBin, [
-    cleanerSrc,
-    storeSrc,
-    '--outDir', outDir,
-    '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'ES2021',
-    '--experimentalDecorators', '--esModuleInterop', '--skipLibCheck',
-  ], { cwd: apiRoot, stdio: 'pipe' });
+  compileSingleSource({
+    sources: [cleanerSrc,
+    storeSrc].flat(),
+    outDir,
+  });
   const cleaner = findFile(outDir, 'retention-cleaner.js');
   const store = findFile(outDir, 'sandbox-retention-store.js');
   if (cleaner && store) return { cleaner, store };

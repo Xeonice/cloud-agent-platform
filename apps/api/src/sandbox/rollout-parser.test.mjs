@@ -20,6 +20,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -39,19 +41,10 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.rollout-parser-test-'));
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      parserSrc,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [parserSrc].flat(),
+    outDir,
+  });
   const flat = join(outDir, 'rollout-parser.js');
   if (existsSync(flat)) return flat;
   const hit = findFile(outDir, 'rollout-parser.js');

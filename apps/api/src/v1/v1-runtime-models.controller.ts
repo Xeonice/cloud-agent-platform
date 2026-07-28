@@ -6,16 +6,16 @@ import {
   type RuntimeModelCatalog,
   type RuntimeModelCatalogQuery,
 } from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {
   PublicV1Controller,
   PublicV1Input,
   PublicV1Operation,
   requirePublicV1OwnerId,
-} from '../public-surface/public-v1-operation';
-import { RuntimeModelCatalogService } from '../runtime-models/runtime-model-catalog.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
-import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
+} from '@/public-surface/public-v1-operation';
+import { RuntimeModelCatalogService } from '@/runtime-models/runtime-model-catalog.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
+import { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
 
 /** Public/Console shared owner-scoped runtime-model catalog endpoint. */
 @PublicV1Controller('v1/runtime-models')

@@ -15,9 +15,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { EmailOtpService, hashOtpCode } from './email-otp.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { MailService } from '../mail/mail.service';
-import { hashSessionToken } from '../auth/session-token';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { MailService } from '@/mail/mail.service';
+import { hashSessionToken } from '@/auth/session-token';
 
 // ---------------------------------------------------------------------------
 // In-memory fakes (no database, no SMTP)

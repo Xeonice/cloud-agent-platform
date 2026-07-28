@@ -37,8 +37,8 @@ import type {
   TerminalViewerAttachment,
   TerminalViewerAttachmentFactory,
 } from '@cap/sandbox';
-import type { AuthSessionService } from '../auth/auth-session.service';
-import { WriteLockService } from '../write-lock/write-lock.service';
+import type { AuthSessionService } from '@/auth/auth-session.service';
+import { WriteLockService } from '@/write-lock/write-lock.service';
 import { TerminalGateway, type TerminalSession } from './terminal.gateway';
 
 // ---------------------------------------------------------------------------

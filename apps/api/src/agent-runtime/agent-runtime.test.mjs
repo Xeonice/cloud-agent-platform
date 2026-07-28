@@ -19,6 +19,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -95,27 +97,10 @@ function compile() {
     join(__dirname, 'claude-code-runtime.ts'),
     join(__dirname, 'claude-transcript.ts'),
   ];
-  execFileSync(
-    tscBin,
-    [
-      ...srcs,
-      '--outDir',
-      outDir,
-      '--module',
-      'commonjs',
-      '--moduleResolution',
-      'node',
-      '--target',
-      'ES2021',
-      '--esModuleInterop',
-      '--skipLibCheck',
-      '--types',
-      'node',
-      '--typeRoots',
-      typeRoots,
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [...srcs].flat(),
+    outDir,
+  });
   // tsc preserves the relative tree from the common root of the inputs. The
   // sources span `agent-runtime/` (the inputs) and `terminal/` (codex-launch,
   // pulled in by import), so the common root is `src/` and modules land under

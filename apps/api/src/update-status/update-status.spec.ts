@@ -38,7 +38,7 @@ import {
   UpdateStatusSchema,
 } from '@cap/contracts';
 
-import { SESSION_COOKIE_NAME } from '../auth/session-token';
+import { SESSION_COOKIE_NAME } from '@/auth/session-token';
 
 import {
   UpdateStatusService,
@@ -56,8 +56,8 @@ import {
 } from './update-status.service';
 import { UpdateStatusModule } from './update-status.module';
 import { UpdateStatusService as UpdateStatusServiceToken } from './update-status.service';
-import { AuthGuard } from '../auth/auth.guard';
-import { AuthSessionService } from '../auth/auth-session.service';
+import { AuthGuard } from '@/auth/auth.guard';
+import { AuthSessionService } from '@/auth/auth-session.service';
 
 /** A frozen clock so cache TTL math is deterministic across a test. */
 function fixedClock(start = 1_000_000): { now: () => number; advance: (ms: number) => void } {

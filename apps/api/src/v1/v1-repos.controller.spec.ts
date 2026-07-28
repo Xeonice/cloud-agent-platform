@@ -16,10 +16,10 @@ import assert from 'node:assert/strict';
 import { ForbiddenException } from '@nestjs/common';
 
 import { V1ReposController } from './v1-repos.controller';
-import { PrismaService } from '../prisma/prisma.service';
-import { ReposService } from '../repos/repos.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ReposService } from '@/repos/repos.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import type { RepoResponse } from '@cap/contracts';
 
 const SESSION_PRINCIPAL = {

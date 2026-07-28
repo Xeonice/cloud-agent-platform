@@ -16,6 +16,7 @@
     "test:discovery": "node scripts/test-discovery-check.mjs && node --test --test-force-exit scripts/test-discovery-check.test.mjs",
     "test:agent-identity": "node scripts/agent-identity-branch-check.mjs && node --test --test-force-exit scripts/agent-identity-branch-check.test.mjs",
     "test:provider-parity": "node scripts/provider-contract-parity-check.mjs && node --test --test-force-exit scripts/provider-contract-parity-check.test.mjs",
+    "test:module-layout": "node scripts/api-module-layout-check.mjs && node --test --test-force-exit scripts/api-module-layout-check.test.mjs",
     "test:scripts": "node --test --test-force-exit \"scripts/*.test.mjs\"",
     "verify": "turbo typecheck lint build && pnpm verify:terminal-response-profile",
     "verify:terminal-response-profile": "node scripts/terminal-response-profile-source-conformance.mjs && node --test scripts/terminal-response-profile-source-conformance.test.mjs",

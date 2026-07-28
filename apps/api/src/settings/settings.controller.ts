@@ -49,9 +49,9 @@ import {
   type UpdateMcpServerSettingsRequest,
   type UpdateSettingsRequest,
 } from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { isAdminPrincipal } from '../auth/admin';
-import { ZodValidationPipe, zodParam } from '../repos/zod-validation.pipe';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { isAdminPrincipal } from '@/principal/admin';
+import { ZodValidationPipe, zodParam } from '@/http/zod-validation.pipe';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';

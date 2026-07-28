@@ -25,21 +25,21 @@ import {
   type WorkspaceSource,
 } from '@cap/sandbox';
 import { WorkspaceSourceResolver } from './workspace-source-resolver';
-import { PrismaService } from '../prisma/prisma.service';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   TaskBranchResolutionError,
   TaskBranchResolver,
-} from '../forge/task-branch-resolver';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+} from '@/forge/task-branch-resolver';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
   CloneSpec,
   ProvisionLookup,
   SandboxPinnedEnvironmentMetadata,
   TaskLaunchContext,
-} from './provision-lookup.port';
-import { validateRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
+} from '@/provision-lookup/provision-lookup.port';
+import { validateRuntimeExecutionEnvironmentSnapshot } from '@/runtime-models/runtime-model-snapshot';
 
 /**
  * Prisma-backed {@link ProvisionLookup}. Canonical admission consumes the

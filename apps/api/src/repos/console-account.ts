@@ -1,5 +1,5 @@
 import { ForbiddenException } from '@nestjs/common';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 
 /**
  * Repository WRITE authority: an authenticated human Console session.

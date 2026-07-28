@@ -42,8 +42,8 @@
 
 import type { Scope, SessionUser } from '@cap/contracts';
 import { CREDENTIAL_PREFIX } from '@cap/contracts';
-import { constantTimeEqual } from './constant-time';
-import { ENV, isLegacyTokenEnabled } from './auth-config';
+import { constantTimeEqual } from '@/crypto/constant-time';
+import { LEGACY_TOKEN_ENV, isLegacyTokenEnabled } from './legacy-token';
 
 /**
  * How a request/connection was authenticated:
@@ -218,7 +218,7 @@ export async function resolveOperatorPrincipal(
   //    Reached only for an UNPREFIXED bearer (reserved prefixes returned in step
   //    0), so the legacy compare runs against the same candidate as before.
   if (typeof bearer === 'string' && bearer.length > 0 && isLegacyTokenEnabled(env)) {
-    const configured = env[ENV.AUTH_TOKEN];
+    const configured = env[LEGACY_TOKEN_ENV.AUTH_TOKEN];
     if (typeof configured === 'string' && configured.length > 0) {
       // Constant-time comparison. A runner TASK_TOKEN presented here is simply a
       // non-matching operator token and fails this comparison — no special case.

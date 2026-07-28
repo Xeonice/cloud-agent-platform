@@ -10,8 +10,8 @@ import {
   snapshotSandboxResources,
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
+import { PrismaService } from '@/prisma/prisma.service';
+import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
 import {
   TaskAdmissionStore,
   type TaskAdmissionClaim,
@@ -26,7 +26,7 @@ import {
   type TaskAdmissionSettleRequest,
   type TaskAdmissionSettlement,
   type TaskAdmissionTransferProgress,
-} from './task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 
 const CLAIM_SOURCE_STATES = new Set<TaskAdmissionClaimSourceState>([
   'accepted',
@@ -447,7 +447,7 @@ export class PrismaTaskAdmissionStore extends TaskAdmissionStore {
 }
 
 function buildTaskFenceExistsPredicate(
-  fences: readonly import('./task-admission.types').TaskAdmissionTaskFence[],
+  fences: readonly import('@/admission-coordination/task-admission.types').TaskAdmissionTaskFence[],
   admissionAlias: 'w',
 ): Prisma.Sql {
   const predicate = buildTaskFencePredicate(fences, 't');
@@ -460,7 +460,7 @@ function buildTaskFenceExistsPredicate(
 }
 
 function buildTaskFencePredicate(
-  fences: readonly import('./task-admission.types').TaskAdmissionTaskFence[],
+  fences: readonly import('@/admission-coordination/task-admission.types').TaskAdmissionTaskFence[],
   taskAlias: 't',
 ): Prisma.Sql {
   if (fences.length === 0) {

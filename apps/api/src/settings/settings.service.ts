@@ -19,8 +19,8 @@ import {
   type SessionUser,
   type UpdateSettingsRequest,
 } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { GuardrailsService } from '../guardrails/guardrails.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
 import {
   ModelDiscoveryClient,
   type ModelDiscoveryResult,
@@ -47,7 +47,7 @@ import {
   maskApiKeySuffix,
   resolveEncryptionKey,
   type EncryptedSecret,
-} from './settings-crypto';
+} from '@/crypto/settings-crypto';
 
 /** Env var carrying the AES-256-GCM server key for the compatible-provider API key. */
 export const CODEX_CRED_ENC_KEY_ENV = 'CODEX_CRED_ENC_KEY';

@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { TaskFailureCode } from '@cap/contracts';
-import { ClaudeCodeRuntime } from '../agent-runtime/claude-code-runtime';
-import { CodexRuntime } from '../agent-runtime/codex-runtime';
-import type { RuntimeRegistry } from '../agent-runtime/agent-runtime.integration';
-import type { GuardrailsService } from '../guardrails/guardrails.service';
+import { ClaudeCodeRuntime } from '@/agent-runtime/claude-code-runtime';
+import { CodexRuntime } from '@/agent-runtime/codex-runtime';
+import type { RuntimeRegistry } from '@/agent-runtime/agent-runtime.integration';
+import type { GuardrailsService } from '@/guardrails/guardrails.service';
 import type { AgentTerminalOutputMeta } from './agent-terminal-pty';
 import { TerminalGateway } from './terminal.gateway';
-import { DEFAULT_TERMINAL_FAILURE_EVIDENCE_MAX_BYTES } from './terminal-recording-policy';
+import { DEFAULT_TERMINAL_FAILURE_EVIDENCE_MAX_BYTES } from '@/session-recording/recording-policy';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 

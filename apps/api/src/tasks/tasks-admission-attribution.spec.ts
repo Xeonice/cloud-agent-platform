@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CreateTaskBody } from '@cap/contracts';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { PrismaService } from '@/prisma/prisma.service';
 import { TasksService, type IGuardrailsService } from './tasks.service';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';

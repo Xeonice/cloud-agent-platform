@@ -37,11 +37,11 @@ import { ForbiddenException } from '@nestjs/common';
 
 import type { Scope, SessionUser, TaskResponse, RepoResponse } from '@cap/contracts';
 import { TasksController } from './tasks.controller';
-import { ReposController } from '../repos/repos.controller';
+import { ReposController } from '@/repos/repos.controller';
 import type { TasksService } from './tasks.service';
-import type { ReposService } from '../repos/repos.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { ReposService } from '@/repos/repos.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 // ---------------------------------------------------------------------------
 // Fixtures

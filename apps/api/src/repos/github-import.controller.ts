@@ -8,12 +8,12 @@ import {
   type RepoResponse,
   type SetDefaultRepoRequest,
 } from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {
   GithubAuthorizationRequiredException,
   GithubImportService,
 } from './github-import.service';
-import { ZodValidationPipe } from './zod-validation.pipe';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 
 /**
  * GitHub-import REST surface (be-github-import, 4.1–4.5), mounted under `/repos`

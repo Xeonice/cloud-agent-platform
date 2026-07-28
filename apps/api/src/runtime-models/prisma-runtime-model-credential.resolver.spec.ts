@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { PrismaService } from '../prisma/prisma.service';
-import { encryptToStored } from '../settings/secret-storage';
+import type { PrismaService } from '@/prisma/prisma.service';
+import { encryptToStored } from '@/crypto/secret-storage';
 import { PrismaRuntimeModelCredentialResolver } from './prisma-runtime-model-credential.resolver';
 
 const OWNER_A = '00000000-0000-4000-a000-000000000101';

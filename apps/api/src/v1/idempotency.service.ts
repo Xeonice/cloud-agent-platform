@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ConflictException, Injectable } from '@nestjs/common';
 import type { TaskResponse } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 /**
  * `Idempotency-Key` dedup for `POST /v1/tasks` (public-v1-api, D5 / task 3.3).

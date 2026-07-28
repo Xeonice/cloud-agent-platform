@@ -2,10 +2,13 @@ import { Controller, Get, HttpStatus, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { AuthCapabilities, AuthSessionResponse } from '@cap/contracts';
 import { AuthSessionService } from './auth-session.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { resolveDbSmtpConfig } from '../mail/smtp-config.service';
+import { PrismaService } from '@/prisma/prisma.service';
+// The OTP capability question is answered by the mailer's OWN configured-ness
+// check — auth-config used to wrap it in a one-line `isOtpAuthEnabled`, which
+// made every consumer of auth's config module depend on mail.
+import { isSmtpConfigured } from '@/mail/mail.service';
+import { resolveDbSmtpConfig } from '@/mail/smtp-config.service';
 import {
-  isOtpAuthEnabled,
   isPasswordAuthEnabled,
   readSessionCookieDomain,
 } from './auth-config';
@@ -71,7 +74,7 @@ export class AuthSessionController {
   private async authCapabilities(): Promise<AuthCapabilities> {
     return {
       passwordAuthEnabled: isPasswordAuthEnabled(),
-      otpAuthEnabled: await isOtpAuthEnabled(() => resolveDbSmtpConfig(this.prisma)),
+      otpAuthEnabled: await isSmtpConfigured(() => resolveDbSmtpConfig(this.prisma)),
     };
   }
 

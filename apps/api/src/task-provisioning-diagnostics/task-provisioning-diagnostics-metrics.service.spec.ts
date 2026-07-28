@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { ProvisioningDiagnosticsMetricsSchema } from '@cap/contracts';
 
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import {
   TaskProvisioningDiagnosticsMetricsService,
   type TaskProvisioningDiagnosticsMetricsOptions,

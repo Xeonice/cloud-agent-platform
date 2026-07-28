@@ -5,8 +5,8 @@ import {
   type TaskProvisioningStage,
   type TaskStatus,
 } from '@cap/contracts';
-import { canTransition, isTerminal } from '../tasks/task-lifecycle';
-import type { TaskAdmissionWakePort } from '../tasks/task-admission-gate';
+import { canTransition, isTerminal } from '@/task-lifecycle/task-lifecycle';
+import type { TaskAdmissionWakePort } from './task-admission-gate';
 import {
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
@@ -36,12 +36,12 @@ import {
   type TaskAdmissionTaskFence,
   type TaskAdmissionTerminalRecovery,
   type TaskAdmissionTerminalFailure,
-} from './task-admission.types';
-import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
+} from '@/admission-coordination/task-admission.types';
+import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
-} from '../audit/audit-recorder.port';
+} from '@/audit/audit-recorder.port';
 
 export interface TaskAdmissionWorkerErrorReporter {
   report(error: unknown): void;

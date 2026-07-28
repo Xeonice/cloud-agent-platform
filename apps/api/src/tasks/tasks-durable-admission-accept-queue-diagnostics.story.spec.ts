@@ -12,22 +12,22 @@ import type {
   SandboxConnection,
   SandboxProvisionContext,
 } from '@cap/sandbox';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
 import {
   admissionStateFromTask,
   deriveTaskDiagnosticCoverage,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
-import type { TaskProvisioningDiagnosticRecorderPort } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
-import { FencedTaskAdmissionProcessor } from '../task-admission/fenced-task-admission.processor';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
+import type { TaskProvisioningDiagnosticRecorderPort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
 import {
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
   TaskAdmissionScheduler,
   type TaskAdmissionTimer,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionStore,
   type TaskAdmissionAuthorityRequest,
@@ -38,13 +38,13 @@ import {
   type TaskAdmissionProcessorContext,
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
 import {
   GuardrailsService,
   type GuardrailsConfig,
   type ITerminalGateway,
-} from '../guardrails/guardrails.service';
+} from '@/guardrails/guardrails.service';
 import type { PreparedTaskCreate } from './prepared-task-create';
 import { TasksService } from './tasks.service';
 

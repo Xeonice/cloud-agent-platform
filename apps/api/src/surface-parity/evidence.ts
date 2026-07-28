@@ -19,12 +19,12 @@ import {
   type McpAdapterMap,
   type McpToolDeps,
   type ToolRegistrar,
-} from '../mcp/mcp-tools';
+} from '@/mcp/mcp-tools';
 import {
   publicV1OperationForHandler,
   type PublicV1Handler,
-} from './public-v1-operation';
-import { V1Module } from '../v1/v1.module';
+} from '@/public-surface/public-v1-operation';
+import { V1Module } from '@/v1/v1.module';
 
 type InputSource = 'params' | 'query' | 'headers' | 'body';
 

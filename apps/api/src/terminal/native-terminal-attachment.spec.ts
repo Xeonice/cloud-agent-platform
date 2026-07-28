@@ -15,9 +15,9 @@ import type {
   TerminalViewerAttachmentFactory,
   TerminalViewerAttachmentOutcome,
 } from '@cap/sandbox';
-import type { AuthSessionService } from '../auth/auth-session.service';
-import { WriteLockService } from '../write-lock/write-lock.service';
-import { TerminalDiagnosticsMetricsService } from '../metrics/terminal-diagnostics-metrics.service';
+import type { AuthSessionService } from '@/auth/auth-session.service';
+import { WriteLockService } from '@/write-lock/write-lock.service';
+import { TerminalDiagnosticsMetricsService } from '@/metrics/terminal-diagnostics-metrics.service';
 import {
   DEFAULT_TERMINAL_SHUTDOWN_CLEANUP_TIMEOUT_MS,
   TerminalGateway,

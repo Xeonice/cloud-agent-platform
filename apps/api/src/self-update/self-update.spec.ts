@@ -59,9 +59,9 @@ import {
   type UpdateTopology,
   type TopologyResolver,
 } from './self-update.service';
-import { SANDBOX_ENVIRONMENT_CONTRACT_VERSION } from '../sandbox-environments/sandbox-environments.service';
-import { UpdateStatusService } from '../update-status/update-status.service';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { SANDBOX_ENVIRONMENT_CONTRACT_VERSION } from '@/sandbox-environments/sandbox-environments.service';
+import { UpdateStatusService } from '@/update-status/update-status.service';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 const LATEST = 'v1.4.0';
 

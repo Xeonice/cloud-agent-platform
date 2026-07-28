@@ -5,14 +5,14 @@ import type {
   TaskResourceResponse,
   TerminalDiagnosticsMetrics,
 } from '@cap/contracts';
-import { GuardrailsService } from '../guardrails/guardrails.service';
-import { TaskProvisioningDiagnosticsMetricsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
+import { TaskProvisioningDiagnosticsMetricsService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
 import {
   buildSlotOccupancy,
   foldTaskSamples,
   projectCapacity,
-} from './metrics-projection';
-import { deriveRunnerMinutes } from './runner-minutes';
+} from '@/runner-metrics/metrics-projection';
+import { deriveRunnerMinutes } from '@/runner-metrics/runner-minutes';
 import { ResourceSamplerService } from './resource-sampler.service';
 import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metrics.service';
 

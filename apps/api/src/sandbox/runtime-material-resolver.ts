@@ -1,7 +1,7 @@
-import type { AuthMaterial } from '../agent-runtime/agent-runtime.port';
+import type { AuthMaterial } from '@/agent-runtime/agent-runtime.port';
 import type { CodexAuthSource } from './codex-auth-source.port';
 import type { ClaudeAuthSource } from './claude-auth-source.port';
-import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
+import { assertSafeProviderUrl } from '@/settings/assert-safe-provider-url';
 
 export const RUNTIME_MATERIAL_RESOLVER_REGISTRY = Symbol(
   'RuntimeMaterialResolverRegistry',

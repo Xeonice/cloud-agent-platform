@@ -39,7 +39,7 @@ export {
   EncryptionKeyUnavailableError,
   DecryptionFailedError,
   type EncryptedSecret,
-} from './settings-crypto';
+} from '@/crypto/settings-crypto';
 export {
   assertSafeProviderUrl,
   isUnsafeAddress,

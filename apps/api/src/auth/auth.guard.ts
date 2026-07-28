@@ -7,12 +7,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import type { SessionUser } from '@cap/contracts';
 import { AuthSessionService } from './auth-session.service';
 import {
   resolveOperatorPrincipal,
-  type OperatorPrincipal,
-} from './operator-principal';
+} from '@/principal/operator-principal';
 import { SESSION_COOKIE_NAME, readCookie } from './session-token';
 import { isStateChangingMethod, isTrustedRequestOrigin } from './request-origin';
 
@@ -350,10 +350,11 @@ export class AuthGuard implements CanActivate {
   }
 }
 
-/** An Express request after the {@link AuthGuard} has attached the principal. */
-export interface AuthenticatedRequest extends Request {
-  operatorPrincipal?: OperatorPrincipal;
-}
+// `AuthenticatedRequest` moved to `@/http/authenticated-request` — sixteen
+// directories name it, and importing the GUARD to name the request type was
+// what made this file a hub. Re-exported here so existing consumers keep
+// working while they migrate.
+export type { AuthenticatedRequest } from '@/principal/authenticated-request';
 
 // Re-export for downstream consumers that only need the session-user shape.
 export type { SessionUser };

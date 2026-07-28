@@ -4,8 +4,8 @@ import test from 'node:test';
 
 import { PUBLIC_V1_OPERATIONS, type McpMappedOperation } from '@cap/contracts';
 
-import { MCP_ADAPTERS, type McpAdapterMap } from '../mcp/mcp-tools';
-import { collectPublicSurfaceRuntimeEvidence } from './public-surface-evidence';
+import { MCP_ADAPTERS, type McpAdapterMap } from '@/mcp/mcp-tools';
+import { collectPublicSurfaceRuntimeEvidence } from './evidence';
 
 function mappedOperations(): readonly McpMappedOperation[] {
   return PUBLIC_V1_OPERATIONS.filter(

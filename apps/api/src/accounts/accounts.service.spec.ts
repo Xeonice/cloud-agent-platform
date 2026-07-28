@@ -28,9 +28,9 @@ import { ForbiddenException, BadRequestException } from '@nestjs/common';
 
 import { AccountsService } from './accounts.service';
 import { AccountsController } from './accounts.controller';
-import { PrismaService } from '../prisma/prisma.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { PrismaService } from '@/prisma/prisma.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 // ---------------------------------------------------------------------------
 // In-memory fake Prisma (user + identityLink delegates, incl. nested create)

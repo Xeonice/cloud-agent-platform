@@ -10,8 +10,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { isAdminPrincipal } from '../auth/admin';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { isAdminPrincipal } from '@/principal/admin';
 import {
   SelfUpdateRefusedError,
   SelfUpdateService,

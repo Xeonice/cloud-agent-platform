@@ -8,7 +8,7 @@
  * Adding a runtime is two ADDITIVE edits here: one `TranscriptSource` variant (in
  * `transcript-source.ts`) and one `REGISTRY` entry — no ternary/switch to extend.
  */
-import type { TranscriptFormat } from '../agent-runtime/agent-runtime.port';
+import type { TranscriptFormat } from '@/agent-runtime/agent-runtime.port';
 import { claudeTranscriptParser } from './claude-transcript-parser';
 import { codexTranscriptParser, type ParsedRollout } from './rollout-parser';
 import type { TranscriptParser, TranscriptSource } from './transcript-source';

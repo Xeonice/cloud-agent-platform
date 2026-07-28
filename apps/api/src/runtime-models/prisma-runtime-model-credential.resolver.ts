@@ -1,8 +1,8 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { TaskModelSelectorSchema, type Runtime } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
-import { decryptStored } from '../settings/secret-storage';
+import { PrismaService } from '@/prisma/prisma.service';
+import { assertSafeProviderUrl } from '@/settings/assert-safe-provider-url';
+import { decryptStored } from '@/crypto/secret-storage';
 import type { RuntimeModelCredentialResolver } from './runtime-model-catalog.port';
 import type {
   RuntimeModelCredentialResolution,

@@ -42,8 +42,8 @@ import {
 } from './mcp-tools';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
-import { PrismaService } from '../prisma/prisma.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { PrismaService } from '@/prisma/prisma.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import {
   CreateScheduleRequestSchema,
   CreateTaskRequestSchema,
@@ -81,19 +81,19 @@ import {
   type TaskResponse,
   type UpdateScheduleRequest,
 } from '@cap/contracts';
-import { MCP_PUBLIC_ERROR_MAP } from '../public-surface/public-error-mappings';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import type { TaskBranchResolver } from '../forge/task-branch-resolver';
-import { ReposService } from '../repos/repos.service';
+import { MCP_PUBLIC_ERROR_MAP } from '@/public-surface/public-error-mappings';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
+import { ReposService } from '@/repos/repos.service';
 import {
   TasksService,
   type TaskAcceptanceClient,
-} from '../tasks/tasks.service';
+} from '@/tasks/tasks.service';
 import type {
   TaskAdmissionGatePort,
   TaskAdmissionWakePort,
-} from '../tasks/task-admission-gate';
+} from '@/task-admission/task-admission-gate';
 
 // ---------------------------------------------------------------------------
 // Fakes: a server that captures (name -> callback), and recording deps.

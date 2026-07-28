@@ -14,10 +14,10 @@ import type {
   V1ListScheduleRunsResponse,
   V1ListSchedulesResponse,
 } from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import type { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { V1SchedulesController } from './v1-schedules.controller';
 
 const USER_A = 'acct-a';

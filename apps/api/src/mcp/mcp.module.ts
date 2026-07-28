@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
-import { TasksModule } from '../tasks/tasks.module';
-import { ReposModule } from '../repos/repos.module';
-import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
-import { TaskProvisioningDiagnosticsModule } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.module';
-import { SessionTranscriptService } from '../tasks/session-transcript.service';
-import { AuditService } from '../audit/audit.service';
+import { TasksModule } from '@/tasks/tasks.module';
+import { ReposModule } from '@/repos/repos.module';
+import { ScheduledTasksModule } from '@/scheduled-tasks/scheduled-tasks.module';
+import { TaskProvisioningDiagnosticsModule } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.module';
+import { SessionTranscriptService } from '@/tasks/session-transcript.service';
+import { AuditService } from '@/audit/audit.service';
 import {
   AUDIT_TIMELINE_READER,
   TRANSCRIPT_STORE,
-} from '../tasks/task-transcript-reader';
+} from '@/tasks/task-transcript-reader';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 

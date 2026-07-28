@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
 import {
   readTaskTranscript,
   type AuditTimelineReader,

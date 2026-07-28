@@ -28,12 +28,12 @@ import type { Observable } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { throwError } from 'rxjs';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {
   hasScope,
   type OperatorPrincipal,
-} from '../auth/operator-principal';
-import { parseZodValue } from '../repos/zod-validation.pipe';
+} from '@/principal/operator-principal';
+import { parseZodValue } from '@/http/zod-validation.pipe';
 import {
   normalizePublicSurfaceFailure,
   projectPublicV1SurfaceErrorToRest,

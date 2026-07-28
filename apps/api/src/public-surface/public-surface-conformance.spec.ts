@@ -28,28 +28,28 @@ import {
 } from '@cap/contracts';
 import { firstValueFrom, from } from 'rxjs';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   registerMcpTools,
   type McpToolDeps,
   type ToolExtra,
   type ToolRegistrar,
-} from '../mcp/mcp-tools';
-import type { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { ReposService } from '../repos/repos.service';
+} from '@/mcp/mcp-tools';
+import type { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ReposService } from '@/repos/repos.service';
 import {
   taskResponseFromRecord,
   type TaskResponseRecord,
-} from '../tasks/task-response';
-import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
-import { TasksService } from '../tasks/tasks.service';
-import { IdempotencyService } from '../v1/idempotency.service';
-import { listRepoPage } from '../v1/public-list-pages';
-import { V1ReposController } from '../v1/v1-repos.controller';
-import { V1SchedulesController } from '../v1/v1-schedules.controller';
-import { V1TasksController } from '../v1/v1-tasks.controller';
+} from '@/tasks/task-response';
+import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
+import { TasksService } from '@/tasks/tasks.service';
+import { IdempotencyService } from '@/v1/idempotency.service';
+import { listRepoPage } from '@/v1/public-list-pages';
+import { V1ReposController } from '@/v1/v1-repos.controller';
+import { V1SchedulesController } from '@/v1/v1-schedules.controller';
+import { V1TasksController } from '@/v1/v1-tasks.controller';
 import {
   MCP_PUBLIC_ERROR_MAP,
   REST_PUBLIC_ERROR_MAP,

@@ -39,8 +39,8 @@ import {
   type SandboxProvisioningPolicySnapshot,
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { decryptStored, encryptToStored } from '../settings/secret-storage';
+import { PrismaService } from '@/prisma/prisma.service';
+import { decryptStored, encryptToStored } from '@/crypto/secret-storage';
 import {
   DefaultSandboxEnvironmentValidationRunner,
   SANDBOX_ENVIRONMENT_VALIDATION_RUNNER,

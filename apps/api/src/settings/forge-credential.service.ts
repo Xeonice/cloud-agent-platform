@@ -14,19 +14,19 @@ import type {
   RegisterForgeConnectionRequest,
   SessionUser,
 } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
+import { PrismaService } from '@/prisma/prisma.service';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   ForgeHttpError,
   type AvailableRepo,
   type ForgeTarget,
-} from '../forge/forge.port';
-import { maskApiKeySuffix } from './settings-crypto';
+} from '@/forge/forge.port';
+import { maskApiKeySuffix } from '@/crypto/settings-crypto';
 import {
   assertEncryptionKeyValidIfConfigured,
   decryptStored,
   encryptToStored,
-} from './secret-storage';
+} from '@/crypto/secret-storage';
 
 /** Well-known public git host per forge (the default host when none is supplied). */
 const PUBLIC_HOST: Record<ForgeKind, string> = {

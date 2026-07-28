@@ -14,7 +14,7 @@ import {
   DEFAULT_TERMINAL_RAW_ARTIFACT_MAX_BYTES,
   DEFAULT_TERMINAL_RAW_RECORDING_MAX_PENDING_WRITES,
   readTerminalRecordingPolicy,
-} from './terminal-recording-policy';
+} from '@/session-recording/recording-policy';
 
 test('raw terminal artifacts are default-off while failure evidence stays bounded', () => {
   const policy = readTerminalRecordingPolicy({});

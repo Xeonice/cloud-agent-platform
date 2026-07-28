@@ -11,11 +11,11 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import { createRepoBodySchema, type CreateRepoBody, type RepoResponse } from '@cap/contracts';
-import { type AuthenticatedRequest } from '../auth/auth.guard';
-import { hasScope } from '../auth/operator-principal';
+import { type AuthenticatedRequest } from '@/auth/auth.guard';
+import { hasScope } from '@/principal/operator-principal';
 import { ReposService } from './repos.service';
 import { requireConsoleAccountId } from './console-account';
-import { ZodValidationPipe } from './zod-validation.pipe';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 
 /**
  * REST surface for repositories.

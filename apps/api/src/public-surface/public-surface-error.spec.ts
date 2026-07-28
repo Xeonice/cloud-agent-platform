@@ -29,7 +29,7 @@ import {
   projectPublicV1SurfaceErrorToRest,
   PublicSurfaceError,
 } from './public-surface-error';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 
 test('REST and MCP maps are exact and share retryability semantics', () => {
   const expected = [...PUBLIC_ERROR_CODES].sort();

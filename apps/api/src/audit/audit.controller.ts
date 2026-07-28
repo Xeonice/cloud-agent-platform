@@ -10,7 +10,7 @@ import {
   type ListPendingApprovalsResponse,
 } from '@cap/contracts';
 import { AuditService } from './audit.service';
-import { TerminalGateway } from '../terminal/terminal.gateway';
+import { TerminalGateway } from '@/terminal/terminal.gateway';
 
 /**
  * Session-gated audit + approvals read surface (be-audit-approvals 6.4 / 6.5).

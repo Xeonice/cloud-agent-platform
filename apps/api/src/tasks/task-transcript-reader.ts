@@ -8,10 +8,10 @@ import { selectRetainedTranscriptSandboxProvider } from '@cap/sandbox';
 import {
   type RuntimeId,
   type TranscriptFormat,
-} from '../agent-runtime/agent-runtime.port';
+} from '@/agent-runtime/agent-runtime.port';
 import type { IAgentRuntimeRegistry } from './tasks.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { parseTranscript } from '../sandbox/parse-transcript';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { parseTranscript } from '@/sandbox/parse-transcript';
 import type { TasksService } from './tasks.service';
 
 /** Durable transcript storage used by the shared transcript read path. */

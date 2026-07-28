@@ -25,17 +25,17 @@ import {
   repoOffersForgeDelivery,
 } from '@cap/contracts';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { GiteeForge } from '../forge/gitee-forge';
-import { GithubForge } from '../forge/github-forge';
-import { GitlabForge } from '../forge/gitlab-forge';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { GiteeForge } from '@/forge/gitee-forge';
+import { GithubForge } from '@/forge/github-forge';
+import { GitlabForge } from '@/forge/gitlab-forge';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type {
   RepoStoreResult,
   RepoStoreService,
-} from '../repo-store/repo-store.service';
+} from '@/repo-store/repo-store.service';
 import { LocalRepoImportService } from './local-import.service';
 import { RepoCopyController } from './repo-copy.controller';
 import { RepoCopyService } from './repo-copy.service';

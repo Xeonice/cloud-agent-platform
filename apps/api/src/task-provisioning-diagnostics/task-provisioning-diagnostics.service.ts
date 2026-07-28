@@ -27,7 +27,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   admissionStateFromTask,
   attemptFromRecord,

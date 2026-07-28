@@ -14,14 +14,14 @@ import { normalizeRepoGitSource, ReposService } from './repos.service';
 import type {
   ForgeTargetResolver,
   OwnerForgeTargetResolution,
-} from '../forge/forge-target-resolver';
+} from '@/forge/forge-target-resolver';
 import type {
   RemoteRefsProbePort,
   RemoteRefsProbeResult,
-} from '../forge/remote-refs-probe';
-import type { AvailableRepo } from '../forge/forge.port';
-import type { DefaultForgeRegistry } from '../forge/forge-registry';
-import type { PrismaService } from '../prisma/prisma.service';
+} from '@/forge/remote-refs-probe';
+import type { AvailableRepo } from '@/forge/forge.port';
+import type { DefaultForgeRegistry } from '@/forge/forge-registry';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type { RepoCopyService } from './repo-copy.service';
 
 function repoRow(overrides: Partial<{

@@ -12,7 +12,7 @@
  * the port from here without dragging the dispatcher's runtime graph into the
  * standalone parser compile.
  */
-import type { TranscriptFormat } from '../agent-runtime/agent-runtime.port';
+import type { TranscriptFormat } from '@/agent-runtime/agent-runtime.port';
 import type { ParsedRollout } from './rollout-parser';
 
 /**

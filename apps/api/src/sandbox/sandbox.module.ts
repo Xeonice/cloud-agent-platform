@@ -3,15 +3,15 @@ import { createConfiguredSandboxProvider } from '@cap/sandbox';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
 import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
-import { PROVISION_LOOKUP } from './provision-lookup.port';
+import { PROVISION_LOOKUP } from '@/provision-lookup/provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
 import type {
   AuthMaterial,
   RuntimeId,
-} from '../agent-runtime/agent-runtime.port';
-import { ForgeModule } from '../forge/forge.module';
+} from '@/agent-runtime/agent-runtime.port';
+import { ForgeModule } from '@/forge/forge.module';
 import type { TranscriptSource } from './transcript-source';
-import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
+import type { CloneSpec, ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 // add-claude-code-runtime — the cross-track shared wiring file (per the tasks
 // partition note): Track 2 binds the ClaudeAuthSource + the AgentRuntime registry
 // here; Track 3 (this edit) EXPORTS those tokens so the `/runtimes` readiness
@@ -27,7 +27,7 @@ import {
   IntegrationRuntimeRegistry,
   sessionIdForTask,
   type RuntimeRegistry,
-} from '../agent-runtime/agent-runtime.integration';
+} from '@/agent-runtime/agent-runtime.integration';
 import {
   CLAUDE_AUTH_SOURCE,
   type ClaudeAuthSource,
@@ -40,10 +40,10 @@ import {
   type RuntimeMaterialResolverRegistry,
 } from './runtime-material-resolver';
 import { resolveSkillInstaller } from './skill-allowlist';
-import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
-import { PrismaService } from '../prisma/prisma.service';
-import { RepoStoreModule } from '../repo-store/repo-store.module';
-import { RepoStoreService } from '../repo-store/repo-store.service';
+import { SandboxEnvironmentsModule } from '@/sandbox-environments/sandbox-environments.module';
+import { PrismaService } from '@/prisma/prisma.service';
+import { RepoStoreModule } from '@/repo-store/repo-store.module';
+import { RepoStoreService } from '@/repo-store/repo-store.service';
 import {
   createDefaultRepoStoreVolumeInspector,
   REPO_STORE_VOLUME_INSPECTOR,

@@ -26,7 +26,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 export const TASK_PROVISIONING_DIAGNOSTICS_METRICS_OPTIONS =
   'TASK_PROVISIONING_DIAGNOSTICS_METRICS_OPTIONS';
