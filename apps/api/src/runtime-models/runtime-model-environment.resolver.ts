@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   RuntimeModelEffectiveEnvironmentSchema,
+  SANDBOX_PROVIDER_FAMILIES,
   SandboxMetadataSchema,
   type Runtime,
   type RuntimeExecutionEnvironmentSnapshot,
@@ -397,11 +398,22 @@ function deploymentSnapshotSource(
   throw new RuntimeModelCatalogOperationalError();
 }
 
+/**
+ * Narrow a stored provider-family string against the SHARED declaration.
+ *
+ * This was a hand-written `family === 'aio' || family === 'boxlite' || …`
+ * chain: a fourth restatement of the family list, and one that would silently
+ * reject a newly declared provider while looking exhaustive. Deriving the check
+ * from {@link SANDBOX_PROVIDER_FAMILIES} means adding a family needs no edit
+ * here, and removing one is a compile error at the declaration instead of a
+ * quiet behaviour change here.
+ */
 function knownProviderFamily(
   family: string,
 ): RuntimeExecutionEnvironmentSnapshot['providerFamily'] {
-  if (family === 'aio' || family === 'boxlite' || family === 'cloud-http') {
-    return family;
+  const known: readonly string[] = SANDBOX_PROVIDER_FAMILIES;
+  if (known.includes(family)) {
+    return family as RuntimeExecutionEnvironmentSnapshot['providerFamily'];
   }
   throw new RuntimeModelCatalogOperationalError();
 }

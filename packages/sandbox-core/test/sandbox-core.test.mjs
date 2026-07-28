@@ -23,47 +23,51 @@ function provider(name, capabilities) {
   };
 }
 
-await test('exports concrete capability and location vocabularies', () => {
-  assert.deepEqual(mod.SANDBOX_PROVIDER_CAPABILITIES, [
-    'terminal.websocket',
-    'workspace.git.materialize',
-    'workspace.git.deliver',
-    'transcript.retained-read',
-    'lifecycle.readopt',
-  ]);
-  assert.deepEqual(mod.SANDBOX_PROVIDER_FEATURE_CAPABILITIES, [
-    'terminal.interactive',
-    'command.exec',
-    'workspace.archive.transfer',
-    'workspace.source.volume',
-    'workspace.source.archive',
-    'workspace.source.git',
-    'transcript.retained-source',
-    'lifecycle.readoption',
-    'lifecycle.sleep',
-    'lifecycle.snapshot',
-    'resource.disk-size-gb',
-    'port.expose',
-  ]);
-  assert.deepEqual(mod.SANDBOX_PROVIDER_KNOWN_CAPABILITIES, [
-    'terminal.websocket',
-    'workspace.git.materialize',
-    'workspace.git.deliver',
-    'transcript.retained-read',
-    'lifecycle.readopt',
-    'terminal.interactive',
-    'command.exec',
-    'workspace.archive.transfer',
-    'workspace.source.volume',
-    'workspace.source.archive',
-    'workspace.source.git',
-    'transcript.retained-source',
-    'lifecycle.readoption',
-    'lifecycle.sleep',
-    'lifecycle.snapshot',
-    'resource.disk-size-gb',
-    'port.expose',
-  ]);
+await test('the capability vocabulary is derived, not transcribed', () => {
+  // This used to be three hand-written copies of the lists — a fourth copy of a
+  // vocabulary that already existed three times in source. Copying it here
+  // pinned today's VALUE while proving nothing about the property that matters:
+  // that the lists and the union cannot disagree. Assert the property instead.
+  const operation = mod.SANDBOX_PROVIDER_CAPABILITIES;
+  const feature = mod.SANDBOX_PROVIDER_FEATURE_CAPABILITIES;
+  const known = mod.SANDBOX_PROVIDER_KNOWN_CAPABILITIES;
+
+  assert.deepEqual(
+    [...known].sort(),
+    [...operation, ...feature].sort(),
+    'KNOWN must be exactly the two classes together',
+  );
+  assert.equal(
+    new Set(known).size,
+    known.length,
+    'no capability may appear twice — the readopt/readoption split was exactly this',
+  );
+  assert.equal(
+    operation.filter((capability) => feature.includes(capability)).length,
+    0,
+    'the operation/feature partition must be a partition',
+  );
+  assert(
+    operation.length > 0 && feature.length > 0,
+    'a derivation that produced an empty class would satisfy the checks above vacuously',
+  );
+
+  // Every capability named by an operation-specific required/feature set must be
+  // a classified capability. This is what catches a set referring to a spelling
+  // the vocabulary no longer has.
+  const knownSet = new Set(known);
+  for (const [name, value] of Object.entries(mod)) {
+    if (!name.endsWith('_CAPABILITIES') || !Array.isArray(value)) continue;
+    for (const capability of value) {
+      assert(
+        knownSet.has(capability),
+        `${name} names ${capability}, which is not a classified capability`,
+      );
+    }
+  }
+});
+
+await test('exports concrete location and execution vocabularies', () => {
   assert.deepEqual(mod.SANDBOX_PROVIDER_LOCATIONS, ['local', 'cloud']);
   assert.deepEqual(mod.SANDBOX_EXECUTION_MODES, [
     'read-only',
@@ -101,8 +105,10 @@ await test('exports operation-specific required capability sets', () => {
     'workspace.git.deliver',
     'command.exec',
   ]);
+  // Readoption has no feature-level capability distinct from its operation-level
+  // one; the two entries were the same capability under two spellings.
   assert.deepEqual(mod.READOPTION_SANDBOX_FEATURE_CAPABILITIES, [
-    'lifecycle.readoption',
+    'lifecycle.readopt',
   ]);
   assert.deepEqual(mod.RETAINED_TRANSCRIPT_SANDBOX_FEATURE_CAPABILITIES, [
     'transcript.retained-source',
@@ -121,12 +127,17 @@ await test('capability helpers report missing required entries', () => {
     mod.missingCapabilities(undefined, ['terminal.websocket']),
     ['terminal.websocket'],
   );
+  // The deprecated `lifecycle.readoption` spelling no longer exists internally:
+  // it is normalized at the BoxLite config parse boundary and nowhere else, so
+  // these helpers must NOT carry an alias. A declaration under the old spelling
+  // reaching this far means the boundary was bypassed, and treating it as
+  // satisfying the requirement would hide that.
   assert.deepEqual(
     mod.missingCapabilities(['lifecycle.readoption'], ['lifecycle.readopt']),
-    [],
+    ['lifecycle.readopt'],
   );
   assert.equal(
-    mod.hasAllCapabilities(['lifecycle.readopt'], ['lifecycle.readoption']),
+    mod.hasAllCapabilities(['lifecycle.readopt'], ['lifecycle.readopt']),
     true,
   );
   assert.equal(

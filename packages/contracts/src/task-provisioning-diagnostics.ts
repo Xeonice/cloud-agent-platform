@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SANDBOX_PROVIDER_FAMILIES } from './provider-family.js';
 
 import {
   TaskProvisioningStageSchema,
@@ -41,10 +42,17 @@ export type TaskProvisioningDiagnosticAdmissionMode = z.infer<
   typeof TaskProvisioningDiagnosticAdmissionModeSchema
 >;
 
+/**
+ * The provider families, plus `unknown`.
+ *
+ * `unknown` is a legitimate diagnostic-only widening, not drift: an attempt that
+ * fails BEFORE a provider is selected has no family to report, and production
+ * emits `providerFamily: 'unknown'` for it. Expressed as an explicit extension
+ * of the shared declaration so the widening is visible — it was previously a
+ * separately hand-written list that happened to also disagree on member order.
+ */
 export const TaskProvisioningDiagnosticProviderFamilySchema = z.enum([
-  'aio',
-  'cloud-http',
-  'boxlite',
+  ...SANDBOX_PROVIDER_FAMILIES,
   'unknown',
 ]);
 export type TaskProvisioningDiagnosticProviderFamily = z.infer<

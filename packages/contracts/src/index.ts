@@ -63,6 +63,7 @@ export * from './notifications.js';
 export * from './sandbox.js';
 
 // Admin-managed sandbox runtime environments and task environment summaries
+export * from './provider-family.js';
 export * from './sandbox-environment.js';
 
 // Required metadata baked into every supported sandbox image.

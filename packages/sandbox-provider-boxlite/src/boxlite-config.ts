@@ -536,6 +536,22 @@ function isSupportedProxyProtocol(protocol: string): boolean {
   );
 }
 
+/**
+ * Capability spellings this configuration still ACCEPTS but no longer uses
+ * internally, mapped to the canonical name.
+ *
+ * `BOXLITE_CAPABILITIES` is an operator-facing `.env` interface — the README
+ * documented `lifecycle.readoption` in its worked examples, so deployments in
+ * the field have it written down. The spelling therefore cannot simply be
+ * deleted: it is normalized HERE, once, at the only boundary where operator
+ * input becomes a capability, and does not exist past this point. That replaced
+ * an alias reconciliation that had been copied into four places and had to be
+ * honoured at every comparison site.
+ */
+const DEPRECATED_CAPABILITY_SPELLINGS: Readonly<Record<string, SandboxProviderCapability>> = {
+  'lifecycle.readoption': 'lifecycle.readopt',
+};
+
 function parseCapabilities(
   raw: string | undefined,
   errors: string[],
@@ -545,10 +561,12 @@ function parseCapabilities(
   const known = new Set<string>(SANDBOX_PROVIDER_KNOWN_CAPABILITIES);
   const out: SandboxProviderCapability[] = [];
   for (const item of value.split(',')) {
-    const capability = item.trim();
-    if (!capability) continue;
+    const declared = item.trim();
+    if (!declared) continue;
+    const capability = DEPRECATED_CAPABILITY_SPELLINGS[declared] ?? declared;
     if (!known.has(capability)) {
-      errors.push(`BOXLITE_CAPABILITIES includes unknown capability: ${capability}`);
+      // Echo what the operator actually wrote, not the normalized form.
+      errors.push(`BOXLITE_CAPABILITIES includes unknown capability: ${declared}`);
       continue;
     }
     if (!out.includes(capability as SandboxProviderCapability)) {

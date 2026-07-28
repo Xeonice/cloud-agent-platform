@@ -71,6 +71,9 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
 - `BOXLITE_PROVIDER_LOCATION`: `local` or `cloud`, default `cloud`.
 - `BOXLITE_CAPABILITIES`: comma-separated explicit capability list. No
   capabilities are implied.
+  - `lifecycle.readoption` is a DEPRECATED spelling of `lifecycle.readopt`. It is
+    still accepted and normalized to the canonical name, so an existing `.env`
+    keeps working unchanged; prefer `lifecycle.readopt` in new configuration.
 - `BOXLITE_WORKSPACE_PATH`: in-sandbox workspace path, default `/home/gem/workspace`.
 - `BOXLITE_SANDBOX_ID_PREFIX`: task-scoped provider sandbox id prefix, default
   `cap-boxlite-`.
@@ -122,7 +125,7 @@ BoxLite advertises only what `BOXLITE_CAPABILITIES` names and the adapter can
 support. Common examples:
 
 ```sh
-BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoption
+BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readopt
 ```
 
 Interactive terminal support must be explicit. In native mode CAP uses its own
@@ -190,7 +193,7 @@ BOXLITE_ENDPOINT=https://boxlite.example.test \
 BOXLITE_API_TOKEN=... \
 BOXLITE_IMAGE=ghcr.io/xeonice/cap-boxlite-sandbox:vX.Y.Z \
 BOXLITE_PROTOCOL_MODE=native \
-BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoption \
+BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readopt \
 pnpm --filter @cap/sandbox-provider-boxlite test
 ```
 

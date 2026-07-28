@@ -197,6 +197,15 @@ jobs:
       - name: Agent-identity branch gate
         run: pnpm test:agent-identity
 
+      # The provider axis: `sandbox-provider-port` requires one capability
+      # vocabulary and that a provider not advertise a capability its
+      # conformance does not exercise. Most of that is now a type problem (total
+      # mappings, one provider-family declaration). This gate covers the two
+      # parts a type cannot: no new duplicate capability spelling, and no
+      # provider suite that builds conformance outside the participation ledger.
+      - name: Provider contract parity gate
+        run: pnpm test:provider-parity
+
       # App suites through the task graph. Previously three hand-named `pnpm
       # --filter` steps, which is the same allowlist failure mode one level up —
       # a new app owning tests would simply not run here. The directory filter

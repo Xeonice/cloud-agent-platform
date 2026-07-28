@@ -346,10 +346,7 @@ export function createSandboxProviderConformanceScenarios<
           options.expectReadoption ??
           options.provider
             .getProviderCapabilities?.()
-            ?.some((capability) =>
-              capability === 'lifecycle.readopt' ||
-              capability === 'lifecycle.readoption',
-            ) === true;
+            ?.includes('lifecycle.readopt') === true;
         if (!shouldReadopt) return;
         assert.equal(
           typeof options.provider.listReadoptable,
@@ -444,9 +441,7 @@ export function createSandboxProviderBehaviorConformanceScenarios<
     capability === 'workspace.git.deliver' ||
     capability === 'workspace.archive.transfer',
   );
-  const needsOwnership = capabilities.some((capability) =>
-    capability === 'lifecycle.readopt' || capability === 'lifecycle.readoption',
-  );
+  const needsOwnership = capabilities.includes('lifecycle.readopt');
   const provisionContext = snapshotSandboxProvisionContext({
     taskId: options.taskId,
     cloneSpec: options.cloneSpec,

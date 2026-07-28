@@ -717,8 +717,26 @@ await test('AIO advertises optional capabilities only with their real provider h
   }
 });
 
+// enforce-provider-contract-parity, Track 4 — what this file OWES is computed
+// from AIO's shipped declaration, not from which suites it happens to build.
+// The fully-hooked provider is the one that ships: bare `createProvider()`
+// declares only two capabilities because its optional hooks are absent, so
+// using it here would understate the obligation.
+const participation = conformance.createConformanceParticipationLedger({
+  providerLabel: 'AIO',
+  declaredCapabilities: createProvider({
+    hooks: {
+      workspaceMaterialization: async () => ({ status: 'succeeded', stage: 'complete' }),
+      workspaceDelivery: async () => ({ hadChanges: false, commitSha: null, error: null }),
+      transcriptRead: async () => null,
+    },
+  }).provider.getProviderCapabilities(),
+  onGap: (capability, why) => console.log(`  GAP   AIO declares ${capability}: ${why}`),
+});
+
 await test('AIO deterministic transport satisfies the shared provider baseline', async () => {
   const fixture = createProvider();
+  participation.ran('provider');
   const scenarios = conformance.createSandboxProviderConformanceScenarios(
     {
       provider: fixture.provider,
@@ -795,6 +813,7 @@ await test('AIO atomic HTTP executor proves complete output without advertising 
 
 await test('AIO behavior conformance drives real workspace and readoption seams', async () => {
   const fixture = createAioBehaviorFixture();
+  participation.ran('behavior');
   const scenarios = conformance.createSandboxProviderBehaviorConformanceScenarios(
     {
       provider: fixture.provider,
@@ -1294,6 +1313,7 @@ async function exerciseDiagnosticConformance(input) {
 
 const diagnosticCapabilityProvider = createDiagnosticProvider().provider;
 
+participation.ran('diagnostic');
 for (const scenario of conformance.createSandboxProviderDiagnosticConformanceScenarios(
   {
     providerFamily: 'aio',
@@ -1310,4 +1330,5 @@ for (const scenario of conformance.createSandboxProviderDiagnosticConformanceSce
 }
 
 if (failed > 0) process.exitCode = 1;
+participation.assertComplete();
 console.log(`AIO diagnostic conformance: ${passed} passed, ${failed} failed`);

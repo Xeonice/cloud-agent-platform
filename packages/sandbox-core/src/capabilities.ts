@@ -22,51 +22,97 @@ export type SandboxProviderCapability =
   | 'workspace.source.git'
   | 'transcript.retained-read'
   | 'transcript.retained-source'
+  /**
+   * Readoption of an already-running sandbox. ONE spelling: a
+   * `lifecycle.readoption` variant also existed and was carried by an alias
+   * reconciliation copied into four places. It denoted the same capability —
+   * every other REQUIRED/FEATURE pair below names genuinely DIFFERENT
+   * capabilities, and only readoption named one capability twice. Operator
+   * configuration still accepts the old spelling; see the BoxLite config parse.
+   */
   | 'lifecycle.readopt'
-  | 'lifecycle.readoption'
   | 'lifecycle.sleep'
   | 'lifecycle.snapshot'
   | 'resource.disk-size-gb'
   | 'port.expose';
 
 /**
- * Existing operation-level capabilities used by the current AIO/cloud HTTP
- * selection paths. Keep this list stable so default provider configuration does
- * not over-advertise newly introduced feature capabilities.
+ * How a capability participates in provider selection.
+ *
+ * - `operation` — part of the operation-level set the current AIO / cloud-HTTP
+ *   selection paths rely on, and safe for default provider configuration to
+ *   advertise.
+ * - `feature` — opt-in: a provider declares it only after implementing and
+ *   preflighting the feature, so default configuration does not over-advertise.
  */
-export const SANDBOX_PROVIDER_CAPABILITIES: readonly SandboxProviderCapability[] = [
-  'terminal.websocket',
-  'workspace.git.materialize',
-  'workspace.git.deliver',
-  'transcript.retained-read',
-  'lifecycle.readopt',
-] as const;
+export type SandboxProviderCapabilityClass = 'operation' | 'feature';
+
+/**
+ * THE source of the capability vocabulary's classification.
+ *
+ * Total by construction: every capability has exactly one class, and a
+ * capability added to the union without a class here is a COMPILE error rather
+ * than a value the type system blesses while `SANDBOX_PROVIDER_KNOWN_CAPABILITIES`
+ * calls it unknown. The three exported lists below are DERIVED from this — they
+ * were three hand-maintained arrays (plus a fourth hand-written copy in the
+ * package's own test) with nothing reconciling them against the union or each
+ * other, which is how one capability came to sit in the operation list under one
+ * spelling and the feature list under another.
+ */
+const SANDBOX_PROVIDER_CAPABILITY_CLASSES: Readonly<
+  Record<SandboxProviderCapability, SandboxProviderCapabilityClass>
+> = {
+  'terminal.websocket': 'operation',
+  'workspace.git.materialize': 'operation',
+  'workspace.git.deliver': 'operation',
+  'transcript.retained-read': 'operation',
+  'lifecycle.readopt': 'operation',
+  'terminal.interactive': 'feature',
+  'command.exec': 'feature',
+  'workspace.archive.transfer': 'feature',
+  'workspace.source.volume': 'feature',
+  'workspace.source.archive': 'feature',
+  'workspace.source.git': 'feature',
+  'transcript.retained-source': 'feature',
+  'lifecycle.sleep': 'feature',
+  'lifecycle.snapshot': 'feature',
+  'resource.disk-size-gb': 'feature',
+  'port.expose': 'feature',
+};
+
+function capabilitiesOfClass(
+  wanted: SandboxProviderCapabilityClass,
+): readonly SandboxProviderCapability[] {
+  return Object.freeze(
+    (
+      Object.keys(SANDBOX_PROVIDER_CAPABILITY_CLASSES) as SandboxProviderCapability[]
+    ).filter((capability) => SANDBOX_PROVIDER_CAPABILITY_CLASSES[capability] === wanted),
+  );
+}
+
+/**
+ * Operation-level capabilities used by the current AIO/cloud HTTP selection
+ * paths. Derived from the classification, so it cannot drift from it.
+ */
+export const SANDBOX_PROVIDER_CAPABILITIES: readonly SandboxProviderCapability[] =
+  capabilitiesOfClass('operation');
 
 /**
  * Provider feature capabilities used by selected-run planning and future
- * adapters. These are intentionally separate from
- * `SANDBOX_PROVIDER_CAPABILITIES` so providers opt in only after implementing
- * and preflighting the feature.
+ * adapters. Derived from the classification, so it cannot drift from it.
  */
-export const SANDBOX_PROVIDER_FEATURE_CAPABILITIES: readonly SandboxProviderCapability[] = [
-  'terminal.interactive',
-  'command.exec',
-  'workspace.archive.transfer',
-  'workspace.source.volume',
-  'workspace.source.archive',
-  'workspace.source.git',
-  'transcript.retained-source',
-  'lifecycle.readoption',
-  'lifecycle.sleep',
-  'lifecycle.snapshot',
-  'resource.disk-size-gb',
-  'port.expose',
-] as const;
+export const SANDBOX_PROVIDER_FEATURE_CAPABILITIES: readonly SandboxProviderCapability[] =
+  capabilitiesOfClass('feature');
 
-export const SANDBOX_PROVIDER_KNOWN_CAPABILITIES: readonly SandboxProviderCapability[] = [
-  ...SANDBOX_PROVIDER_CAPABILITIES,
-  ...SANDBOX_PROVIDER_FEATURE_CAPABILITIES,
-] as const;
+/**
+ * Every capability, by construction the union's full membership: it is the key
+ * set of a total mapping rather than a concatenation that happened to add up.
+ */
+export const SANDBOX_PROVIDER_KNOWN_CAPABILITIES: readonly SandboxProviderCapability[] =
+  Object.freeze([
+    ...SANDBOX_PROVIDER_CAPABILITIES,
+    ...SANDBOX_PROVIDER_FEATURE_CAPABILITIES,
+  ]);
 
 export type SandboxProviderLocation = 'local' | 'cloud';
 
@@ -111,8 +157,14 @@ export const DELIVERY_SANDBOX_FEATURE_CAPABILITIES: readonly SandboxProviderCapa
   'command.exec',
 ] as const;
 
+/**
+ * Readoption has no feature-level capability distinct from its operation-level
+ * one — unlike interactive terminals or retained transcripts, where the pair
+ * names two different capabilities. It previously appeared to have one only
+ * because the second entry was the same capability under a second spelling.
+ */
 export const READOPTION_SANDBOX_FEATURE_CAPABILITIES: readonly SandboxProviderCapability[] = [
-  'lifecycle.readoption',
+  'lifecycle.readopt',
 ] as const;
 
 export const RETAINED_TRANSCRIPT_SANDBOX_FEATURE_CAPABILITIES: readonly SandboxProviderCapability[] = [
@@ -124,7 +176,7 @@ export function missingCapabilities(
   required: readonly SandboxProviderCapability[],
 ): SandboxProviderCapability[] {
   const set = new Set(declared ?? []);
-  return required.filter((capability) => !hasDeclaredCapability(set, capability));
+  return required.filter((capability) => !set.has(capability));
 }
 
 export function hasAllCapabilities(
@@ -132,18 +184,4 @@ export function hasAllCapabilities(
   required: readonly SandboxProviderCapability[],
 ): boolean {
   return missingCapabilities(declared, required).length === 0;
-}
-
-function hasDeclaredCapability(
-  declared: ReadonlySet<SandboxProviderCapability>,
-  required: SandboxProviderCapability,
-): boolean {
-  if (declared.has(required)) return true;
-  if (
-    (required === 'lifecycle.readopt' && declared.has('lifecycle.readoption')) ||
-    (required === 'lifecycle.readoption' && declared.has('lifecycle.readopt'))
-  ) {
-    return true;
-  }
-  return false;
 }
