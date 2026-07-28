@@ -3,6 +3,7 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -13,6 +14,7 @@ import {
   type OperatorPrincipal,
 } from './operator-principal';
 import { SESSION_COOKIE_NAME, readCookie } from './session-token';
+import { isStateChangingMethod, isTrustedRequestOrigin } from './request-origin';
 
 /**
  * Operator session guard.
@@ -60,7 +62,17 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
+  private readonly logger = new Logger(AuthGuard.name);
+
   constructor(private readonly authSession: AuthSessionService) {}
+
+  /** First value of a possibly-repeated header, trimmed; `undefined` when empty. */
+  private static headerValue(
+    value: string | string[] | undefined,
+  ): string | undefined {
+    const raw = Array.isArray(value) ? value[0] : value;
+    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
+  }
 
   /**
    * Request paths (lower-cased, slash-normalized) exempt from operator auth
@@ -202,6 +214,32 @@ export class AuthGuard implements CanActivate {
       // Fail-closed: missing/malformed/expired/revoked/disallowed, or the legacy
       // bearer while the legacy path is disabled. No state change.
       throw new UnauthorizedException('Operator authentication required');
+    }
+
+    // CROSS-SITE FORGERY chokepoint. A session principal authenticated from a
+    // COOKIE — `extractSessionToken` reads it only from the cookie header — and in
+    // the cross-origin deployment shape that cookie is `SameSite=None`, so a
+    // third-party page can make the browser attach it. CORS does not stop that: it
+    // governs whether a response may be READ, not whether a request is SENT, and a
+    // state change needs no readable response. So an unsafe method authenticated
+    // this way must declare an origin the deployment trusts.
+    //
+    // Bearer credentials (api-key / mcp / legacy) are exempt by construction:
+    // `extractBearerToken` reads them only from `Authorization`, which a browser
+    // will not attach cross-site on its own, so no forgery is possible and the
+    // rule would only break legitimate programmatic callers.
+    if (principal.kind === 'session' && isStateChangingMethod(request.method)) {
+      const origin = AuthGuard.headerValue(request.headers.origin);
+      if (!isTrustedRequestOrigin(origin, AuthGuard.headerValue(request.headers.host))) {
+        this.logger.warn(
+          `refused a state-changing ${request.method} from untrusted origin ${origin ?? '(absent)'}`,
+        );
+        throw new ForbiddenException({
+          error: 'untrusted_request_origin',
+          message:
+            'A state-changing request authenticated by session cookie must come from a trusted origin. Set WEB_ORIGIN to the console origin for a cross-origin deployment.',
+        });
+      }
     }
 
     // mustChangePassword chokepoint (task 2.7 / D9): once a principal resolves, a

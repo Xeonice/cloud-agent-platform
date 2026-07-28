@@ -425,6 +425,30 @@ export function buildV1OpenApiDocument(): OpenApiDocument {
   });
 }
 
+/**
+ * Swagger UI assets, PINNED and integrity-checked.
+ *
+ * `GET /v1/docs` is anonymously reachable and sits on the same origin as the
+ * authenticated API, so whatever it loads executes there with the operator's
+ * cookies in scope. A version-less package URL resolves to whatever the CDN
+ * serves today; the exact version plus a subresource-integrity hash means a
+ * swapped artefact fails closed instead of running.
+ *
+ * `crossorigin` is required for SRI to be enforced at all — without it the
+ * browser silently ignores the hash.
+ *
+ * Bumping the version means recomputing both hashes:
+ *   curl -sS https://unpkg.com/swagger-ui-dist@<v>/<file> \
+ *     | openssl dgst -sha384 -binary | openssl base64 -A
+ */
+const SWAGGER_UI_VERSION = '5.32.6';
+const SWAGGER_UI_CSS_URL = `https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}/swagger-ui.css`;
+const SWAGGER_UI_CSS_SRI =
+  'sha384-9Q2fpS+xeS4ffJy6CagnwoUl+4ldAYhOs9pgZuEKxypVModhmZFzeMlvVsAjf7uT';
+const SWAGGER_UI_BUNDLE_URL = `https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}/swagger-ui-bundle.js`;
+const SWAGGER_UI_BUNDLE_SRI =
+  'sha384-EYdOaiRwn44zNjrw+Tfs06qYz9BGQVo2f4/pLY5i7VorbjnZNhdplAbTBk8FXHUJ';
+
 /** Swagger UI shell served by `GET /v1/docs`. */
 export function buildV1DocsHtml(specUrl: string = '/v1/openapi.json'): string {
   return `<!DOCTYPE html>
@@ -433,11 +457,20 @@ export function buildV1DocsHtml(specUrl: string = '/v1/openapi.json'): string {
     <meta charset="UTF-8" />
     <title>${V1_OPENAPI_INFO.title} — API docs</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" />
+    <link
+      rel="stylesheet"
+      href="${SWAGGER_UI_CSS_URL}"
+      integrity="${SWAGGER_UI_CSS_SRI}"
+      crossorigin="anonymous"
+    />
   </head>
   <body>
     <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js" crossorigin></script>
+    <script
+      src="${SWAGGER_UI_BUNDLE_URL}"
+      integrity="${SWAGGER_UI_BUNDLE_SRI}"
+      crossorigin="anonymous"
+    ></script>
     <script>
       window.addEventListener('load', function () {
         window.ui = SwaggerUIBundle({

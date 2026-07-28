@@ -266,13 +266,44 @@ docker pull "ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
 | ----------------------- | ---------------- | ---------------------------------------------------------------- |
 | `VITE_API_BASE_URL`     | `apps/web` 构建 | api 的 HTTP base URL，例如 `https://cap-api.example.com`     |
 | `VITE_WS_URL`           | `apps/web` 构建 | api 的 WebSocket URL，例如 `wss://cap-api.example.com`       |
-| `WEB_ORIGIN`            | `apps/api/.env`  | api 做 CORS 白名单、并在登录后重定向到的、以逗号分隔的 web 源 |
+| `WEB_ORIGIN`            | `apps/api/.env`  | api 做 CORS 白名单、登录后重定向、**以及信任其发起 cookie 鉴权写操作**的 web 源（逗号分隔，见下） |
 | `SESSION_COOKIE_DOMAIN` | `apps/api/.env`  | cookie 的 `Domain` 属性（见下）—— **最常见的错误** |
 
 > **`VITE_*` 是构建期变量，被烘焙进镜像。** web 镜像是**域名专属**的：
 > `VITE_API_BASE_URL` / `VITE_WS_URL` 在打包构建时由 Vite 读取，而非容器启动时。
 > 把它们作为构建参数传入（`docker compose build` 会从你的 env 读取），并在更改 api
 > 域名时重新构建 `web` 镜像。它们无法通过编辑运行中容器的 env 来更改。
+
+### `WEB_ORIGIN` 现在还把关写操作，不只是响应共享
+
+以 **session cookie** 鉴权的状态变更请求（`POST`/`PUT`/`PATCH`/`DELETE`），只有在
+声明了本部署信任的来源时才被放行。信任来自三处，所以普通安装无需新增配置：
+
+- 请求**自身的源**——同源部署天然可信，而 `WEB_ORIGIN` 未设**就意味着**同源；
+- 开启 `WEB_ORIGIN_AUTO_SAME_HOST` 时的同主机源；
+- `WEB_ORIGIN` 白名单本身。
+
+这堵的是跨站请求伪造：在**跨源**部署里（控制台一个域名、api 另一个），session
+cookie 是 `SameSite=None`，浏览器会把它附加到任何页面发起的请求上。CORS 挡不住
+——它管的是响应能否被**读取**，而不是请求能否被**发出**，而状态变更并不需要读响应。
+
+运维上的含义：
+
+- **跨源安装必须把 `WEB_ORIGIN` 设为控制台的源。** 未设或设错时，控制台的写操作会被
+  拒绝并返回 `error: "untrusted_request_origin"`（读不受影响）。同源安装不受影响。
+- **WebSocket 握手同样校验。** 来自不可信源的终端连接在 upgrade 阶段就被 `403` 拒绝，
+  并记录被拒的源。浏览器不对 WebSocket 施加同源策略，所以这是独立于 CORS 的一道检查。
+- **程序化调用方不受影响。** API key 与 MCP token 走 `Authorization` 头，浏览器无法把它
+  附加到伪造的跨站请求上，因此豁免、也不需要声明来源。但用**复制的 session cookie**
+  且不带 `Origin` 的脚本从此会被拒绝——请改用 API key。
+
+### 管理操作需要交互式会话
+
+账号管理、SMTP 配置与沙箱环境管理只接受**交互式会话**。API key 或 MCP token 一律被拒，
+即使铸造它的账号是管理员、无论它被授予了哪些 scope——**owner 的权限不等于凭据的权限**。
+
+如果你用机器凭据脚本化调用过这些端点，它们从此返回 `403 admin_required`。这类操作请改用
+管理员会话；机器凭据继续用于它们被授权的任务与仓库接口。
 
 ### 拓扑 A —— 跨子域（推荐）
 

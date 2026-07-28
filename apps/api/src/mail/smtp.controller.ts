@@ -20,6 +20,7 @@ import {
   type TestSmtpConfigResponse,
 } from '@cap/contracts';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
+import { isAdminPrincipal } from '../auth/admin';
 import { PrismaService } from '../prisma/prisma.service';
 import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { SmtpConfigService } from './smtp-config.service';
@@ -214,6 +215,13 @@ export class SmtpController {
     const principal = req.operatorPrincipal;
     const user = principal?.user;
     if (!principal || !user) {
+      throw this.adminDenied();
+    }
+
+    // KIND FIRST — see the note in AccountsController.requireAdmin. A machine
+    // credential resolves to its owner's row, so the live re-read below cannot
+    // by itself distinguish "an admin is asking" from "an admin's API key is".
+    if (!isAdminPrincipal(principal)) {
       throw this.adminDenied();
     }
 

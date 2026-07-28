@@ -55,6 +55,10 @@ PORT="${BOOT_SMOKE_PORT:-8080}"
 TIMEOUT="${BOOT_SMOKE_TIMEOUT:-60}"
 # Keying email for the default-admin seed exercised below. Throwaway-DB only.
 ADMIN_EMAIL_FOR_SMOKE="${BOOT_SMOKE_ADMIN_EMAIL:-boot-smoke-admin@example.com}"
+# The console origin the smoke boots with, so the trusted-origin allow-list is
+# non-empty and the WebSocket handshake probe has both a trusted and an
+# untrusted case to exercise.
+SMOKE_WEB_ORIGIN="${BOOT_SMOKE_WEB_ORIGIN:-https://console.boot-smoke.example}"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "boot-smoke: FATAL — DATABASE_URL is unset; a throwaway Postgres is required." >&2
@@ -106,7 +110,11 @@ fi
 #    default-admin seed (argon2 hash + admin/IdentityLink write) actually RUNS —
 #    it is skipped when ADMIN_EMAIL is unset.
 echo "boot-smoke: starting node dist/main.js on :${PORT}..."
+# WEB_ORIGIN is set so the trusted-origin allow-list is NON-EMPTY, which is what
+# the WebSocket handshake probe in step 5 exercises. It also matches the
+# cross-origin shape the origin checks exist for.
 PORT="${PORT}" AUTH_TOKEN_LEGACY_ENABLED="" ADMIN_EMAIL="${ADMIN_EMAIL_FOR_SMOKE}" \
+  WEB_ORIGIN="${SMOKE_WEB_ORIGIN}" \
   node dist/main.js >>"${LOG_FILE}" 2>&1 &
 APP_PID=$!
 
@@ -140,10 +148,44 @@ REVEAL_BODY="$(curl -fsS --max-time 5 -X POST -H 'content-type: application/json
   "${REVEAL_URL}" 2>>"${LOG_FILE}" || true)"
 case "${REVEAL_BODY}" in
   *'"email"'*)
-    echo "boot-smoke: PASSED — /health healthy and the default-admin seed + argon2 reveal succeeded."
-    exit 0
+    echo "boot-smoke: default-admin seed + argon2 reveal succeeded."
     ;;
   *)
     fail "default-admin seed/argon2 reveal did not return a credential (got: ${REVEAL_BODY:-<empty>}); a broken seed or missing @node-rs/argon2 native binary"
     ;;
 esac
+
+# 5) WebSocket handshake origin probe. Browsers do NOT apply the same-origin
+#    policy to WebSocket connections and the HTTP CORS allow-list does not cover
+#    them, so without a handshake check any page could open a terminal socket
+#    with the operator's cookie attached. This needs a REAL upgrade against the
+#    booted server — the unit suite can prove the decision, only this proves the
+#    adapter is actually wired into the running app.
+WS_URL="http://127.0.0.1:${PORT}/terminal"
+ws_handshake_status() {
+  # Prints the numeric status of the upgrade response. `--http1.1` because an
+  # upgrade is HTTP/1.1-only; the key is fixed since we never read a frame.
+  curl -sS -o /dev/null -D - --max-time 5 --http1.1 \
+    -H 'Connection: Upgrade' \
+    -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' \
+    -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
+    -H "Origin: $1" \
+    "${WS_URL}" 2>>"${LOG_FILE}" \
+    | awk 'toupper($0) ~ /^HTTP\// { code = $2 } END { print code }'
+}
+
+FOREIGN_STATUS="$(ws_handshake_status 'https://evil.example')"
+if [ "${FOREIGN_STATUS}" != "403" ]; then
+  fail "WebSocket handshake from an untrusted origin was NOT refused (status: ${FOREIGN_STATUS:-<none>}); expected 403"
+fi
+echo "boot-smoke: cross-origin WebSocket handshake refused (403)."
+
+TRUSTED_STATUS="$(ws_handshake_status "${SMOKE_WEB_ORIGIN}")"
+if [ "${TRUSTED_STATUS}" != "101" ]; then
+  fail "WebSocket handshake from the configured console origin did NOT complete (status: ${TRUSTED_STATUS:-<none>}); expected 101"
+fi
+echo "boot-smoke: console-origin WebSocket handshake completed (101)."
+
+echo "boot-smoke: PASSED — /health healthy, default-admin seed + argon2 reveal succeeded, and the WebSocket handshake is origin-checked."
+exit 0

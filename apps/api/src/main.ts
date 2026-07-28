@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 import { NestFactory } from '@nestjs/core';
-import { WsAdapter } from '@nestjs/platform-ws';
+import { OriginCheckedWsAdapter } from './auth/origin-checked-ws-adapter';
 import { Logger } from 'nestjs-pino';
 import type { Request, RequestHandler, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
@@ -129,7 +129,10 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   // Realtime terminal: serve the custom dual-channel frame protocol over `ws`.
-  app.useWebSocketAdapter(new WsAdapter(app));
+  // The allow-list below is introduced as "CORS / WS-origin" — this is the WS
+  // half, which had never been wired. The adapter refuses a handshake from an
+  // untrusted origin before any connection exists.
+  app.useWebSocketAdapter(new OriginCheckedWsAdapter(app));
 
   // 10.1b — CORS / WS-origin allow-listing. The Vercel web target is a different
   // origin from the Fly/compose api, so the api must explicitly allow it. The

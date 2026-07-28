@@ -105,7 +105,10 @@ function ctx(opts: { path?: string; cookie?: string; authorization?: string } = 
   const headers: Record<string, string> = {};
   if (opts.cookie !== undefined) headers.cookie = opts.cookie;
   if (opts.authorization !== undefined) headers.authorization = opts.authorization;
-  const request = { path: opts.path ?? '/tasks', url: opts.path ?? '/tasks', headers };
+  // A real Express request always carries a method; these cases exercise the
+  // guard's credential routing, not writes, so GET keeps them out of the
+  // cross-site-forgery lane.
+  const request = { method: 'GET', path: opts.path ?? '/tasks', url: opts.path ?? '/tasks', headers };
   return {
     request: request as unknown as AuthenticatedRequest,
     switchToHttp: () => ({ getRequest: () => request }),
