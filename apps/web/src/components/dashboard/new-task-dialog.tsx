@@ -373,7 +373,9 @@ export function NewTaskDialog({
   const settings = useQuery(settingsQuery());
   const authSession = useQuery(authSessionQuery());
   const readyById = React.useMemo(() => {
-    const map = new Map<RuntimeId, boolean>();
+    // Keyed by the raw reported id: the api is the authority on which
+    // runtimes exist, so an id outside this console's union still gets an entry.
+    const map = new Map<string, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
     return map;
   }, [runtimesReadiness.data]);

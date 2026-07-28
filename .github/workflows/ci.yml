@@ -188,6 +188,15 @@ jobs:
       - name: Test discovery gate
         run: pnpm test:discovery
 
+      # The agent-runtime spec forbids branching on WHICH agent is running in code
+      # shared across runtimes, and asks for a grep that finds zero matches. Nobody
+      # ran that grep, so the rule depended on review from the day it was written
+      # and had drifted into 16 violations — including the two areas the
+      # requirement names by hand. This runs it. Like the discovery gate, it
+      # self-tests, so it is provably able to fail.
+      - name: Agent-identity branch gate
+        run: pnpm test:agent-identity
+
       # App suites through the task graph. Previously three hand-named `pnpm
       # --filter` steps, which is the same allowlist failure mode one level up —
       # a new app owning tests would simply not run here. The directory filter

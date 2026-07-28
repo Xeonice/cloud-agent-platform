@@ -130,6 +130,8 @@ function makeFakeRegistry(): { registry: IAgentRuntimeRegistry; calls: Runtime[]
       return {
         id,
         executionModes: new Set(['interactive-pty', 'headless-exec'] as const),
+        transcriptFormat:
+          (runtime ?? 'codex') === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
       };
     },
   };
@@ -320,6 +322,8 @@ function makeNoHeadlessRegistry(): IAgentRuntimeRegistry {
       return {
         id: runtime ?? 'codex',
         executionModes: new Set(['interactive-pty'] as const),
+        transcriptFormat:
+          (runtime ?? 'codex') === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
       };
     },
   };

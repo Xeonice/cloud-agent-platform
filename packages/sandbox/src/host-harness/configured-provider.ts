@@ -634,6 +634,38 @@ async function runRuntimePreflight<TAuthMaterial>(args: {
   return sandboxMetadata;
 }
 
+/**
+ * Historical runtime spellings a caller may still present, mapped to the id the
+ * image metadata declares. Data, not a decision: the provider does not branch on
+ * WHICH runtime is running, it only canonicalises the key it looks up.
+ */
+const RUNTIME_DEPENDENCY_KEY_ALIASES: Readonly<Record<string, string>> = {
+  claude: 'claude-code',
+};
+
+function normalizeRuntimeDependencyKey(runtimeId: string): string {
+  return RUNTIME_DEPENDENCY_KEY_ALIASES[runtimeId] ?? runtimeId;
+}
+
+/**
+ * Refuse a transcript read strategy this provider does not implement.
+ *
+ * `single-newest-jsonl` is the only strategy any provider implements. Returning
+ * null for anything else made an UNIMPLEMENTED read indistinguishable from a
+ * task that simply has no transcript — the operator saw an empty session and
+ * nothing said why. Unreachable for both shipped runtimes (each declares that
+ * one kind); it exists so a third runtime declaring a strategy nobody built
+ * fails where the gap actually is.
+ */
+function assertSingleNewestJsonlSupported(kind: string, providerLabel: string): void {
+  if (kind !== 'single-newest-jsonl') {
+    throw new Error(
+      `${providerLabel} cannot read transcripts with strategy "${kind}": ` +
+        'no provider implements a strategy other than single-newest-jsonl',
+    );
+  }
+}
+
 async function readSandboxMetadata(args: {
   readonly executor: SandboxCommandExecutor;
   readonly taskId: string;
@@ -660,8 +692,16 @@ async function readSandboxMetadata(args: {
         args.scrubOutput(String(error)),
     );
   }
-  const key = args.runtimeId === 'claude' ? 'claude-code' : args.runtimeId;
-  if ((key === 'codex' || key === 'claude-code') && !metadata.dependencies[key]) {
+  // EVERY named runtime must be declared by the image — no allow-list.
+  //
+  // This previously ran only for the two ids it spelled out, which made it
+  // fail-OPEN: a runtime outside that pair skipped image validation entirely and
+  // provisioned against an image that never declared it. The provider is
+  // deliberately runtime-agnostic (`runtimeId` is an opaque string here), so it
+  // has no business knowing WHICH runtimes exist — only that whichever one was
+  // selected has to appear in the metadata.
+  const key = args.runtimeId === null ? null : normalizeRuntimeDependencyKey(args.runtimeId);
+  if (key !== null && !metadata.dependencies[key]) {
     throw new Error(
       `sandbox metadata preflight for ${args.providerLabel} task ${args.taskId} failed: ` +
         `selected runtime dependency ${key} is not declared`,
@@ -904,9 +944,7 @@ async function readAioTranscriptSource<
     runtimeId: args.runtimeId,
     providerLabel: 'AIO',
   });
-  if (runtime.readTranscriptSource.kind !== 'single-newest-jsonl') {
-    return null;
-  }
+  assertSingleNewestJsonlSupported(runtime.readTranscriptSource.kind, 'AIO');
 
   const { dir, filenameGlob } = runtime.transcriptArtifact({
     taskId: args.taskId,
@@ -947,9 +985,7 @@ async function readBoxLiteTranscriptSource<
     runtimeId: args.runtimeId,
     providerLabel: 'BoxLite',
   });
-  if (runtime.readTranscriptSource.kind !== 'single-newest-jsonl') {
-    return null;
-  }
+  assertSingleNewestJsonlSupported(runtime.readTranscriptSource.kind, 'BoxLite');
 
   const { dir, filenameGlob } = runtime.transcriptArtifact({
     taskId: args.taskId,

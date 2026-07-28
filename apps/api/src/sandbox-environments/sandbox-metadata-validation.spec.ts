@@ -115,7 +115,13 @@ test('runtime artifact checksum accepts only a successful SHA-256 probe', () => 
       ]),
     /checksum is unavailable/,
   );
-  assert.equal(runtimeArtifactChecksumFromProbes('custom-runtime', []), null);
+  // An id this deployment does not recognise used to return null here, which
+  // read as "no checksum required" and skipped artifact verification entirely.
+  // fail-loud-on-unknown-runtime makes it say so instead.
+  assert.throws(
+    () => runtimeArtifactChecksumFromProbes('custom-runtime', []),
+    /no runtime artifact checksum is defined/,
+  );
 });
 
 test('multi-runtime checksum probes remain attributed to the correct CLI', () => {
@@ -171,4 +177,47 @@ test('metadata probe fails missing, malformed, moving, and selected-runtime omis
       }),
     /claude-code is not declared/,
   );
+});
+
+test('a runtime this deployment does not know cannot pass image validation', () => {
+  // The guard used to run ONLY for the two ids it spelled out, so anything else
+  // fell outside the condition and skipped validation entirely — provisioning
+  // against an image that never declared it. Fail-closed now.
+  const metadata = metadataFromProbes([
+    {
+      name: 'sandbox-metadata',
+      ok: true,
+      output: JSON.stringify({ schemaVersion: 1, sandboxVersion: 'v1.2.3', dependencies: { codex: '1.0.0' } }),
+    },
+  ]);
+  assert.throws(
+    () => assertRuntimeDeclared('opencode', metadata),
+    /not a runtime this deployment knows/,
+    'an unrecognised runtime must be refused, not waved through',
+  );
+});
+
+test('an absent runtime is not an unrecognised one', () => {
+  // A task that predates the column carries no runtime; that keeps its default
+  // and must NOT be confused with an id nobody recognises.
+  const metadata = metadataFromProbes([
+    {
+      name: 'sandbox-metadata',
+      ok: true,
+      output: JSON.stringify({ schemaVersion: 1, sandboxVersion: 'v1.2.3', dependencies: { codex: '1.0.0' } }),
+    },
+  ]);
+  assert.doesNotThrow(() => assertRuntimeDeclared(null, metadata));
+  assert.doesNotThrow(() => assertRuntimeDeclared(undefined, metadata));
+});
+
+test('a legacy `claude` spelling still resolves to the declared claude-code dependency', () => {
+  const metadata = metadataFromProbes([
+    {
+      name: 'sandbox-metadata',
+      ok: true,
+      output: JSON.stringify({ schemaVersion: 1, sandboxVersion: 'v1.2.3', dependencies: { 'claude-code': '2.0.0' } }),
+    },
+  ]);
+  assert.doesNotThrow(() => assertRuntimeDeclared('claude', metadata));
 });

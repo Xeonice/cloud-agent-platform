@@ -1,3 +1,5 @@
+import { type IAgentRuntimeRegistry } from './tasks.service';
+import { RUNTIME_REGISTRY } from '../sandbox/sandbox.module';
 import { Controller, Get, Inject, Param } from '@nestjs/common';
 import type { SessionHistory } from '@cap/contracts';
 import {
@@ -51,6 +53,8 @@ export class SessionHistoryController {
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
     @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
+    @Inject(RUNTIME_REGISTRY)
+    private readonly runtimes: IAgentRuntimeRegistry,
   ) {}
 
   @Get('tasks/:id/session-history')
@@ -61,6 +65,7 @@ export class SessionHistoryController {
         sandbox: this.sandbox,
         transcripts: this.transcripts,
         audit: this.audit,
+        runtimes: this.runtimes,
       },
       id,
     );

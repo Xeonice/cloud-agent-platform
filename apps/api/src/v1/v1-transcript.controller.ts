@@ -1,3 +1,5 @@
+import { type IAgentRuntimeRegistry } from '../tasks/tasks.service';
+import { RUNTIME_REGISTRY } from '../sandbox/sandbox.module';
 import {
   Get,
   Inject,
@@ -44,6 +46,8 @@ export class V1TranscriptController {
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
     @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
+    @Inject(RUNTIME_REGISTRY)
+    private readonly runtimes: IAgentRuntimeRegistry,
   ) {}
 
   @Get(':id/transcript')
@@ -59,6 +63,7 @@ export class V1TranscriptController {
         sandbox: this.sandbox,
         transcripts: this.transcripts,
         audit: this.audit,
+        runtimes: this.runtimes,
       },
       id,
     );

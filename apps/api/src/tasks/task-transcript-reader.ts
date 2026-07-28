@@ -6,10 +6,10 @@ import {
 } from '@cap/contracts';
 import { selectRetainedTranscriptSandboxProvider } from '@cap/sandbox';
 import {
-  transcriptFormatForRuntime,
   type RuntimeId,
   type TranscriptFormat,
 } from '../agent-runtime/agent-runtime.port';
+import type { IAgentRuntimeRegistry } from './tasks.service';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
 import { parseTranscript } from '../sandbox/parse-transcript';
 import type { TasksService } from './tasks.service';
@@ -43,6 +43,13 @@ export interface TaskTranscriptReaderDeps {
   readonly sandbox: SandboxProvider;
   readonly transcripts: TranscriptStore;
   readonly audit: AuditTimelineReader;
+  /**
+   * Resolves the transcript format from the runtime's OWN declaration. Threaded
+   * through here because this is a pure function: its callers are Nest
+   * components that inject the registry. Re-deriving the format from the
+   * runtime's identity was a second source of the same fact.
+   */
+  readonly runtimes: IAgentRuntimeRegistry;
 }
 
 /**
@@ -66,7 +73,10 @@ export async function readTaskTranscript(
   }
 
   const runtime = task.runtime as RuntimeId | null;
-  const format = transcriptFormatForRuntime(runtime);
+  // The registry keeps the absent-id default and THROWS for an id it does not
+  // know, so an unrecognised runtime fails here rather than having its
+  // transcript mislabelled and handed to the wrong parser.
+  const format = deps.runtimes.resolve(runtime).transcriptFormat;
   const retained = selectRetainedSandbox(deps.sandbox);
   const isRunning =
     task.status === 'running' || task.status === 'awaiting_input';

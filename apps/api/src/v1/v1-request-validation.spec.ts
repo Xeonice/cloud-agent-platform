@@ -26,6 +26,7 @@ import { V1ReposController } from './v1-repos.controller';
 import { V1SchedulesController } from './v1-schedules.controller';
 import { V1TasksController } from './v1-tasks.controller';
 import { V1TranscriptController } from './v1-transcript.controller';
+import { RUNTIME_REGISTRY } from '../sandbox/sandbox.module';
 
 const VALID_ID = '11111111-1111-4111-8111-111111111111';
 const VALID_REPO_ID = '22222222-2222-4222-8222-222222222222';
@@ -216,6 +217,20 @@ before(async () => {
       { provide: SANDBOX_PROVIDER, useValue: {} },
       { provide: TRANSCRIPT_STORE, useValue: {} },
       { provide: AUDIT_TIMELINE_READER, useValue: {} },
+      // The transcript route resolves its format through the runtime registry,
+      // which production supplies from the @Global sandbox module; this minimal
+      // test module has to provide it explicitly.
+      {
+        provide: RUNTIME_REGISTRY,
+        useValue: {
+          resolve: (runtime: string | null | undefined) => ({
+            id: runtime ?? 'codex',
+            executionModes: new Set(['interactive-pty']),
+            transcriptFormat:
+              runtime === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
+          }),
+        },
+      },
     ],
   }).compile();
 

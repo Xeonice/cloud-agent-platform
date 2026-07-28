@@ -1187,6 +1187,7 @@ class StoryHarness {
       {} as never,
       this.router as unknown as SandboxProvider,
       {} as never,
+      {} as never,
     );
     this.reposController = new ReposController(this.repos);
     this.tasksController = new TasksController(this.tasks);

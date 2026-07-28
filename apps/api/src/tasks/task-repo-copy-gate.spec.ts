@@ -112,6 +112,8 @@ function makeHarness(copyStatus: string | null | undefined): GateHarness {
       return {
         id: runtime ?? 'codex',
         executionModes: new Set(['interactive-pty', 'headless-exec'] as const),
+        transcriptFormat:
+          (runtime ?? 'codex') === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
       };
     },
   };

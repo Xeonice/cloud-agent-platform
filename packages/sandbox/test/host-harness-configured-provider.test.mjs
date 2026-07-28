@@ -958,7 +958,7 @@ await test('runtime command failures are classified before provider redaction', 
   });
 });
 
-await test('configured AIO transcript hook returns null for unsupported and missing transcript sources', async () => {
+await test('configured AIO transcript hook REFUSES an unsupported strategy and returns null only for a missing source', async () => {
   await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
     const unsupported = makeRuntime('claude-code', {
       readKind: 'provider-owned',
@@ -968,13 +968,18 @@ await test('configured AIO transcript hook returns null for unsupported and miss
       taskRuntime: unsupported,
     });
     const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
-    assert.equal(
-      await hooks.transcriptRead({
-        taskId: 'task-no-jsonl',
-        runtimeId: 'claude-code',
-        controller: { readSingleNewestJsonl: async () => '{"unused":true}\n' },
-      }),
-      null,
+    // A strategy no provider implements used to return null, which upstream reads
+    // as "this task has no transcript" — the operator got an empty session and no
+    // reason. fail-loud-on-unknown-runtime makes the gap say where it is. A
+    // MISSING source (below) still legitimately returns null.
+    await assert.rejects(
+      () =>
+        hooks.transcriptRead({
+          taskId: 'task-no-jsonl',
+          runtimeId: 'claude-code',
+          controller: { readSingleNewestJsonl: async () => '{"unused":true}\n' },
+        }),
+      /cannot read transcripts with strategy "provider-owned"/,
     );
 
     const jsonlRuntime = makeRuntime('codex');
@@ -1447,12 +1452,15 @@ await test('configured transcript hooks cover fallback and BoxLite retained-read
         executionMode: 'interactive-pty',
       });
 
-      assert.equal(
-        await provider.readRolloutFromContainer(
-          'box-transcript-edges',
-          'provider-owned',
-        ),
-        null,
+      // Same boundary on the BoxLite side: an unimplemented strategy is refused,
+      // while the three genuine read failures below still degrade to null.
+      await assert.rejects(
+        () =>
+          provider.readRolloutFromContainer(
+            'box-transcript-edges',
+            'provider-owned',
+          ),
+        /cannot read transcripts with strategy "provider-owned"/,
       );
       for (const nextMode of ['list-failed', 'no-match', 'read-failed']) {
         mode = nextMode;

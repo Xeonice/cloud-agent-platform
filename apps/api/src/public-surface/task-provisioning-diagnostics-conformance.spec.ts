@@ -412,6 +412,7 @@ function fixtureSurfaces(): FixtureSurfaces {
     {} as never,
     {} as never,
     facade,
+    {} as never,
   );
   const tools = new Map<string, ToolCallback>();
   const registrar: ToolRegistrar = {

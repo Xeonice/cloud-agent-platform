@@ -71,11 +71,7 @@ export class RuntimeModelAdapterRegistry {
   }
 
   register(adapter: RuntimeModelAdapterDescriptor): void {
-    if (
-      (adapter.runtime === 'codex' && adapter.credentialMode === 'subscription') ||
-      (adapter.runtime === 'claude-code' &&
-        adapter.credentialMode !== 'subscription')
-    ) {
+    if (!SUPPORTED_AUTHORITIES[adapter.runtime][adapter.credentialMode]) {
       throw new Error(
         `Runtime model adapter combination ${adapter.runtime}/${adapter.credentialMode} is unsupported`,
       );
@@ -106,37 +102,66 @@ export class RuntimeModelAdapterRegistry {
   }
 }
 
+/**
+ * The authority metadata each supported runtime/credential-mode combination must
+ * carry, exactly — declared as a TOTAL mapping over runtimes.
+ *
+ * Previously a chain of `adapter.runtime === '…'` branches with a `return false`
+ * tail. That was loud (an unlisted combination threw at registration) but it was
+ * loud in the wrong place: introducing a runtime made every one of its
+ * combinations invalid and surfaced at boot as "authority metadata is invalid",
+ * miles from the omission. Keyed on `Record<Runtime, …>`, the omission is a
+ * COMPILE error at this declaration instead.
+ *
+ * A mode absent from a runtime's entry is an unsupported combination.
+ */
+const SUPPORTED_AUTHORITIES: Record<
+  Runtime,
+  Partial<
+    Record<
+      RuntimeModelCredentialMode,
+      Pick<
+        RuntimeModelAdapterDescriptor,
+        'source' | 'completeness' | 'availabilityEvidence' | 'capacityClass'
+      >
+    >
+  >
+> = {
+  codex: {
+    official: {
+      source: 'codex-app-server',
+      completeness: 'complete',
+      availabilityEvidence: 'account-discovered',
+      capacityClass: 'taskless-probe',
+    },
+    compatible: {
+      source: 'compatible-provider',
+      completeness: 'complete',
+      availabilityEvidence: 'account-discovered',
+      capacityClass: 'none',
+    },
+  },
+  'claude-code': {
+    subscription: {
+      source: 'versioned-cli-capabilities',
+      completeness: 'supported-subset',
+      availabilityEvidence: 'cli-version-verified',
+      capacityClass: 'none',
+    },
+  },
+};
+
 function hasValidAuthorityDescriptor(
   adapter: RuntimeModelAdapterDescriptor,
 ): boolean {
-  if (adapter.runtime === 'codex' && adapter.credentialMode === 'official') {
-    return (
-      adapter.source === 'codex-app-server' &&
-      adapter.completeness === 'complete' &&
-      adapter.availabilityEvidence === 'account-discovered' &&
-      adapter.capacityClass === 'taskless-probe'
-    );
-  }
-  if (adapter.runtime === 'codex' && adapter.credentialMode === 'compatible') {
-    return (
-      adapter.source === 'compatible-provider' &&
-      adapter.completeness === 'complete' &&
-      adapter.availabilityEvidence === 'account-discovered' &&
-      adapter.capacityClass === 'none'
-    );
-  }
-  if (
-    adapter.runtime === 'claude-code' &&
-    adapter.credentialMode === 'subscription'
-  ) {
-    return (
-      adapter.source === 'versioned-cli-capabilities' &&
-      adapter.completeness === 'supported-subset' &&
-      adapter.availabilityEvidence === 'cli-version-verified' &&
-      adapter.capacityClass === 'none'
-    );
-  }
-  return false;
+  const expected = SUPPORTED_AUTHORITIES[adapter.runtime][adapter.credentialMode];
+  if (!expected) return false;
+  return (
+    adapter.source === expected.source &&
+    adapter.completeness === expected.completeness &&
+    adapter.availabilityEvidence === expected.availabilityEvidence &&
+    adapter.capacityClass === expected.capacityClass
+  );
 }
 
 export function environmentSelectionFromCatalogQuery(

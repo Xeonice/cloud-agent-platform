@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   ExecutionMode,
   RuntimeOutputFailure,
+  TranscriptFormat,
 } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
@@ -372,6 +373,14 @@ export interface IAgentRuntimeRegistry {
     /** Execution modes the resolved runtime supports (add-headless-execution-track). */
     executionModes: ReadonlySet<ExecutionMode>;
     classifyOutputFailure?(output: string): RuntimeOutputFailure | null;
+    /**
+     * The transcript format this runtime writes. Read through the registry so the
+     * durable read path resolves the format from the SAME declaration the runtime
+     * makes, rather than re-deriving it from the runtime's identity — which was a
+     * second source of the same fact, and needed a consistency test to catch the
+     * two drifting apart.
+     */
+    transcriptFormat: TranscriptFormat;
   };
 }
 

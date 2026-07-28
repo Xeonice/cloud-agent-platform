@@ -60,6 +60,19 @@ export class AgentRuntimeRegistry {
     return this.byId.has(id);
   }
 
+  /**
+   * Narrow an arbitrary stored string to a registered {@link RuntimeId}.
+   *
+   * Callers reading a persisted runtime value need to know whether it names a
+   * runtime this deployment actually has. Answering that by comparing against a
+   * hand-written pair of literals is how the union and the check drift apart —
+   * the answer comes from what is REGISTERED, so registering a third runtime
+   * needs no edit here.
+   */
+  isRegistered(value: string): value is RuntimeId {
+    return this.byId.has(value as RuntimeId);
+  }
+
   /** The registered runtime ids, for enumeration (e.g. the readiness endpoint). */
   ids(): RuntimeId[] {
     return [...this.byId.keys()];

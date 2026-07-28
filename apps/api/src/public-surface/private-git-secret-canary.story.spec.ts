@@ -2017,6 +2017,7 @@ test(
       {} as never,
       {} as SandboxProvider,
       diagnosticsFacade,
+      {} as never,
     );
     const consoleTask = await tasksController.findById(TASK_ID);
     const v1Task = await v1TasksController.findById(TASK_ID, REQUEST);

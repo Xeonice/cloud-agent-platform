@@ -1869,6 +1869,7 @@ test('the production MCP factory delegates diagnostics to the shared public quer
     {} as never,
     {} as never,
     publicQuery as never,
+    {} as never,
   );
 
   const response = await factory.getTaskProvisioningDiagnostics(
@@ -1889,6 +1890,7 @@ test('the production MCP factory delegates diagnostics to the shared public quer
 
 test('the production MCP factory advertises exactly the registry tool set', async () => {
   const factory = new McpServerFactory(
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -2362,6 +2364,7 @@ test('McpServerFactory list_tasks uses the canonical persisted failure projectio
     {} as never,
     {} as never,
     prisma,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -3108,6 +3111,7 @@ test(
       {} as never,
       {} as never,
       provider as SandboxProvider,
+      {} as never,
       {} as never,
     );
     const server = factory.createServer();

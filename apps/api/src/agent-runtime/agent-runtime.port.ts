@@ -100,18 +100,6 @@ export interface TranscriptArtifact {
 export type TranscriptReadStrategy = { readonly kind: 'single-newest-jsonl' };
 
 /**
- * The canonical runtime → transcript-format mapping: a registry-free accessor for the
- * value each runtime declares as its `transcriptFormat`. Lets the durable-read path resolve
- * the parser without holding a runtime instance. A unit test asserts it agrees with the
- * runtimes' declared `transcriptFormat` so the two never drift.
- */
-export function transcriptFormatForRuntime(
-  runtime: RuntimeId | null | undefined,
-): TranscriptFormat {
-  return runtime === 'claude-code' ? 'claude-jsonl' : 'codex-rollout';
-}
-
-/**
  * A minimal shell-exec handle into a provisioned sandbox: runs ONE command over
  * the sandbox's `/v1/shell/exec` surface and returns its captured output + exit
  * code. The runtime depends on this narrow abstraction (NOT on the concrete
@@ -404,10 +392,39 @@ export interface AgentRuntime {
    * Declare HOW this runtime's transcript source is read out of the retained container
    * (unify-transcript-parsers, design D3). The sandbox read mechanism reads this STRATEGY
    * (alongside {@link transcriptArtifact}'s WHERE and {@link transcriptFormat}'s WHAT) to
-   * materialize the source it hands the parser — generalizing the former baked-in
-   * single-newest-file read. codex/claude declare `{ kind: 'single-newest-jsonl' }`
-   * verbatim; a future multi-record runtime declares a non-single-JSONL strategy WITHOUT
-   * editing them. The leaf port still owns NO read I/O and never imports the parsers.
+   * materialize the source it hands the parser.
+   *
+   * NOT YET AN EXTENSION POINT. {@link TranscriptReadStrategy} has exactly ONE member,
+   * both shipped runtimes declare it verbatim, and every provider implements only that
+   * one — so a runtime declaring anything else gets NO transcript, it does not get a
+   * different read. This comment used to promise a future runtime could declare a
+   * non-single-JSONL strategy without editing the others, which was never true of the
+   * code beneath it. Building the real dispatch belongs with the runtime-axis work,
+   * when a second strategy exists to shape it against (fail-loud-on-unknown-runtime,
+   * Track 7). Until then the providers REFUSE an unimplemented strategy loudly rather
+   * than returning empty.
    */
   readonly readTranscriptSource: TranscriptReadStrategy;
+}
+
+/**
+ * A persisted runtime value that names no runtime this deployment has.
+ *
+ * ABSENT and UNRECOGNISED are different things and only the latter reaches here:
+ * a task that predates the runtime column carries no value and keeps the
+ * documented {@link DEFAULT_RUNTIME_ID}. An id nobody recognises used to take
+ * that same default, so the task silently launched the WRONG agent — the one
+ * outcome a caller can neither see nor recover from. Raising instead turns it
+ * into a visible, attributable failure.
+ */
+export class UnknownRuntimeError extends Error {
+  constructor(
+    readonly taskId: string,
+    readonly value: string,
+  ) {
+    super(
+      `task ${taskId} names runtime "${value}", which this deployment does not provide`,
+    );
+    this.name = 'UnknownRuntimeError';
+  }
 }

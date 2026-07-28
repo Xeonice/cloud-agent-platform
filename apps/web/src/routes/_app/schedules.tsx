@@ -32,6 +32,7 @@ import {
   resumeScheduleMutation,
 } from "@/lib/api/mutations";
 import { recurrenceSummary } from "@/lib/task-form";
+import { agentLabel } from "@/lib/runtime-label";
 import { NewTaskDialog } from "@/components/dashboard/new-task-dialog";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { StatusPill } from "@/components/status-pill";
@@ -867,7 +868,7 @@ function repoLabel(repos: readonly Repo[], repoId: string): string {
 }
 
 function runtimeLabel(schedule: ScheduleResponse): string {
-  return schedule.taskTemplate.runtime === "claude-code" ? "Claude Code" : "Codex";
+  return agentLabel(schedule.taskTemplate.runtime);
 }
 
 function overlapLabel(value: ScheduleResponse["overlapPolicy"]): string {

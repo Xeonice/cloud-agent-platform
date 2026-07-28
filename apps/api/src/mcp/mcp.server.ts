@@ -23,6 +23,8 @@
  * (Track 3) attaches it; absent ⇒ no attribution (best-effort, like a scopeless
  * legacy principal on REST).
  */
+import { type IAgentRuntimeRegistry } from '../tasks/tasks.service';
+import { RUNTIME_REGISTRY } from '../sandbox/sandbox.module';
 import { Inject, Injectable } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SessionHistory } from '@cap/contracts';
@@ -76,6 +78,8 @@ export class McpServerFactory implements McpToolDeps {
     @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     private readonly taskProvisioningDiagnostics: TaskProvisioningDiagnosticsPublicQueryService,
+    @Inject(RUNTIME_REGISTRY)
+    private readonly runtimes: IAgentRuntimeRegistry,
   ) {}
 
   /** Create one tools-registered SDK server for one stateless HTTP request. */
@@ -206,6 +210,7 @@ export class McpServerFactory implements McpToolDeps {
         sandbox: this.sandbox,
         transcripts: this.transcripts,
         audit: this.audit,
+        runtimes: this.runtimes,
       },
       id,
     );

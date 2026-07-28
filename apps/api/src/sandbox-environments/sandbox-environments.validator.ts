@@ -1,6 +1,7 @@
 import Docker from 'dockerode';
 import { Injectable, Logger } from '@nestjs/common';
 import type {
+  Runtime,
   SandboxEnvironmentResources,
   SandboxMetadata,
   SandboxEnvironmentSource,
@@ -302,9 +303,18 @@ export function assertRuntimeDeclared(
   runtimeId: string | null | undefined,
   metadata: SandboxMetadata,
 ) {
-  const key = runtimeId === 'claude' ? 'claude-code' : runtimeId;
-  if ((key === 'codex' || key === 'claude-code') && !metadata.dependencies[key]) {
-    throw new Error(`selected runtime dependency ${key} is not declared`);
+  if (runtimeId === null || runtimeId === undefined) return;
+  const runtime = asRuntime(runtimeId);
+  if (runtime === null) {
+    // FAIL CLOSED. The previous guard only ran for the two ids it named, so an
+    // unrecognised runtime skipped image validation entirely and provisioned
+    // against an image that never declared it.
+    throw new Error(
+      `selected runtime "${runtimeId}" is not a runtime this deployment knows; its image dependency cannot be verified`,
+    );
+  }
+  if (!metadata.dependencies[runtime]) {
+    throw new Error(`selected runtime dependency ${runtime} is not declared`);
   }
 }
 
@@ -331,8 +341,11 @@ export function runtimeArtifactChecksumFromProbes(
   runtimeId: string | null | undefined,
   probes: readonly SandboxPreflightProbeResult[],
 ): string | null {
-  if (runtimeId !== 'codex' && runtimeId !== 'claude-code' && runtimeId !== 'claude') {
-    return null;
+  if (runtimeId === null || runtimeId === undefined) return null;
+  if (asRuntime(runtimeId) === null) {
+    throw new Error(
+      `no runtime artifact checksum is defined for runtime "${runtimeId}"`,
+    );
   }
   return requireRuntimeArtifactChecksum(runtimeId, probes);
 }
@@ -447,40 +460,53 @@ function requiredToolCommand(tool: string): string {
   return `command -v ${tool}`;
 }
 
+/**
+ * The image preflight each runtime requires, as a TOTAL mapping over the closed
+ * runtime union: the CLI that must be on PATH, and the artifact-checksum probe
+ * that pins WHICH build of it is installed.
+ *
+ * Previously an if-chain ending in `return []`. That was the worst possible
+ * shape for this decision: an unrecognised runtime produced NO probes at all, so
+ * the environment validated as healthy and the real failure surfaced much later
+ * as an operational error with nothing connecting it to the omission. Keyed on
+ * `Record<Runtime, …>`, adding an id is a compile error here.
+ */
+const RUNTIME_PREFLIGHT_COMMANDS: Record<
+  Runtime,
+  { readonly probeName: string; readonly executable: string }
+> = {
+  codex: { probeName: 'codex-runtime', executable: 'codex' },
+  'claude-code': { probeName: 'claude-runtime', executable: 'claude' },
+};
+
 function runtimeCommands(
   runtimeIds: readonly string[],
 ): readonly AioEnvironmentValidationCommand[] {
   const multiRuntime = runtimeIds.length > 1;
   return runtimeIds.flatMap((runtimeId) => {
-    const normalizedRuntimeId = normalizeRuntimeId(runtimeId);
-    if (normalizedRuntimeId === 'codex') {
-      return [
-        { name: 'codex-runtime', command: 'command -v codex' },
-        {
-          name: multiRuntime
-            ? 'runtime-artifact-checksum:codex'
-            : 'runtime-artifact-checksum',
-          command: 'node /usr/local/bin/runtime-artifact-checksum.mjs codex',
-        },
-      ];
+    const runtime = asRuntime(runtimeId);
+    if (runtime === null) {
+      // FAIL CLOSED. Returning no probes would let an image validate without
+      // ever proving the runtime is installed in it.
+      throw new Error(
+        `no image preflight is defined for runtime "${runtimeId}"; an environment cannot be validated for a runtime whose artifacts are unknown`,
+      );
     }
-    if (normalizedRuntimeId === 'claude-code') {
-      return [
-        { name: 'claude-runtime', command: 'command -v claude' },
-        {
-          name: multiRuntime
-            ? 'runtime-artifact-checksum:claude-code'
-            : 'runtime-artifact-checksum',
-          command:
-            'node /usr/local/bin/runtime-artifact-checksum.mjs claude-code',
-        },
-      ];
-    }
-    return [];
+    const { probeName, executable } = RUNTIME_PREFLIGHT_COMMANDS[runtime];
+    return [
+      { name: probeName, command: `command -v ${executable}` },
+      {
+        name: multiRuntime
+          ? `runtime-artifact-checksum:${runtime}`
+          : 'runtime-artifact-checksum',
+        command: `node /usr/local/bin/runtime-artifact-checksum.mjs ${runtime}`,
+      },
+    ];
   });
 }
 
-const CAP_RUNTIME_IDS = ['codex', 'claude-code'] as const;
+/** Every runtime CAP knows about — derived from the preflight mapping, never re-listed. */
+const CAP_RUNTIME_IDS = Object.keys(RUNTIME_PREFLIGHT_COMMANDS) as readonly Runtime[];
 
 function validationRuntimeIds(
   target: SandboxEnvironmentValidationTarget,
@@ -491,6 +517,20 @@ function validationRuntimeIds(
   return [...new Set(requested.map(normalizeRuntimeId))].sort();
 }
 
+/**
+ * Historical spellings a caller may still present, mapped to the canonical id.
+ * A table rather than a comparison: an alias is DATA, and expressing it as a
+ * branch is indistinguishable from a decision keyed on which agent is running.
+ */
+const RUNTIME_ID_ALIASES: Readonly<Record<string, Runtime>> = { claude: 'claude-code' };
+
 function normalizeRuntimeId(runtimeId: string): string {
-  return runtimeId === 'claude' ? 'claude-code' : runtimeId;
+  return RUNTIME_ID_ALIASES[runtimeId] ?? runtimeId;
+}
+
+/** Narrow a presented id to the closed union, or `null` when it is not one. */
+function asRuntime(runtimeId: string | null | undefined): Runtime | null {
+  if (typeof runtimeId !== 'string') return null;
+  const normalized = normalizeRuntimeId(runtimeId);
+  return normalized in RUNTIME_PREFLIGHT_COMMANDS ? (normalized as Runtime) : null;
 }

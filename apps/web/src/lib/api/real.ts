@@ -156,8 +156,15 @@ export type RuntimeId = "claude-code" | "codex";
 
 /** Readiness of a single runtime (booleans only — never a secret). */
 export interface RuntimeReadiness {
-  /** The runtime id this readiness describes. */
-  id: RuntimeId;
+  /**
+   * The runtime id this readiness describes.
+   *
+   * Deliberately a `string`, not {@link RuntimeId}: this is a value the BACKEND
+   * reports, and a console pinned to the two ids it happened to ship with would
+   * silently discard a runtime a newer api offers. Narrowing belongs at the
+   * points that act on the id, not at the point that receives it.
+   */
+  id: string;
   /** Whether the runtime is configured/ready to run a task right now. */
   ready: boolean;
 }
@@ -755,8 +762,10 @@ export async function createTask(
  * The api reports, per runtime id, only a boolean `ready` (e.g. is a credential
  * configured) and NEVER a secret, so the dialog can disable an unconfigured
  * runtime up front instead of letting the task fail at launch. The response is
- * normalized into a `Map<RuntimeId, boolean>` so an UNKNOWN/MISSING runtime id
- * reads as not-ready (fail-safe: never offer a runtime the api did not vouch for).
+ * normalized so a MISSING runtime id reads as not-ready (fail-safe: never offer a
+ * runtime the api did not vouch for). An id this console does not recognise is
+ * PASSED THROUGH rather than dropped — the api vouching for it is the whole
+ * signal, and discarding it made a new runtime look unconfigured.
  * The wire shape is validated structurally here (local web type — see the runtime
  * types note above); a malformed entry is dropped rather than crashing the dialog.
  */
@@ -773,7 +782,11 @@ export async function getRuntimes(): Promise<RuntimesResponse> {
   for (const raw of entries) {
     if (!raw || typeof raw !== "object") continue;
     const { id, ready } = raw as { id?: unknown; ready?: unknown };
-    if ((id === "claude-code" || id === "codex") && typeof ready === "boolean") {
+    // Structural validation only. This used to also require the id to be one of
+    // the two ids this console knew, so a runtime a newer api reported was
+    // dropped here and read as "not ready" — indistinguishable from a runtime
+    // that is genuinely unconfigured.
+    if (typeof id === "string" && id.length > 0 && typeof ready === "boolean") {
       out.push({ id, ready });
     }
   }
