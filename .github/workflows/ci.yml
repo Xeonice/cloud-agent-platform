@@ -227,17 +227,16 @@ jobs:
       # These release/install contract suites live at the repository root rather
       # than inside a workspace package. Keep them in the required lane: the
       # Release-asset packager and its quick-deploy consumer must change together.
-      - name: Test (release and install contracts)
+      # Repository-level test files — release/install contracts and the terminal
+      # canaries — live outside every workspace package. This step used to NAME
+      # eight of them, which is the hand-maintained allowlist `test-suite-discovery`
+      # forbids inside a package script, merely one level up: sixteen further test
+      # files sat beside them running nowhere, two of which had been broken since
+      # 68c0907 with nobody to notice. `test:scripts` discovers them by pattern.
+      - name: Test (repository-level scripts)
         run: |
           bash -n scripts/release.sh scripts/quick-deploy.sh scripts/scheduled-tasks-live-e2e.sh
-          node scripts/release-image-assets.test.mjs
-          node scripts/generate-task-model-attestation.test.mjs
-          node scripts/release-tail.test.mjs
-          node scripts/quick-deploy-preflight.test.mjs
-          node scripts/docker-compose.deploy-config.test.mjs
-          node --test scripts/scheduled-tasks-live-e2e.test.mjs
-          node scripts/legacy-token-prefix-collision.test.mjs
-          node scripts/legacy-token-synthesized-env.test.mjs
+          pnpm test:scripts
 
   # Workspace package suites. Split from the app lane so a sandbox failure is
   # attributable on sight and cannot mask an api regression — and because these

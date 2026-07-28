@@ -40,10 +40,11 @@ All sandbox packages remain framework-free except provider adapters at the edge.
 They must not import Nest, Prisma, or app-specific runtime/auth ports. The API
 assembles those dependencies and passes them into adapters.
 
-The older helper packages (`@cap/sandbox-scheduler`,
-`@cap/sandbox-lifecycle`, `@cap/sandbox-workspace-git`, and
-`@cap/sandbox-aio-local`) are excluded from the current workspace package graph.
-Their runtime code moved under `@cap/sandbox` or `@cap/sandbox-provider-aio`.
+Scheduler, lifecycle, workspace-git and AIO-local helper code lives under
+`@cap/sandbox` and `@cap/sandbox-provider-aio`. The separate helper packages
+that once held it were removed once superseded — they had been excluded from the
+workspace graph rather than deleted, which left directories that no build could
+compile still reading as live code.
 `@cap/sandbox-conformance` remains only as a dev-only testkit for provider
 package tests; it is not exported by `@cap/sandbox` or used at runtime.
 

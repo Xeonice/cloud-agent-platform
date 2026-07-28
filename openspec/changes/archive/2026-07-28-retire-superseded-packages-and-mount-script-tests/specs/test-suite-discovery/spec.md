@@ -1,16 +1,5 @@
-# test-suite-discovery Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Guarantee that a test file which exists is a test file that runs. Mounting is
-mechanical — packages discover their suites by pattern, one repository-wide task
-covers every workspace package, CI gates on all of them, and a drift check fails
-the build when a test file exists that no runner would execute. The alternative,
-a hand-maintained list of paths, silently drops whatever nobody remembers to add:
-forty files had accumulated behind it in one package alone, including every
-security suite, and four of them were red the moment they were finally run.
-
-## Requirements
 ### Requirement: Test discovery is mechanical, never a hand-maintained list
 
 Every workspace package that owns tests SHALL discover them by pattern (glob or
@@ -44,45 +33,6 @@ one level up.
   directory, matching the established naming pattern, and changes nothing else
 - **THEN** the discovered command executes that file
 - **AND** no file name was added to a workflow or script to make it run
-
-### Requirement: A repo-wide test task exists and covers every workspace package
-
-The task runner SHALL expose a `test` task so that a single repo-level command
-runs the tests of every workspace package that declares one. The task SHALL
-declare its upstream build dependency so that packages requiring compiled output
-are built first, and packages SHALL NOT re-express that ordering by chaining
-build commands inside their own test scripts.
-
-#### Scenario: One command runs the whole graph
-
-- **WHEN** the repo-level test task is invoked on a healthy tree
-- **THEN** every workspace package declaring a `test` script runs
-- **AND** upstream packages are built before dependents that need their output
-
-#### Scenario: A package test script does not rebuild its dependencies itself
-
-- **WHEN** a package's `test` script is inspected
-- **THEN** it does not chain filtered build commands for its dependencies
-- **AND** the ordering is expressed once, in the task graph
-
-### Requirement: Every workspace package's tests gate merges
-
-CI SHALL run the tests of every workspace package that declares a `test` script,
-including provider and conformance packages. A package owning tests that no CI
-job executes SHALL be treated as a defect, not as an intentional exclusion. The
-job running these tests SHALL be a required check for merging.
-
-#### Scenario: Sandbox family tests block a merge
-
-- **WHEN** a test in any `packages/sandbox*` package fails
-- **THEN** the CI job running package tests exits non-zero
-- **AND** the merge is blocked by that required check
-
-#### Scenario: Conformance suites run in CI for first-party providers
-
-- **WHEN** CI runs the package test graph
-- **THEN** the provider conformance suites execute for the first-party providers
-  that declare provider capabilities
 
 ### Requirement: Undiscovered test files fail the build
 
@@ -122,21 +72,3 @@ become a place where tests accumulate unrun.
 - **THEN** the discovery check exits non-zero and names it
 - **AND** it is not treated as out of scope merely because the package graph does
   not reach it
-
-### Requirement: Standalone compilation harnesses match the repository compiler baseline
-
-A standalone compilation harness SHALL pass the same strictness settings as the
-repository's shared compiler baseline when it invokes the TypeScript compiler
-directly to prove that a source file compiles. Such a harness SHALL NOT report a
-defect that the repository build would not report.
-
-#### Scenario: A standalone compile harness agrees with the project build
-
-- **WHEN** a standalone compilation harness runs against a file that the project
-  build compiles cleanly
-- **THEN** the harness reports no errors
-
-#### Scenario: A genuine type error is still caught
-
-- **WHEN** a source file contains a type error that violates the shared baseline
-- **THEN** the standalone compilation harness exits non-zero

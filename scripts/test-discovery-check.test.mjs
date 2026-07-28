@@ -70,6 +70,51 @@ function runGate({ testScript, files, exclusions = '[]' }) {
   }
 }
 
+
+/**
+ * Build a throwaway repository whose test files live OUTSIDE any package —
+ * under `scripts/`, matched against the ROOT manifest's test scripts. This is
+ * the scope the gate used to miss entirely.
+ */
+function runGateOnRepositoryScripts({ rootTestScript, files }) {
+  const root = mkdtempSync(join(tmpdir(), 'discovery-gate-root-'));
+  try {
+    writeFileSync(
+      join(root, 'pnpm-workspace.yaml'),
+      'packages:\n  - "packages/*"\n',
+    );
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify(
+        { name: 'fixture-root', scripts: rootTestScript ? { 'test:scripts': rootTestScript } : {} },
+        null,
+        2,
+      ),
+    );
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    for (const [rel, body] of Object.entries(files)) {
+      const abs = join(root, 'scripts', rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, body);
+    }
+    const scriptPath = join(root, 'scripts', 'check.mjs');
+    writeFileSync(scriptPath, readFileSync(CHECK, 'utf8'));
+    try {
+      const stdout = execFileSync('node', [scriptPath], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30_000,
+      });
+      return { code: 0, output: stdout };
+    } catch (error) {
+      return { code: error.status ?? 1, output: `${error.stdout ?? ''}${error.stderr ?? ''}` };
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 test('a test file no runner would execute is reported and fails the gate', () => {
   const result = runGate({
     testScript: 'node --test "test/mounted.test.mjs"',
@@ -132,4 +177,35 @@ test('a self-discovering runner covers its suffixes without naming paths', () =>
     },
   });
   assert.equal(result.code, 0, 'vitest discovers its own files by config');
+});
+
+test('a repository-level test file no root script would run is reported', () => {
+  // The scope the gate used to miss: a test file outside every workspace
+  // package. Sixteen such files existed, running nowhere, before this widened.
+  const result = runGateOnRepositoryScripts({
+    rootTestScript: 'node --test "scripts/mounted-*.test.mjs"',
+    files: { 'orphan.test.mjs': 'export const x = 1;\n' },
+  });
+  assert.equal(result.code, 1, 'an unrun repository-level test must fail the gate');
+  assert.match(result.output, /scripts\/orphan\.test\.mjs/);
+});
+
+test('a repository-level test file a root glob would run is silent', () => {
+  const result = runGateOnRepositoryScripts({
+    rootTestScript: 'node --test "scripts/*.test.mjs"',
+    files: { 'covered.test.mjs': 'export const x = 1;\n' },
+  });
+  assert.equal(result.code, 0, result.output);
+  assert.match(result.output, /all discovered by a runner/);
+});
+
+test('a root manifest with no test script leaves repository-level tests undiscovered', () => {
+  // Guards the direction that would silently pass: reading no patterns must
+  // mean "nothing is covered", never "everything is".
+  const result = runGateOnRepositoryScripts({
+    rootTestScript: null,
+    files: { 'lonely.test.mjs': 'export const x = 1;\n' },
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.output, /scripts\/lonely\.test\.mjs/);
 });

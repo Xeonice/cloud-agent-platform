@@ -80,7 +80,10 @@ const requireFromApi = createRequire(
 const requireFromWeb = createRequire(
   new URL('../apps/web/package.json', import.meta.url),
 );
-const { Terminal } = requireFromApi('@xterm/headless');
+// `@xterm/headless` is declared by apps/web, not apps/api — 68c0907 dropped it
+// from apps/api while introducing this lookup. `terminal-active-buffer-snapshot`
+// already resolves it the correct way; this follows it.
+const { Terminal } = requireFromWeb('@xterm/headless');
 const {
   XTERM_5_5_0_RESPONSE_PROFILE_DESCRIPTOR,
   XTERM_5_5_0_RESPONSE_PROFILE_FINGERPRINT,
