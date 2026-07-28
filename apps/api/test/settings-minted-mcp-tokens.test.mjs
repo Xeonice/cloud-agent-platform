@@ -6,9 +6,9 @@
  *      only the SHA-256 hash persisted (never the raw token).
  *   2. Resolve the minted token via AuthSessionService.resolveMcpToken() →
  *      a full McpAuthInfo with expiresAt set (G1 mandatory), scopes, clientId,
- *      and resource; allowlist re-confirmed per request.
+ *      and resource; the owner's enabled state re-confirmed per request.
  *   3. A REVOKED token resolves to null (never admitted).
- *   4. A de-allowlisted owner is denied on the next resolve call.
+ *   4. A disabled owner (User.allowed=false) is denied on the next resolve call.
  *
  * Runs against the compiled dist/ (no Nest container, no DB).
  */
@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
-const DIST = path.resolve(here, 'dist');
+const DIST = path.resolve(here, '..', 'dist');
 
 const { McpTokensService, hashMcpToken } =
   require(path.join(DIST, 'mcp-tokens/mcp-tokens.service.js'));
@@ -44,8 +44,21 @@ function makeSharedStore() {
   let seq = 0;
   const rows = [];
 
+  // The owner account row. `allowed` is MUTABLE so a test can revoke access and
+  // assert the resolver's pure-DB gate denies on the very next call.
+  const owner = {
+    id: USER_ROW_ID,
+    githubId: GITHUB_ID,
+    login: 'operator',
+    name: 'Operator',
+    avatarUrl: null,
+    allowed: true,
+    role: 'member',
+    mustChangePassword: false,
+  };
+
   const user = {
-    findUnique: async () => ({ id: USER_ROW_ID }),
+    findUnique: async () => ({ ...owner }),
   };
 
   const mcpToken = {
@@ -71,8 +84,11 @@ function makeSharedStore() {
     findUnique: async ({ where }) => {
       const row = rows.find((r) => r.tokenHash === where.tokenHash) ?? null;
       if (!row) return null;
-      // Simulate Prisma's `include: { user: true }` — attach the owner user object.
-      return { ...row, user: { githubId: GITHUB_ID } };
+      // Simulate Prisma's `include: { user: true }` — attach the owner user row.
+      // Must carry the full account shape the resolver reads: `allowed` is the
+      // pure-DB gate re-checked at resolution time (add-private-account-identity),
+      // and `id` is threaded as `ownerId` for owner attribution.
+      return { ...row, user: { ...owner } };
     },
     update: async ({ where, data }) => {
       const row = rows.find((r) => r.id === where.id);
@@ -81,7 +97,7 @@ function makeSharedStore() {
     },
   };
 
-  return { rows, user, mcpToken };
+  return { rows, owner, user, mcpToken };
 }
 
 // ---- test harness -----------------------------------------------------------
@@ -188,23 +204,24 @@ const run = async () => {
     'T3: revoked token is rejected (resolves to null)',
   );
 
-  // ---- T4: de-allowlisted owner is denied on the next resolve call ----
-  // Mint a fresh (non-revoked) token.
+  // ---- T4: a DISABLED owner is denied on the next resolve call ----
+  // Access is gated purely on the account's own `allowed` column
+  // (add-private-account-identity); the env allowlist no longer participates,
+  // which is why `resolveMcpToken` ignores its env argument.
   const mint2 = await mintSvc.mint(GITHUB_ID, {
     name: 'cursor-token-2',
     scopes: ['tasks:read'],
   });
-  // Token resolves fine while owner is allowlisted.
+  // Token resolves fine while the owner account is enabled.
   const beforeDeAllowlist = await authSvc.resolveMcpToken(mint2.token, ALLOWLIST_ENV);
-  assert(beforeDeAllowlist !== null, 'T4a: token resolves while owner is allowlisted');
+  assert(beforeDeAllowlist !== null, 'T4a: token resolves while owner is enabled');
 
-  // Owner removed from allowlist.
-  const afterDeAllowlist = await authSvc.resolveMcpToken(mint2.token, {
-    AUTH_ALLOWLIST: '99999', // owner's id not listed
-  });
+  // Owner disabled in the database.
+  prisma.owner.allowed = false;
+  const afterDeAllowlist = await authSvc.resolveMcpToken(mint2.token, ALLOWLIST_ENV);
   assert(
     afterDeAllowlist === null,
-    'T4b: de-allowlisted owner is denied on the very next resolve call',
+    'T4b: disabled owner is denied on the very next resolve call',
   );
 
   // ---- T5: an unknown / garbage token resolves to null ----

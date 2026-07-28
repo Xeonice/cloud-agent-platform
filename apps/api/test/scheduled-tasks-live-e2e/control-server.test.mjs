@@ -228,14 +228,18 @@ test('control server seeds a validated repo fixture without calling production i
     });
 
     assert.equal(response.status, 201);
-    assert.deepEqual(createArgs, {
-      data: {
-        name: 'scheduled fixture',
-        gitSource: 'https://github.com/openai/codex.git',
-        forge: 'github',
-        defaultBranch: 'main',
-      },
+    // The seeded fixture is written as an already-materialised copy so the live
+    // e2e never waits on a real clone (add-repo-content-store). `copyUpdatedAt`
+    // is a wall-clock stamp, so assert its type rather than a fixed value.
+    const { copyStatus, copyUpdatedAt, ...stableCreateData } = createArgs.data;
+    assert.deepEqual(stableCreateData, {
+      name: 'scheduled fixture',
+      gitSource: 'https://github.com/openai/codex.git',
+      forge: 'github',
+      defaultBranch: 'main',
     });
+    assert.equal(copyStatus, 'ready');
+    assert.ok(copyUpdatedAt instanceof Date, 'copyUpdatedAt is stamped');
     assert.deepEqual(await response.json(), {
       repo: {
         id: created.id,

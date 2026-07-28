@@ -21,10 +21,11 @@
   ],
   "scripts": {
     "build": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json",
-    "typecheck": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && pnpm --filter @cap/sandbox-conformance build && node test/aio-local-provider.test.mjs && node test/aio-provider-controller.test.mjs && node test/aio-provider.test.mjs && node test/aio-diagnostic-conformance.test.mjs && node test/aio-environment-volume.test.mjs && node test/aio-workspace-security.test.mjs && node test/aio-retention-store.test.mjs && node test/aio-terminal-session-ownership.test.mjs && node test/aio-terminal-transport.test.mjs && node test/tar-extract.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap/sandbox-provider-aio --filter=@cap/sandbox-conformance",
+    "test": "node --test --test-force-exit \"test/**/*.test.mjs\"",
     "test:e2e": "pnpm build && node --test --test-force-exit e2e/*.e2e.mjs",
-    "coverage": "pnpm build && pnpm --filter @cap/sandbox-conformance build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/aio-local-provider.test.mjs && node test/aio-provider-controller.test.mjs && node test/aio-provider.test.mjs && node test/aio-diagnostic-conformance.test.mjs && node test/aio-environment-volume.test.mjs && node test/aio-workspace-security.test.mjs && node test/aio-retention-store.test.mjs && node test/aio-terminal-session-ownership.test.mjs && node test/aio-terminal-transport.test.mjs && node test/tar-extract.test.mjs\"",
+    "coverage": "c8 --100 --include=dist/**/*.js --reporter=text node --test --test-force-exit \"test/**/*.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {

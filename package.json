@@ -12,6 +12,8 @@
     "build": "turbo build",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
+    "test": "turbo test",
+    "test:discovery": "node scripts/test-discovery-check.mjs && node --test --test-force-exit scripts/test-discovery-check.test.mjs",
     "verify": "turbo typecheck lint build && pnpm verify:terminal-response-profile",
     "verify:terminal-response-profile": "node scripts/terminal-response-profile-source-conformance.mjs && node --test scripts/terminal-response-profile-source-conformance.test.mjs",
     "test:terminal-coordinated-rollback": "pnpm -w exec turbo run build --filter=@cap/api && CAP_TERMINAL_ROLLBACK_CANARY=1 node --test scripts/terminal-coordinated-rollback-canary.test.mjs",

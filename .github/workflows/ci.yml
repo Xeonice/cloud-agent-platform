@@ -179,25 +179,32 @@ jobs:
       - name: Typecheck + lint (strict)
         run: pnpm turbo typecheck lint
 
-      # Run the @cap/api unit suite (node:test over the compiled dist spec files).
-      # Invoked directly via pnpm (NOT `turbo test`): the package's `pretest` already
-      # runs `turbo run build --filter=@cap/api`, so a `turbo test` task would nest
-      # turbo inside turbo and trip turbo 2.x's recursive-invocation guard. The build
-      # above makes the pretest build a cache hit. This is the lane the runtime-
-      # selection regression spec (and the rest of the api specs) gate in.
-      - name: Test (api unit suite)
-        run: pnpm --filter @cap/api test
+      # Every test file must be reachable by some runner. This gate compares the
+      # test files on disk against what the packages' configured patterns would
+      # execute and fails on the difference — the mechanism that stops the
+      # hand-written mounting allowlist from growing back (40 files in apps/api
+      # alone had accumulated behind it). It also self-tests, so the gate itself
+      # is provably able to fail.
+      - name: Test discovery gate
+        run: pnpm test:discovery
 
-      # Shared contracts contain production-schema boundary and cross-surface
-      # parity fixtures. Run them explicitly; API/Web suites do not discover
-      # package-local `.test.mjs` files.
-      - name: Test (shared contracts)
-        run: pnpm --filter @cap/contracts test
-
-      # Vitest is a separate package script rather than a turbo task. Keep it in
-      # the required lane so console behavior cannot pass locally but skip CI.
-      - name: Test (web unit suite)
-        run: pnpm --filter @cap/web test
+      # App suites through the task graph. Previously three hand-named `pnpm
+      # --filter` steps, which is the same allowlist failure mode one level up —
+      # a new app owning tests would simply not run here. The directory filter
+      # picks up any app that declares a `test` script.
+      #
+      # The former comment here warned that `turbo test` would nest turbo inside
+      # turbo (each package's `pretest` runs `turbo run build`) and trip the 2.x
+      # recursive-invocation guard. Re-tested on the current toolchain: the
+      # nested invocation completes normally and the outer build above makes it a
+      # cache hit. `pretest` is kept because it is what makes a direct
+      # `pnpm --filter <pkg> test` build first — turbo's graph only applies when
+      # the suite is entered through turbo.
+      #
+      # `--continue` so one failing app still reports the others; turbo prefixes
+      # every line with its package, so attribution survives.
+      - name: Test (app suites)
+        run: pnpm turbo test --filter='./apps/*' --continue
 
       # These release/install contract suites live at the repository root rather
       # than inside a workspace package. Keep them in the required lane: the
@@ -211,6 +218,42 @@ jobs:
           node scripts/quick-deploy-preflight.test.mjs
           node scripts/docker-compose.deploy-config.test.mjs
           node --test scripts/scheduled-tasks-live-e2e.test.mjs
+          node scripts/legacy-token-prefix-collision.test.mjs
+          node scripts/legacy-token-synthesized-env.test.mjs
+
+  # Workspace package suites. Split from the app lane so a sandbox failure is
+  # attributable on sight and cannot mask an api regression — and because these
+  # had NEVER gated a merge before: the whole sandbox family, including the
+  # provider conformance suites that are the only cross-check binding a
+  # provider's declared capabilities to its actual method surface, was reachable
+  # only through a root script that no workflow invoked.
+  #
+  # Directory filter rather than a package list: a new package that declares a
+  # `test` script joins this lane automatically, which is the failure mode this
+  # whole change exists to remove.
+  package-suites:
+    name: package suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `--continue` so one failing package still reports the rest; turbo
+      # prefixes each line with its package name, so attribution survives.
+      - name: Test (workspace packages)
+        run: pnpm turbo test --filter='./packages/*' --continue
 
   # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
   # the unauthenticated `/health` liveness endpoint, failing the pipeline on any

@@ -7,7 +7,7 @@
  * sourced directly from the compiled @cap/contracts package (no build step
  * needed — the dist is already built).
  *
- * Run: node legacy-token-prefix-collision.test.mjs
+ * Run: node scripts/legacy-token-prefix-collision.test.mjs
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -16,7 +16,7 @@ import test from 'node:test';
 import {
   RESERVED_CREDENTIAL_PREFIXES,
   startsWithReservedPrefix,
-} from './packages/contracts/dist/credential-prefix.js';
+} from '../packages/contracts/dist/credential-prefix.js';
 
 /**
  * Reproduces the EXACT boot-assertion logic from apps/api/src/main.ts (lines 64-68):

@@ -47,6 +47,10 @@ function compile() {
       '--experimentalDecorators',
       '--esModuleInterop',
       '--skipLibCheck',
+      // Must match the shared compiler baseline (@cap/tsconfig sets strict:true).
+      // Without it, discriminated-union narrowing degrades and correct code in
+      // transitively imported files reports errors the project build never sees.
+      '--strict',
     ],
     { cwd: apiRoot, stdio: 'pipe' },
   );

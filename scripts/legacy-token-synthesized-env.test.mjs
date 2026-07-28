@@ -16,7 +16,7 @@
  *   - BoxLite provider values are appended when the selected provider is boxlite
  *   - Existing secret values are preserved; missing operational defaults may be appended
  *
- * Run: node legacy-token-synthesized-env.test.mjs
+ * Run: node scripts/legacy-token-synthesized-env.test.mjs
  */
 
 import { execFileSync } from 'node:child_process';
