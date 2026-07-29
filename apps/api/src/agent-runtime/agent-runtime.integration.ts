@@ -144,13 +144,32 @@ export function sessionIdForTask(taskId: string): string {
  * on the single port interface and build the port `LaunchContext` / map its
  * `ExitSignal` themselves via {@link toPortExec} / {@link sessionIdForTask}).
  */
+/**
+ * The implementation registered for every declared runtime.
+ *
+ * A total `Record` rather than a list, so that declaring a runtime in
+ * `AGENT_RUNTIME_IDS` without supplying an implementation here stops the build.
+ * The registry previously took a positional array, which meant the declaration
+ * and the registrations could disagree with nothing noticing: the project
+ * compiled with a declared-but-unregistered runtime and failed at task launch
+ * with `no runtime registered for "..."`.
+ *
+ * This is the repository's established shape for "every member must state its
+ * own answer" — see `SANDBOX_PROVIDER_CAPABILITY_CLASSES` in `@cap/sandbox-core`
+ * and `ADMISSION_MODE_BY_OUTCOME` in `task-admission`. The compiler, not a
+ * reviewer, is what notices the gap.
+ */
+const AGENT_RUNTIME_IMPLEMENTATIONS: Readonly<Record<RuntimeId, PortAgentRuntime>> = {
+  codex: new CodexRuntime(),
+  'claude-code': new ClaudeCodeRuntime(),
+};
+
 @Injectable()
 export class IntegrationRuntimeRegistry implements RuntimeRegistry {
   private readonly logger = new Logger(IntegrationRuntimeRegistry.name);
-  private readonly registry = new AgentRuntimeRegistry([
-    new CodexRuntime(),
-    new ClaudeCodeRuntime(),
-  ]);
+  private readonly registry = new AgentRuntimeRegistry(
+    Object.values(AGENT_RUNTIME_IMPLEMENTATIONS),
+  );
 
   constructor(
     @Optional()

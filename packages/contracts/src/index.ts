@@ -62,6 +62,9 @@ export * from './notifications.js';
 // SandboxProvider sandbox-mode enum
 export * from './sandbox.js';
 
+// THE declaration of which agent runtimes exist; everything else derives from it
+export * from './agent-runtime-id.js';
+
 // Admin-managed sandbox runtime environments and task environment summaries
 export * from './provider-family.js';
 export * from './sandbox-environment.js';

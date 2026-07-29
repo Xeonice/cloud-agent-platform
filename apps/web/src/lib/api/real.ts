@@ -135,24 +135,26 @@ import {
   type ApiKeyListResponse,
   type ApiKeyRevokeResponse,
 } from "@cap/contracts";
+import type { AgentRuntimeId } from "@cap/contracts";
 import { apiBaseUrl, operatorToken } from "../config";
 import { getIncomingCookieHeader } from "../server-cookie";
 
 // ---------------------------------------------------------------------------
-// Agent runtime selection (add-claude-code-runtime) — LOCAL web types
+// Agent runtime selection (add-claude-code-runtime)
 //
-// The `runtime` selector (`claude-code` | `codex`) and the `/runtimes` readiness
-// shape are owned by the contracts track of this same change; they are mirrored
-// here as LOCAL web types DELIBERATELY (the `SelfUpdateRequest` precedent): a
-// shared `@cap/contracts` schema would be a cross-track shared file (tasks.md
-// NOTE). The api does the load-bearing validation server-side (the create body's
-// `runtime` is validated against the shared enum; `/runtimes` reports booleans
-// only, never a token). Once the contracts schema lands, these collapse onto it
-// with no call-site change.
+// The selector used to be mirrored here as a LOCAL web type, deliberately, while
+// the contracts track of that change was still in flight — with a note saying
+// "once the contracts schema lands, these collapse onto it with no call-site
+// change". The schema landed and the collapse never happened, so the console
+// carried a fourth independent statement of which runtimes exist, in a file that
+// already imports from `@cap/contracts` twenty lines below. It now derives.
+//
+// The readiness shape below stays local and stays deliberately looser than the
+// contract — see the note on `RuntimeReadiness.id`.
 // ---------------------------------------------------------------------------
 
 /** The agent runtime a task runs under. Default `codex` (omitted ⇒ codex). */
-export type RuntimeId = "claude-code" | "codex";
+export type RuntimeId = AgentRuntimeId;
 
 /** Readiness of a single runtime (booleans only — never a secret). */
 export interface RuntimeReadiness {

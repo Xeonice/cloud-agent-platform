@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_RUNTIME_ID, type AgentRuntimeId } from '@cap/contracts';
 import type {
   SandboxRuntimePreflightCommandDescriptor,
   SandboxRuntimePrivateFile,
@@ -28,13 +29,21 @@ import type {
  */
 
 /**
- * The set of runtime identifiers. Kept as a local literal union (NOT imported
- * from `@cap/contracts`) so this leaf module compiles standalone; it is the same
- * `{ 'claude-code' | 'codex' }` the contract `RuntimeSchema` enumerates and the
- * Prisma `Task.runtime` column persists. `codex` is the default when a task
- * carries no runtime.
+ * The set of runtime identifiers, taken from the one declaration in
+ * `@cap/contracts`.
+ *
+ * This was a local literal union, justified by keeping the leaf module
+ * standalone. The justification did not hold — the module already takes a
+ * package-level type dependency on `@cap/sandbox` — and the cost was real: the
+ * union and the contract schema were two independent statements of one set, so
+ * widening either alone produced assignability errors at unrelated call sites
+ * rather than at the disagreement.
+ *
+ * The api keeps its own NAME for the concept, because `RuntimeId` reads better
+ * than `AgentRuntimeId` at the registry's use sites. What it no longer keeps is
+ * its own definition.
  */
-export type RuntimeId = 'codex' | 'claude-code';
+export type RuntimeId = AgentRuntimeId;
 
 /**
  * Stable task-failure codes a runtime may derive from its own output stream.
@@ -54,8 +63,14 @@ export interface RuntimeOutputFailure {
   readonly code: RuntimeOutputFailureCode;
 }
 
-/** The default runtime when a task does not specify one. */
-export const DEFAULT_RUNTIME_ID: RuntimeId = 'codex';
+/**
+ * The default runtime when a task does not specify one.
+ *
+ * Re-exported from the declaration rather than restated: this and the contract's
+ * `DEFAULT_TASK_RUNTIME` were two literals that happened to match, an agreement
+ * maintained by luck rather than by construction.
+ */
+export const DEFAULT_RUNTIME_ID: RuntimeId = DEFAULT_AGENT_RUNTIME_ID;
 
 /**
  * The execution mode a task runs under (add-headless-execution-track).
