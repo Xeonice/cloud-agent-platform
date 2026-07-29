@@ -7,11 +7,11 @@ import { OpenApiController } from './openapi.controller';
  * Registers the {@link OpenApiController}, which serves the two UNAUTHENTICATED
  * docs endpoints (`GET /v1/openapi.json` + `GET /v1/docs`, exempted in
  * `auth.guard.ts` exactly like `/version`). The document is generated on demand
- * from the `@cap/contracts` `/v1` schemas the controllers validate against, so it
+ * from the `@cap-console/contracts` `/v1` schemas the controllers validate against, so it
  * cannot drift from the wire (design D3).
  *
  * The once-per-process `extendZodWithOpenApi(z)` init on the shared
- * `@cap/contracts` z instance is owned by Integration and lives in `main.ts`
+ * `@cap-console/contracts` z instance is owned by Integration and lives in `main.ts`
  * (called before the app starts handling requests); the registry also calls it
  * defensively/idempotently so this module is generatable in isolation.
  */

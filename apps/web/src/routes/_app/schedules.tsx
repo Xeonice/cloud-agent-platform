@@ -18,7 +18,7 @@ import type {
   ScheduleResponse,
   ScheduleRunResponse,
   TaskStatus,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   reposQuery,
   scheduleRunsQuery,

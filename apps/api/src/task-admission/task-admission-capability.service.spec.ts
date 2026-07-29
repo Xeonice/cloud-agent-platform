@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { TASK_ADMISSION_V2_CAPABILITY } from '@cap/contracts';
+import { TASK_ADMISSION_V2_CAPABILITY } from '@cap-console/contracts';
 import { EnvironmentTaskAdmissionGate } from './task-admission-gate';
 import { TaskAdmissionCapabilityController } from './task-admission-capability.controller';
 import {

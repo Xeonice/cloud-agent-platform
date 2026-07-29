@@ -15,7 +15,7 @@
  * never an independent forge metadata request.
  */
 
-import type { ForgeKind } from '@cap/contracts';
+import type { ForgeKind } from '@cap-console/contracts';
 
 export type { ForgeKind };
 

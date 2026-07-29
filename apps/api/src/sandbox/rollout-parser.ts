@@ -1,5 +1,5 @@
 /**
- * Pure parser: codex 0.131 rollout JSONL → the `@cap/contracts` session-history
+ * Pure parser: codex 0.131 rollout JSONL → the `@cap-console/contracts` session-history
  * render-contract (session-sandbox-retention, Track 2 / design D3).
  *
  * The api reads `rollout-*.jsonl` out of a stopped, retained sandbox container
@@ -32,7 +32,7 @@ import type {
   SessionTurn,
   SessionHistoryMeta,
   ToolTurn,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { CallPairing } from './transcript-call-pairing';
 import type { TranscriptParser, TranscriptSourceFor } from './transcript-source';
 

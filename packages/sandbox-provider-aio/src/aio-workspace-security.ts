@@ -14,7 +14,7 @@ import {
   type SandboxRuntimePrivateFilePort,
   type SandboxRunCleanupAuthorization,
   type SandboxSecretFilePort,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type { AioSandboxContainerController } from './aio-provider-controller.js';
 
 const AIO_SECRET_OPERATION_TIMEOUT_MS = 10_000;

@@ -13,7 +13,7 @@ import {
   type V1ListScheduleRunsResponse,
   type V1ListSchedulesResponse,
   type V1ScheduleListQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { type AuthenticatedRequest } from '@/auth/auth.guard';
 import { resolveLimit } from './keyset-pagination';
 import { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';

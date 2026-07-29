@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { FRAME_CHANNEL } from '@cap/contracts';
+import { FRAME_CHANNEL } from '@cap-console/contracts';
 import {
   Decision,
   DecisionEnvelope,

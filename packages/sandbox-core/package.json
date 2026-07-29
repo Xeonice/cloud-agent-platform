@@ -1,5 +1,5 @@
 {
-  "name": "@cap/sandbox-core",
+  "name": "@cap-console/sandbox-core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -23,14 +23,14 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:types": "tsc -p tsconfig.type-tests.json --noEmit",
-    "pretest": "pnpm -w exec turbo run build --filter=@cap/sandbox-core",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap-console/sandbox-core",
     "test": "pnpm test:types && node --test --test-force-exit \"test/**/*.test.mjs\"",
     "coverage": "c8 --100 --include=dist/**/*.js --reporter=text node --test --test-force-exit \"test/**/*.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@types/node": "^20.14.0",
     "eslint": "^9.27.0",
     "typescript": "^5.5.4"

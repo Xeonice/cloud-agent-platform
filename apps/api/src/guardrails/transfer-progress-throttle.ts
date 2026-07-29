@@ -1,4 +1,4 @@
-import type { TaskProvisioningStage } from '@cap/contracts';
+import type { TaskProvisioningStage } from '@cap-console/contracts';
 import type { TaskAdmissionTransferProgress } from '@/admission-coordination/task-admission.types';
 
 /**

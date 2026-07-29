@@ -25,7 +25,7 @@ import {
   type Scope,
   type TaskFailureCode,
   type TaskResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { firstValueFrom, from } from 'rxjs';
 
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';

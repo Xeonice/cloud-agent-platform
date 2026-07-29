@@ -14,7 +14,7 @@ import {
   type SandboxProvisioningDiagnosticOperation,
   type SandboxProvisioningDiagnosticProviderFamily,
   type SandboxProvisioningDiagnosticReplayKey,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 import type {
   SandboxProviderConformanceAssert,

@@ -1,4 +1,4 @@
-import type { SandboxRetentionPolicy } from '@cap/sandbox-core';
+import type { SandboxRetentionPolicy } from '@cap-console/sandbox-core';
 import type { BoxLiteProviderConfig } from './boxlite-config.js';
 import type { BoxLiteProvisionedRun } from './boxlite-types.js';
 

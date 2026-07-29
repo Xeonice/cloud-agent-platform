@@ -20,7 +20,7 @@ import {
   type TaskCreator,
 } from './idempotency.service';
 import { PrismaService } from '@/prisma/prisma.service';
-import type { TaskResponse } from '@cap/contracts';
+import type { TaskResponse } from '@cap-console/contracts';
 
 // ---------------------------------------------------------------------------
 // Fakes

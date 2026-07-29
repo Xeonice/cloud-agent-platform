@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { GithubImportService } from './github-import.service';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type { GithubReposClient } from './github-repos.client';
-import type { RepoResponse } from '@cap/contracts';
+import type { RepoResponse } from '@cap-console/contracts';
 import type { RepoCopyService } from './repo-copy.service';
 import type { ReposService, VerifiedRepoImport } from './repos.service';
 import { encryptToStored } from '@/crypto/secret-storage';

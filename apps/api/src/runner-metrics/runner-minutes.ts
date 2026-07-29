@@ -1,4 +1,4 @@
-import type { RunnerMinutes } from '@cap/contracts';
+import type { RunnerMinutes } from '@cap-console/contracts';
 
 /**
  * Runner-minutes (compute-minutes) accounting (be-metrics, task 5.4).

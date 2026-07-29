@@ -4,7 +4,7 @@ import type {
   McpTokenListItem,
   McpTokenMintRequest,
   McpTokenMintResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
   assertTaskProvisioningDiagnosticsScopeGrantable,

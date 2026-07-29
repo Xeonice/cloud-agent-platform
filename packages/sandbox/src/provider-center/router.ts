@@ -29,7 +29,7 @@ import type {
   SandboxTranscriptSourceBase,
   SandboxWorkspaceDescriptor,
   SelectedSandboxRun,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import { randomUUID } from 'node:crypto';
 import {
   DELIVERY_SANDBOX_REQUIRED_CAPABILITIES,
@@ -54,7 +54,7 @@ import {
   isSandboxWorkspaceTransferDetachedSignal,
   validateSandboxCleanupAttemptEvidence,
   validateSandboxPhysicalCleanupResult,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import { SandboxProviderRegistry } from './registry.js';
 import type { SelectSandboxProviderCandidateOptions } from './selection.js';
 import {

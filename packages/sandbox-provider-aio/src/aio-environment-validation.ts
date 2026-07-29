@@ -2,8 +2,8 @@ import type {
   NonPersistingSandboxProvisioningDiagnosticObserver,
   SandboxPreflightProbeResult,
   SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox-core';
-import { SandboxProviderConfigurationError } from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
+import { SandboxProviderConfigurationError } from '@cap-console/sandbox-core';
 import type { AioSandboxContainerController } from './aio-provider-controller.js';
 
 export interface AioEnvironmentValidationCommand {

@@ -24,7 +24,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 
 import { AuthSessionService, MCP_RESOURCE_URI } from './auth-session.service';
 

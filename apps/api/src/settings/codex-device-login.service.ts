@@ -11,7 +11,7 @@ import type {
   CodexDeviceLoginStartResponse,
   CodexDeviceLoginStatus,
   SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   CODEX_DEVICE_LOGIN_RUNNER,

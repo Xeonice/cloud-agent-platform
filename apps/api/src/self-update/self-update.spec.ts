@@ -29,7 +29,7 @@ import {
   Injectable,
   type INestApplication,
 } from '@nestjs/common';
-import type { UpdateStatus } from '@cap/contracts';
+import type { UpdateStatus } from '@cap-console/contracts';
 
 import { SelfUpdateController } from './self-update.controller';
 import {

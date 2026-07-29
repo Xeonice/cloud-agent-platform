@@ -1,4 +1,4 @@
-import { TaskModelSelectorSchema } from '@cap/contracts';
+import { TaskModelSelectorSchema } from '@cap-console/contracts';
 import {
   SandboxRuntimeModelSetupError,
   TASK_MODEL_MATERIAL_PATH,
@@ -6,7 +6,7 @@ import {
   type SandboxCommandExecutor,
   type TaskModelIntent,
   type TaskModelLaunchMaterial,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export const TASK_MODEL_MATERIAL_TIMEOUT_MS = 10_000;
 const TASK_MODEL_MATERIAL_DIR = '/home/gem/.cap';

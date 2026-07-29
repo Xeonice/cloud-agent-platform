@@ -12,7 +12,7 @@ import {
   type CreateScheduleRequest,
   type CreateTaskBody,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type {
   PostCommitAdmissionResult,

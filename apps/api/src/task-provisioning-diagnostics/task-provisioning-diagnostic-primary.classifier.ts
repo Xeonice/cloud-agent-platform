@@ -1,4 +1,4 @@
-import type { TaskProvisioningStage } from '@cap/contracts';
+import type { TaskProvisioningStage } from '@cap-console/contracts';
 import {
   SandboxProviderCapabilityError,
   SandboxProviderConfigurationError,
@@ -13,7 +13,7 @@ import {
   type SandboxProvisioningDiagnosticOperation,
   type SandboxProvisioningDiagnosticStage,
   type SandboxProvisioningDiagnosticWorkspaceSourceKind,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 import {
   isTaskBranchResolutionError,

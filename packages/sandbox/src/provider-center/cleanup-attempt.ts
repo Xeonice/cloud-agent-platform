@@ -2,11 +2,11 @@ import type {
   BeginSandboxCleanupAttemptResult,
   SandboxCleanupAttemptEvidence,
   SandboxRunOwnerRecord,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   SANDBOX_CLEANUP_ATTEMPT_MAX,
   sandboxCleanupAttemptPlaceholder,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export interface InMemoryCleanupAttemptTransition {
   readonly result: BeginSandboxCleanupAttemptResult;

@@ -6,7 +6,7 @@
  * and rejects 0, 21, negatives, and non-integers without ever admitting an
  * out-of-range value onto the wire.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node settings-slots.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node settings-slots.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

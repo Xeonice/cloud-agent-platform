@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 
 import { TasksService } from './tasks.service';
 import { PrismaService } from '@/prisma/prisma.service';
-import type { Deliver } from '@cap/contracts';
+import type { Deliver } from '@cap-console/contracts';
 
 // ---------------------------------------------------------------------------
 // Helpers

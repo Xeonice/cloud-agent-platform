@@ -20,7 +20,7 @@
  *      principal) so an unauthenticated operator can reach login; an unknown
  *      protected path is NOT exempt.
  *
- * Requires `pnpm --filter @cap/api build` before running.
+ * Requires `pnpm --filter @cap-console/api build` before running.
  */
 
 import { createRequire } from 'node:module';

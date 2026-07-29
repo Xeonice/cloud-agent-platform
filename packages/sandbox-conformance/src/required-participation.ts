@@ -15,7 +15,7 @@
  * scenarios it owes. Skipping a family it owes is not a smaller test run, it is
  * an error.
  */
-import type { SandboxProviderCapability } from '@cap/sandbox-core';
+import type { SandboxProviderCapability } from '@cap-console/sandbox-core';
 
 import type { SandboxProviderConformanceScenario } from './conformance.js';
 

@@ -7,7 +7,7 @@ import {
   type TaskProvisioningDiagnosticAttempt,
   type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   getTaskLogContext,

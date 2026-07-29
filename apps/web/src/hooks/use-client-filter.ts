@@ -12,7 +12,7 @@
  * so it is unit-testable without React.
  */
 import { useMemo, useState } from "react";
-import type { AuditLevel, TaskStatus } from "@cap/contracts";
+import type { AuditLevel, TaskStatus } from "@cap-console/contracts";
 
 /** The "all" sentinel for a segmented control (the prototype's 全部). */
 export const ALL = "all" as const;

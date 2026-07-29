@@ -16,14 +16,14 @@ This is a pnpm + Turborepo workspace.
 
 ```
 apps/
-├── web/            # @cap/web — TanStack Start console (Vite + Nitro), deployed to Vercel
-├── api/            # @cap/api — NestJS backend: local sessions, tasks, repos,
+├── web/            # @cap-console/web — TanStack Start console (Vite + Nitro), deployed to Vercel
+├── api/            # @cap-console/api — NestJS backend: local sessions, tasks, repos,
 │                   #   metrics, audit/history, settings, GitHub import, terminal WS gateway
 ├── runner/         # task runner
 └── sandbox-hooks/  # sandbox lifecycle hooks
 packages/
-├── contracts/      # @cap/contracts — shared Task/Repo/TaskStatus types, WS frames, schemas
-└── ui/             # @cap/ui — shared shadcn-derived components (Button/Card/Badge/Terminal)
+├── contracts/      # @cap-console/contracts — shared Task/Repo/TaskStatus types, WS frames, schemas
+└── ui/             # @cap-console/ui — shared shadcn-derived components (Button/Card/Badge/Terminal)
 docs/               # contributor-facing orientation docs (see docs/repo-layout.md)
 openspec/           # spec content: specs, changes, schema fork
 ```
@@ -50,10 +50,10 @@ Node/pnpm are workspace-managed (pnpm 10, Node ≥ 22). Run from the repo root.
 | --- | --- |
 | Install | `pnpm install` |
 | Verify everything | `pnpm verify` (= `turbo typecheck lint build` + terminal response-profile source conformance) |
-| Web dev server | `pnpm --filter @cap/web dev` (port 3000) |
-| Web production build | `pnpm --filter @cap/web build` |
-| Web typecheck | `pnpm --filter @cap/web typecheck` |
-| Web unit tests | `pnpm --filter @cap/web test` |
+| Web dev server | `pnpm --filter @cap-console/web dev` (port 3000) |
+| Web production build | `pnpm --filter @cap-console/web build` |
+| Web typecheck | `pnpm --filter @cap-console/web typecheck` |
+| Web unit tests | `pnpm --filter @cap-console/web test` |
 | Build all | `turbo build` |
 | Typecheck all | `turbo typecheck` |
 | Lint all | `turbo lint` |
@@ -140,7 +140,7 @@ Notes:
 - The **web console now ships in the compose stack** (a `web` Node-server
   service, port 3000) so `docker compose up` brings up web + api + Postgres
   together; for local dev you can still run it standalone
-  (`pnpm --filter @cap/web dev`).
+  (`pnpm --filter @cap-console/web dev`).
 
 For a real **production self-host** (the full web + api + Postgres stack via
 `docker compose up`, local-account auth, public-domain / cookie-scope

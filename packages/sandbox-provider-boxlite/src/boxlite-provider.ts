@@ -34,7 +34,7 @@ import type {
   SandboxWorkspaceMaterializationHook,
   SandboxWorkspaceMaterializationResult,
   SelectedSandboxRun,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   assertSandboxProviderSupportsResources,
   assertSandboxProviderSupportsWorkspaceSource,
@@ -56,7 +56,7 @@ import {
   SandboxProviderConfigurationError,
   SandboxWorkspaceMaterializationError,
   snapshotSandboxProvisionContext,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type {
   BoxLiteClient,
   BoxLiteSandbox,

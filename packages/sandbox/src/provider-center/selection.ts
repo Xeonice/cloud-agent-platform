@@ -16,7 +16,7 @@ import type {
   SandboxWorkspaceProgressReporter,
   SandboxWorkspaceBoundaryGuard,
   TaskModelIntent,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   ARCHIVE_WORKSPACE_SANDBOX_FEATURE_CAPABILITIES,
   DELIVERY_SANDBOX_REQUIRED_CAPABILITIES,
@@ -29,11 +29,11 @@ import {
   sandboxResourceRequiredCapabilities,
   snapshotSandboxResources,
   snapshotSandboxWorkspacePlan,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export type SandboxProviderCompatibility = 'declared' | 'legacy-assumed';
 
-export type { GitCloneSpec, SandboxCapabilitySource } from '@cap/sandbox-core';
+export type { GitCloneSpec, SandboxCapabilitySource } from '@cap-console/sandbox-core';
 
 export interface SandboxProviderSelection<TProvider extends SandboxCapabilitySource> {
   readonly provider: TProvider;

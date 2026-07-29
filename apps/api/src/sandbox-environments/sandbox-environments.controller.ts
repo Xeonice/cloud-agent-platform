@@ -20,7 +20,7 @@ import {
   type SandboxEnvironmentResponse,
   type UpdateSandboxEnvironmentParametersRequest,
   type ValidateSandboxEnvironmentResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { isAdminPrincipal } from '@/principal/admin';
 import { PrismaService } from '@/prisma/prisma.service';

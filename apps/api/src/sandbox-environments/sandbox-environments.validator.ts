@@ -6,11 +6,11 @@ import type {
   SandboxMetadata,
   SandboxEnvironmentSource,
   SandboxEnvironmentValidation,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   SANDBOX_METADATA_PATH,
   parseSandboxMetadataText,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   AIO_SANDBOX_WORKSPACE_DIR,
   AioSandboxContainerController,
@@ -32,7 +32,7 @@ import {
   type SandboxEnvironmentProviderFamily,
   type SandboxPreflightProbeResult,
   type SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 export const SANDBOX_ENVIRONMENT_VALIDATION_RUNNER = Symbol(
   'SANDBOX_ENVIRONMENT_VALIDATION_RUNNER',

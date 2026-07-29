@@ -1,4 +1,4 @@
-# @cap/sandbox-core
+# @cap-console/sandbox-core
 
 Provider-neutral sandbox core contracts for CAP.
 

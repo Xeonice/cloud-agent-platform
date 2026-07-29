@@ -1,4 +1,4 @@
-# @cap/sandbox-conformance
+# @cap-console/sandbox-conformance
 
 Framework-neutral provider conformance scenarios.
 

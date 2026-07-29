@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   ClaudeCredentialRejectedErrorSchema,
   ClaudeCredentialSchema,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { ClaudeCredentialNoticeAlert } from "./claude-credential";
 import {
   ApiError,

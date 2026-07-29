@@ -7,7 +7,7 @@ import type {
   SandboxProvisioningDiagnosticOperation,
   SandboxProvisioningDiagnosticStage,
   SandboxProvisioningDiagnosticTerminalOutcome,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export interface AioProvisioningDiagnosticOperationDescriptor {
   readonly key: string;

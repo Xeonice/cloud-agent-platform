@@ -31,7 +31,7 @@ import {
   Injectable,
   type INestApplication,
 } from '@nestjs/common';
-import type { McpServerSettings } from '@cap/contracts';
+import type { McpServerSettings } from '@cap-console/contracts';
 
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';

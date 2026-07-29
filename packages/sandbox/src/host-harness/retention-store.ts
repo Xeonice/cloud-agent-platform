@@ -1,4 +1,4 @@
-import { AioDockerSandboxRetentionStore } from '@cap/sandbox-provider-aio';
+import { AioDockerSandboxRetentionStore } from '@cap-console/sandbox-provider-aio';
 
 export interface RetainedSandbox {
   readonly id: string;

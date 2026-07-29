@@ -586,7 +586,7 @@ codex and claude runtimes SHALL declare the single-newest-JSONL read strategy (p
 multi-record runtime that is NOT single-file JSONL (producing a non-single-JSONL source) without
 changing the codex/claude declarations. The port MUST NOT own the parser implementation NOR the
 read I/O — it stays a dependency-light LEAF module that never imports the sandbox parsers or
-`@cap/contracts`; the shared sandbox-layer read + durable-capture mechanism (which already owns the
+`@cap-console/contracts`; the shared sandbox-layer read + durable-capture mechanism (which already owns the
 parsers) SHALL resolve the directory, filename glob, AND read strategy FROM the task's runtime and
 dispatch to the registry parser keyed by the declared `transcriptFormat` — never hardcoding a single
 runtime's layout or read assumption. Each parser SHALL be defensive: unknown record types are
@@ -616,7 +616,7 @@ render contract.
 
 #### Scenario: The port stays a leaf with no parser or read I/O
 - **WHEN** the `AgentRuntime` port module is inspected after adding the read-source declaration
-- **THEN** it imports neither the sandbox parsers nor `@cap/contracts`, and its `readTranscriptSource` declaration contains no container/exec/Docker I/O call (the read I/O is run by the shared mechanism)
+- **THEN** it imports neither the sandbox parsers nor `@cap-console/contracts`, and its `readTranscriptSource` declaration contains no container/exec/Docker I/O call (the read I/O is run by the shared mechanism)
 
 ### Requirement: AgentRuntime owns validated per-task model launch policy
 

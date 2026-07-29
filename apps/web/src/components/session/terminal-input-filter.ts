@@ -4,7 +4,7 @@ import {
   XTERM_5_5_0_RESPONSE_PROFILE,
   classifyTerminalResponseBytes,
   terminalResponseClassEnabled,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 const ESC = 0x1b;
 const encoder = new TextEncoder();

@@ -12,7 +12,7 @@ import {
   type SandboxWorkspaceMaterializationPlan,
   type SandboxWorkspaceMaterializationResult,
   type SandboxWorkspaceProgressEvent,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type {
   SandboxProviderConformanceAssert,
   SandboxProviderConformanceScenario,

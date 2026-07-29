@@ -15,7 +15,7 @@ import {
   type PublicErrorCode,
   type TaskProvisioningDiagnosticsQuery,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { firstValueFrom, from } from 'rxjs';
 
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';

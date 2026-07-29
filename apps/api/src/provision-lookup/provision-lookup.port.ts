@@ -8,8 +8,8 @@ import type {
   SandboxResourceSnapshot,
   SandboxWorkspaceMaterializationPlan,
   TaskModelIntent,
-} from '@cap/sandbox';
-import type { ExecutionMode, Runtime } from '@cap/contracts';
+} from '@cap-console/sandbox';
+import type { ExecutionMode, Runtime } from '@cap-console/contracts';
 
 /**
  * ProvisionLookup port — the per-task data the provider needs at provision time

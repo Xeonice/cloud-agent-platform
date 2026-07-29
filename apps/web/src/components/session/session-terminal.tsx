@@ -7,8 +7,8 @@ import * as React from "react";
 import "@xterm/xterm/css/xterm.css";
 
 import type { ITheme } from "@xterm/xterm";
-import { Terminal, type TerminalGeometry, type TerminalHandle } from "@cap/ui";
-import type { ControlFrame } from "@cap/contracts";
+import { Terminal, type TerminalGeometry, type TerminalHandle } from "@cap-console/ui";
+import type { ControlFrame } from "@cap-console/contracts";
 
 import { TerminalSocket } from "@/lib/ws-client";
 import { getClientId } from "@/lib/client-id";

@@ -1,7 +1,7 @@
 import type {
   PublicErrorCode,
   PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { McpAdapterMap } from '@/mcp/mcp-tools';
 
 /**

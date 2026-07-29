@@ -2,7 +2,7 @@ import {
   PUBLIC_ERROR_CODES,
   PUBLIC_V1_REST_ERROR_PROJECTION,
   type PublicErrorCode,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 export interface PublicErrorSemantics<Retryable extends boolean = boolean> {
   readonly retryable: Retryable;

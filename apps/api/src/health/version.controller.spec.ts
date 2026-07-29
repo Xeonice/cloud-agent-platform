@@ -30,7 +30,7 @@ import {
   UNKNOWN_VERSION_VALUE,
   VERSION_ENV_VARS,
   VersionResponseSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { HealthModule } from './health.module';
 import { AuthGuard } from '@/auth/auth.guard';

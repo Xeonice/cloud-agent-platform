@@ -1,5 +1,5 @@
 {
-  "name": "@cap/contracts",
+  "name": "@cap-console/contracts",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "pretest": "pnpm -w exec turbo run build --filter=@cap/contracts",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap-console/contracts",
     "test": "node --test --test-force-exit \"src/**/*.test.mjs\"",
     "test:public-surface": "node --test src/public-v1-operations.test.mjs ../../scripts/public-surface-*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -31,8 +31,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "eslint": "^9.27.0",
     "typescript": "^5.5.4"
   }

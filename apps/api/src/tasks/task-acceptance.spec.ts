@@ -4,7 +4,7 @@ import {
   TASK_ADMISSION_V2_CAPABILITY,
   type CreateTaskBody,
   type TaskResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';

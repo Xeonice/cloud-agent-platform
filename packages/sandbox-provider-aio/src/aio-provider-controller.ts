@@ -9,7 +9,7 @@ import type {
   SandboxResolvedEnvironmentMetadata,
   SandboxProvisioningDiagnosticObserver,
   SandboxTeardownResult,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import { Readable } from 'node:stream';
 import {
   normalizeSandboxCommandResult,
@@ -18,7 +18,7 @@ import {
   SandboxCleanupCoordinationPendingError,
   SandboxProvisioningStageError,
   scrubSandboxCommandOutput,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   AIO_SANDBOX_CONTAINER_PREFIX,
   AIO_SANDBOX_RESOURCE_GENERATION_LABEL,

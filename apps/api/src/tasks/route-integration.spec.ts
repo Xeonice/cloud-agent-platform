@@ -29,13 +29,13 @@
  *
  * Run from apps/api with `pnpm test` (nest build → node --test dist/**\/*.spec.js),
  * so the cross-track imports (`hasScope` from operator-principal, `Scope` from
- * @cap/contracts) resolve against the merged, compiled tree.
+ * @cap-console/contracts) resolve against the merged, compiled tree.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ForbiddenException } from '@nestjs/common';
 
-import type { Scope, SessionUser, TaskResponse, RepoResponse } from '@cap/contracts';
+import type { Scope, SessionUser, TaskResponse, RepoResponse } from '@cap-console/contracts';
 import { TasksController } from './tasks.controller';
 import { ReposController } from '@/repos/repos.controller';
 import type { TasksService } from './tasks.service';

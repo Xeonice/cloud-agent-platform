@@ -1,4 +1,4 @@
-# @cap/sandbox-provider-boxlite
+# @cap-console/sandbox-provider-boxlite
 
 BoxLite sandbox provider adapter for CAP.
 
@@ -182,7 +182,7 @@ Responses may be plain objects or wrapped in `{ data: ... }`.
 Fast tests use `FakeBoxLiteClient` and provider conformance:
 
 ```sh
-pnpm --filter @cap/sandbox-provider-boxlite test
+pnpm --filter @cap-console/sandbox-provider-boxlite test
 ```
 
 Live integration is opt-in:
@@ -194,7 +194,7 @@ BOXLITE_API_TOKEN=... \
 BOXLITE_IMAGE=ghcr.io/xeonice/cap-boxlite-sandbox:vX.Y.Z \
 BOXLITE_PROTOCOL_MODE=native \
 BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readopt \
-pnpm --filter @cap/sandbox-provider-boxlite test
+pnpm --filter @cap-console/sandbox-provider-boxlite test
 ```
 
 To live-test a rootfs source instead, replace `BOXLITE_IMAGE` with an absolute
@@ -220,7 +220,7 @@ BOXLITE_DISK_SIZE_GB=5 \
 BOXLITE_TIMEOUT_MS=30000 \
 BOXLITE_GIT_CLONE_TIMEOUT_MS=900000 \
 BOXLITE_CAPABILITIES=command.exec,resource.disk-size-gb,workspace.archive.transfer,workspace.git.materialize \
-pnpm --filter @cap/api test:generated-private-git
+pnpm --filter @cap-console/api test:generated-private-git
 ```
 
 `BOXLITE_NATIVE_PRIVATE_GIT_FIXTURE_HOST` is the loopback host address as

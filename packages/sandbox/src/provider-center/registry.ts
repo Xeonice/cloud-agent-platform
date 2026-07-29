@@ -3,7 +3,7 @@ import type {
   SandboxProviderCapability,
   SandboxProviderDescriptor,
   SandboxProviderLocation,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type {
   SandboxProviderCandidateSelection,
   SelectSandboxProviderCandidateOptions,

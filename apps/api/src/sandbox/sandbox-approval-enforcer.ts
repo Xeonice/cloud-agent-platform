@@ -5,7 +5,7 @@ import {
   PermissionRequestFrameSchema,
   type Decision,
   type PermissionRequestFrame,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * Dormant cap-controlled approval-enforcement primitive.

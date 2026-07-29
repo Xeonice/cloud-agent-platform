@@ -18,7 +18,7 @@
  * closed reason to the gate without deciding its consequence here stops the
  * project compiling rather than letting the new reason inherit an unstated
  * fallback. This is the same shape as `SANDBOX_PROVIDER_CAPABILITY_CLASSES` in
- * `@cap/sandbox-core` and the registration-derived runtime guard in
+ * `@cap-console/sandbox-core` and the registration-derived runtime guard in
  * `AgentRuntimeRegistry`: the compiler, not a reviewer, is what notices the gap.
  *
  * What this file deliberately does NOT do is change the answer. Every outcome
@@ -32,7 +32,7 @@ import {
   TASK_ADMISSION_V2_CAPABILITY,
   TaskAdmissionV2GateClosedReasonSchema,
   type TaskAdmissionV2GateResult,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * No gate provider is wired.

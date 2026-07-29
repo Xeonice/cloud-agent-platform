@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type {
   RuntimeExecutionEnvironmentSnapshot,
   RuntimeModelCatalogQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { RuntimeModelCatalogCache } from './runtime-model-catalog-cache';
 import { RuntimeModelAdapterRegistry } from './runtime-model-catalog.port';
 import { RuntimeModelCatalogService } from './runtime-model-catalog.service';

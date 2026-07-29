@@ -1,14 +1,14 @@
 /*
- * @cap/ui/styles.css — v4 token contract for the shared component library.
+ * @cap-console/ui/styles.css — v4 token contract for the shared component library.
  *
  * MIGRATED off the legacy Tailwind v3 form (three @tailwind directives + HSL
  * channel triplets) to the SAME Tailwind v4 token contract that apps/web defines
  * in `apps/web/src/styles/app.css` (rebuild-console-tanstack-start D4 / Track 9).
  *
- * Why this file still exists: apps/web compiles @cap/ui's component classes with
- * ITS OWN app.css (the canonical source of truth — @cap/ui is a tsc-only library
+ * Why this file still exists: apps/web compiles @cap-console/ui's component classes with
+ * ITS OWN app.css (the canonical source of truth — @cap-console/ui is a tsc-only library
  * and does not run Tailwind). This stylesheet is the standalone fallback for any
- * consumer that imports `@cap/ui/styles.css` directly (Storybook, a styleguide,
+ * consumer that imports `@cap-console/ui/styles.css` directly (Storybook, a styleguide,
  * isolated component tests). It declares the identical token values so the shared
  * Button/Card/Badge/Terminal NEVER desaturate ("脱色") relative to the app.
  *

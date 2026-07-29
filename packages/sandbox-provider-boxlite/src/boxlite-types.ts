@@ -2,7 +2,7 @@ import type {
   SandboxConnection,
   SandboxPreflightResult,
   SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type { BoxLiteSandbox } from './boxlite-client.js';
 
 export interface BoxLiteProvisionedRun {

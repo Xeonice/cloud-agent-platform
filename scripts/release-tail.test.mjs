@@ -37,11 +37,11 @@ const contractsDistModule = join(
   'packages/contracts/dist/task-model-capability.js',
 );
 if (!existsSync(contractsDistModule)) {
-  const build = spawnSync('pnpm', ['--filter', '@cap/contracts', 'build'], {
+  const build = spawnSync('pnpm', ['--filter', '@cap-console/contracts', 'build'], {
     cwd: repoRoot,
     stdio: 'inherit',
   });
-  assert.equal(build.status, 0, 'could not build @cap/contracts for attestation validation');
+  assert.equal(build.status, 0, 'could not build @cap-console/contracts for attestation validation');
 }
 
 // Valid attestation fixture (build-matched to the fake image GIT_SHA) plus a

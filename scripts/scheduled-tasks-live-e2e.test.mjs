@@ -58,18 +58,18 @@ test('API and web dependency builds run without loading application env files', 
     /node "\$ROOT_DIR\/apps\/api\/node_modules\/prisma\/build\/index\.js"[\s\S]*?migrate deploy --schema "\$PRISMA_WORK_DIR\/prisma\/schema\.prisma"/,
   );
   assert.match(runner, /node node_modules\/@nestjs\/cli\/bin\/nest\.js build/);
-  assert.match(runner, /pnpm --filter @cap\/ui build/);
+  assert.match(runner, /pnpm --filter @cap-console\/ui build/);
   assert.match(
     runner,
-    /\[\[ -f packages\/ui\/dist\/index\.js \]\] \|\| die "packages\/ui\/dist\/index\.js is missing; build @cap\/ui first"/,
+    /\[\[ -f packages\/ui\/dist\/index\.js \]\] \|\| die "packages\/ui\/dist\/index\.js is missing; build @cap-console\/ui first"/,
   );
-  const uiBuildIndex = runner.indexOf('pnpm --filter @cap/ui build');
+  const uiBuildIndex = runner.indexOf('pnpm --filter @cap-console/ui build');
   const uiDistCheckIndex = runner.indexOf('[[ -f packages/ui/dist/index.js ]]');
   const viteStartIndex = runner.indexOf('node node_modules/vite/bin/vite.js');
   assert.equal(uiBuildIndex < uiDistCheckIndex, true);
   assert.equal(uiDistCheckIndex < viteStartIndex, true);
-  assert.doesNotMatch(runner, /turbo build --filter=@cap\/api/);
-  assert.doesNotMatch(runner, /--filter @cap\/api exec prisma/);
+  assert.doesNotMatch(runner, /turbo build --filter=@cap-console\/api/);
+  assert.doesNotMatch(runner, /--filter @cap-console\/api exec prisma/);
 
   const apiPackage = JSON.parse(
     await readFile(join(root, 'apps/api/package.json'), 'utf8'),
@@ -80,7 +80,7 @@ test('API and web dependency builds run without loading application env files', 
   const webPackage = JSON.parse(
     await readFile(join(root, 'apps/web/package.json'), 'utf8'),
   );
-  assert.equal(webPackage.dependencies['@cap/ui'], 'workspace:*');
+  assert.equal(webPackage.dependencies['@cap-console/ui'], 'workspace:*');
   assert.equal(uiPackage.exports['.'].import, './dist/index.js');
   assert.doesNotMatch(apiPackage.scripts['test:integration:schedules'], /env-file/);
 });

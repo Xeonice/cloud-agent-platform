@@ -29,10 +29,10 @@ importers:
       '@asteasolutions/zod-to-openapi':
         specifier: ^7.3.0
         version: 7.3.4(zod@3.25.76)
-      '@cap/contracts':
+      '@cap-console/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@cap/sandbox':
+      '@cap-console/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
       '@modelcontextprotocol/sdk':
@@ -93,10 +93,10 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
-      '@cap/sandbox-conformance':
+      '@cap-console/sandbox-conformance':
         specifier: workspace:*
         version: link:../../packages/sandbox-conformance
       '@nestjs/cli':
@@ -135,10 +135,10 @@ importers:
 
   apps/release-cache-worker:
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
       '@cloudflare/workers-types':
@@ -159,17 +159,17 @@ importers:
 
   apps/sandbox-hooks:
     dependencies:
-      '@cap/contracts':
+      '@cap-console/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       zod:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
       '@types/node':
@@ -184,10 +184,10 @@ importers:
 
   apps/web:
     dependencies:
-      '@cap/contracts':
+      '@cap-console/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@cap/ui':
+      '@cap-console/ui':
         specifier: workspace:*
         version: link:../../packages/ui
       '@hookform/resolvers':
@@ -254,10 +254,10 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
       '@playwright/test':
@@ -333,10 +333,10 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
       '@tailwindcss/postcss':
@@ -370,10 +370,10 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       eslint:
@@ -403,32 +403,32 @@ importers:
 
   packages/sandbox:
     dependencies:
-      '@cap/contracts':
+      '@cap-console/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@cap/sandbox-cloud-http':
+      '@cap-console/sandbox-cloud-http':
         specifier: workspace:*
         version: link:../sandbox-cloud-http
-      '@cap/sandbox-core':
+      '@cap-console/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
-      '@cap/sandbox-environment':
+      '@cap-console/sandbox-environment':
         specifier: workspace:*
         version: link:../sandbox-environment
-      '@cap/sandbox-provider-aio':
+      '@cap-console/sandbox-provider-aio':
         specifier: workspace:*
         version: link:../sandbox-provider-aio
-      '@cap/sandbox-provider-boxlite':
+      '@cap-console/sandbox-provider-boxlite':
         specifier: workspace:*
         version: link:../sandbox-provider-boxlite
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/sandbox-conformance':
+      '@cap-console/sandbox-conformance':
         specifier: workspace:*
         version: link:../sandbox-conformance
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
@@ -449,17 +449,17 @@ importers:
 
   packages/sandbox-cloud-http:
     dependencies:
-      '@cap/sandbox-core':
+      '@cap-console/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/sandbox-conformance':
+      '@cap-console/sandbox-conformance':
         specifier: workspace:*
         version: link:../sandbox-conformance
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
@@ -474,14 +474,14 @@ importers:
 
   packages/sandbox-conformance:
     dependencies:
-      '@cap/sandbox-core':
+      '@cap-console/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
@@ -496,10 +496,10 @@ importers:
 
   packages/sandbox-core:
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
@@ -514,14 +514,14 @@ importers:
 
   packages/sandbox-environment:
     dependencies:
-      '@cap/sandbox-core':
+      '@cap-console/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
@@ -536,7 +536,7 @@ importers:
 
   packages/sandbox-provider-aio:
     dependencies:
-      '@cap/sandbox-core':
+      '@cap-console/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
       dockerode:
@@ -546,13 +546,13 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/sandbox-conformance':
+      '@cap-console/sandbox-conformance':
         specifier: workspace:*
         version: link:../sandbox-conformance
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/dockerode':
@@ -573,20 +573,20 @@ importers:
 
   packages/sandbox-provider-boxlite:
     dependencies:
-      '@cap/sandbox-core':
+      '@cap-console/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
       ws:
         specifier: ^8.18.0
         version: 8.21.0
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/sandbox-conformance':
+      '@cap-console/sandbox-conformance':
         specifier: workspace:*
         version: link:../sandbox-conformance
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/node':
@@ -606,7 +606,7 @@ importers:
 
   packages/ui:
     dependencies:
-      '@cap/contracts':
+      '@cap-console/contracts':
         specifier: workspace:*
         version: link:../contracts
       '@xterm/addon-fit':
@@ -631,10 +631,10 @@ importers:
         specifier: ^3.0.2
         version: 3.6.0
     devDependencies:
-      '@cap/eslint-config':
+      '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@cap/tsconfig':
+      '@cap-console/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       '@types/react':

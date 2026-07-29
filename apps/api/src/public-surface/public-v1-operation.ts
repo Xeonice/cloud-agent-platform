@@ -23,7 +23,7 @@ import {
   type PublicV1OperationById,
   type PublicV1OperationId,
   type PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { Observable } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { throwError } from 'rxjs';

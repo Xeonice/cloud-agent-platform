@@ -92,7 +92,7 @@ import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnosti
  *    lifecycle-event SSE controller), delegating to the SAME services the console
  *    uses (one task-admission path). `OpenApiModule` (Integration 4.1) serves the
  *    unauthenticated `GET /v1/openapi.json` + `GET /v1/docs` generated from the
- *    `@cap/contracts` `/v1` schemas, so the published spec cannot drift from the
+ *    `@cap-console/contracts` `/v1` schemas, so the published spec cannot drift from the
  *    wire. Both are imported AFTER `AuthModule` so the global auth guard already
  *    protects the `/v1` data surface (only the exact-match docs/spec paths are
  *    exempt in `auth.guard.ts`).

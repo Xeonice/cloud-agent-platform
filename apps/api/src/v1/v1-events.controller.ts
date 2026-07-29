@@ -8,7 +8,7 @@ import {
   V1TaskEventSchema,
   type AuditEvent,
   type V1TaskEvent,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { AuditService } from '@/audit/audit.service';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {

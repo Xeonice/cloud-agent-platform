@@ -23,7 +23,7 @@ import {
   type IRuntimeReadiness,
 } from './tasks.service';
 import { PrismaService } from '@/prisma/prisma.service';
-import type { Runtime, RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
+import type { Runtime, RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
 import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
 import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';

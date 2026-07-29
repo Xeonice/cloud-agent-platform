@@ -33,7 +33,7 @@ import type {
   CodexCredentialState,
   RetentionDays,
   UpdateSettingsRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 // ---------------------------------------------------------------------------
 // 7.2 — Account preferences defaults + read projection

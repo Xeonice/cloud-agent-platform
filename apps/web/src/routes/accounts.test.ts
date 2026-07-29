@@ -18,7 +18,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   AdminAccountListResponseSchema,
   AdminAccountListItemSchema,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   mockListAdminAccounts,
   mockCreateAdminAccount,

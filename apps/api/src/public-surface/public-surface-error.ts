@@ -13,7 +13,7 @@ import {
   type PublicRestErrorProjection,
   type PublicV1OperationShape,
   type RuntimeModelError,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { ZodError } from 'zod';
 import {
   MCP_PUBLIC_ERROR_MAP,

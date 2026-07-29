@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION } from '@cap/contracts';
+import { TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION } from '@cap-console/contracts';
 
 import {
   TASK_PROVISIONING_DIAGNOSTIC_LOG_EVENT,

@@ -1,7 +1,7 @@
 import type {
   TaskModelIntent,
   TaskModelLaunchMaterial,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 /**
  * Canonical interactive Codex argv shared by the runtime policy and the

@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 /**
- * Vercel-style `<Button>` primitive for the marketing site (`@cap/www`).
+ * Vercel-style `<Button>` primitive for the marketing site (`@cap-console/www`).
  *
  * Monochrome black/white per the design system (design.md D5): a solid
  * foreground/background `primary` button, an `outline` button with a 1px

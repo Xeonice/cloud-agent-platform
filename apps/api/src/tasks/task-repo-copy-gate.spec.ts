@@ -24,7 +24,7 @@ import {
   TASK_REPO_COPY_NOT_READY_ERROR,
   TaskRepoCopyNotReadyErrorSchema,
   type PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { TasksService, type IAgentRuntimeRegistry } from './tasks.service';
 import {

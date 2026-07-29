@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionUser } from "@cap/contracts";
+import type { SessionUser } from "@cap-console/contracts";
 
 import { shouldShowAdminSettingsSections } from "../../routes/_app/settings";
 

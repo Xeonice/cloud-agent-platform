@@ -52,7 +52,7 @@ import type {
   ScheduleResponse,
   ListTasksResponse,
   ListReposResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
 import * as mock from "./mock";

@@ -35,7 +35,7 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 
-import type { TaskResponse as Task } from "@cap/contracts";
+import type { TaskResponse as Task } from "@cap-console/contracts";
 import { cn } from "@/utils";
 import { StatusPill, type StatusPillVariant } from "@/components/status-pill";
 import { SegmentedControl } from "@/components/segmented-control";

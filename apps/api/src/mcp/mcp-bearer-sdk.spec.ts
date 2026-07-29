@@ -16,7 +16,7 @@ import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { PUBLIC_V1_OPERATIONS } from '@cap/contracts';
+import { PUBLIC_V1_OPERATIONS } from '@cap-console/contracts';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 

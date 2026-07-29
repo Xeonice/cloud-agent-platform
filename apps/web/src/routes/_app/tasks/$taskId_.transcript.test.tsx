@@ -18,7 +18,7 @@ import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 
-import type { SessionTurn } from "@cap/contracts";
+import type { SessionTurn } from "@cap-console/contracts";
 import { TxRow } from "./$taskId_.transcript";
 
 /** A representative SessionTurn[] the fixed parsers emit (codex + claude shapes). */

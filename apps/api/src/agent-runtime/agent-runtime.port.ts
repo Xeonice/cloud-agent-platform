@@ -1,10 +1,10 @@
-import { DEFAULT_AGENT_RUNTIME_ID, type AgentRuntimeId } from '@cap/contracts';
+import { DEFAULT_AGENT_RUNTIME_ID, type AgentRuntimeId } from '@cap-console/contracts';
 import type {
   SandboxRuntimePreflightCommandDescriptor,
   SandboxRuntimePrivateFile,
   SandboxRuntimeSetupCommandDescriptor,
   TaskModelLaunchMaterial,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 /**
  * AgentRuntime port (add-claude-code-runtime, design D1).
@@ -30,11 +30,11 @@ import type {
 
 /**
  * The set of runtime identifiers, taken from the one declaration in
- * `@cap/contracts`.
+ * `@cap-console/contracts`.
  *
  * This was a local literal union, justified by keeping the leaf module
  * standalone. The justification did not hold — the module already takes a
- * package-level type dependency on `@cap/sandbox` — and the cost was real: the
+ * package-level type dependency on `@cap-console/sandbox` — and the cost was real: the
  * union and the contract schema were two independent statements of one set, so
  * widening either alone produced assignability errors at unrelated call sites
  * rather than at the disagreement.
@@ -84,7 +84,7 @@ export type ExecutionMode = 'interactive-pty' | 'headless-exec';
 /**
  * The transcript format a runtime declares. The sandbox transcript-read layer (which
  * owns the parsers) dispatches by this tag — the port stays a dependency-light LEAF and
- * never imports the parsers or `@cap/contracts`.
+ * never imports the parsers or `@cap-console/contracts`.
  */
 export type TranscriptFormat = 'codex-rollout' | 'claude-jsonl';
 

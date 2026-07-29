@@ -22,7 +22,7 @@ import type {
   TaskProvisioningDiagnosticCommandKind,
   TaskProvisioningDiagnosticOperation,
   TaskProvisioningDiagnosticStage,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   BegunTaskProvisioningDiagnosticObserver,
   TaskProvisioningDiagnosticPrimarySettlementInput,

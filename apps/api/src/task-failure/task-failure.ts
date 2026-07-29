@@ -4,7 +4,7 @@ import {
   TaskFailureSchema,
   type Runtime,
   type TaskFailure,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 type RuntimeTaskFailure = Extract<TaskFailure, { runtime: Runtime }>;
 type ProvisioningTaskFailure = Exclude<TaskFailure, RuntimeTaskFailure>;

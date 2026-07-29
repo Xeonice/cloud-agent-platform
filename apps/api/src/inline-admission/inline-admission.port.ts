@@ -17,7 +17,7 @@ import type {
   TaskProvisioningDiagnosticCleanupSummary,
   TaskProvisioningStage,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   AgentTerminalLaunchOutcome,
   GitCloneSpec,
@@ -26,7 +26,7 @@ import type {
   SandboxRunCleanupAuthorityProjection,
   SandboxWorkspaceProgressReporter,
   WorkspaceSource,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type {
   SandboxConnection,
   SelectedSandboxRun,

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import type { TaskFailureCode } from '@cap/contracts';
+import type { TaskFailureCode } from '@cap-console/contracts';
 import { ClaudeCodeRuntime } from '@/agent-runtime/claude-code-runtime';
 import { CodexRuntime } from '@/agent-runtime/codex-runtime';
 import type { RuntimeRegistry } from '@/agent-runtime/agent-runtime.integration';

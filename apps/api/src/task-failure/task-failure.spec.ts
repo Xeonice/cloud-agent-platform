@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskFailureCode } from '@cap/contracts';
+import type { TaskFailureCode } from '@cap-console/contracts';
 import type { PrismaService } from '@/prisma/prisma.service';
 import { taskFailureFromRecord } from './task-failure';
 import { taskResponseFromRecord } from '@/tasks/task-response';

@@ -5,7 +5,7 @@ import {
   UNKNOWN_VERSION_VALUE,
   VERSION_ENV_VARS,
   type UpdateStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * The default repo whose GitHub Releases are checked when `GITHUB_RELEASES_REPO`

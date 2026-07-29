@@ -36,7 +36,7 @@
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-// ---- inline (mirrors @cap/contracts credential-prefix constants, task 2.2) ----
+// ---- inline (mirrors @cap-console/contracts credential-prefix constants, task 2.2) ----
 
 const CREDENTIAL_PREFIX = { API_KEY: 'cap_sk_', MCP: 'mcp_' };
 const RESERVED_CREDENTIAL_PREFIXES = [CREDENTIAL_PREFIX.API_KEY, CREDENTIAL_PREFIX.MCP];

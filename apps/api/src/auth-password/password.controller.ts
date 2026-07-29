@@ -15,7 +15,7 @@ import {
   type AuthSessionResponse,
   type ChangePasswordRequest,
   type PasswordLoginRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { buildSessionCookies } from '@/auth/session-cookie';
 import { readCookie, SESSION_COOKIE_NAME } from '@/auth/session-token';

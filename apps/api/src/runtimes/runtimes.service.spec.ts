@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AGENT_RUNTIME_IDS, DEFAULT_AGENT_RUNTIME_ID } from '@cap/contracts';
+import { AGENT_RUNTIME_IDS, DEFAULT_AGENT_RUNTIME_ID } from '@cap-console/contracts';
 
 import type { ClaudeAuthSource } from '@/sandbox/claude-auth-source.port';
 import { RuntimesService } from './runtimes.service';

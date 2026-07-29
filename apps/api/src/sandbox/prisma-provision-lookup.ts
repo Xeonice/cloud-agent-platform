@@ -8,7 +8,7 @@ import {
   TaskModelSelectorSchema,
   type Runtime,
   type RuntimeExecutionEnvironmentSnapshot,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
@@ -23,7 +23,7 @@ import {
   type SandboxResourceSnapshot,
   type SandboxWorkspaceMaterializationPlan,
   type WorkspaceSource,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { WorkspaceSourceResolver } from './workspace-source-resolver';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ForgeTargetResolver } from '@/forge/forge-target-resolver';

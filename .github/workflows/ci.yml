@@ -85,12 +85,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate current Prisma client
-        run: pnpm --filter @cap/api prisma:generate
+        run: pnpm --filter @cap-console/api prisma:generate
 
       - name: Exercise pinned N-1 REST and MCP writers
         env:
           TASK_MODEL_N_MINUS_ONE_EVIDENCE: ${{ runner.temp }}/task-model-n-minus-one/evidence.json
-        run: pnpm --filter @cap/api test:compat:task-model-n-minus-one
+        run: pnpm --filter @cap-console/api test:compat:task-model-n-minus-one
 
       - name: Upload sanitized N-1 evidence
         if: always()
@@ -141,12 +141,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma client
-        run: pnpm --filter @cap/api prisma:generate
+        run: pnpm --filter @cap-console/api prisma:generate
 
       - name: Task admission fresh, upgrade, and rollback compatibility
         env:
           CAP_TASK_ADMISSION_MIGRATION_TEST: "1"
-        run: pnpm --filter @cap/api test:migration:task-admission
+        run: pnpm --filter @cap-console/api test:migration:task-admission
 
   typecheck-lint:
     name: typecheck + lint + test
@@ -168,9 +168,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `turbo build` first: it generates the codegen prerequisites that `turbo
-      # typecheck` needs but does NOT itself depend on — the @cap/web route tree
-      # (TanStack Start vite plugin), the @cap/api Prisma client (its build script),
-      # and the @cap/contracts / @cap/ui dist types. Two separate invocations
+      # typecheck` needs but does NOT itself depend on — the @cap-console/web route tree
+      # (TanStack Start vite plugin), the @cap-console/api Prisma client (its build script),
+      # and the @cap-console/contracts / @cap-console/ui dist types. Two separate invocations
       # guarantee every build (hence every generated input) is done before any
       # typecheck runs.
       - name: Build + terminal response-profile source conformance
@@ -280,7 +280,7 @@ jobs:
       - name: Test (workspace packages)
         run: pnpm turbo test --filter='./packages/*' --continue
 
-  # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
+  # Boots the BUILT @cap-console/api orchestrator against a throwaway Postgres and probes
   # the unauthenticated `/health` liveness endpoint, failing the pipeline on any
   # bootstrap / DI error. A SEPARATE job (runs independently of typecheck+lint) so
   # this guard is unaffected by — and not blocked behind — the lint gate.
@@ -349,15 +349,15 @@ jobs:
       # Build the api (and its workspace deps): produces apps/api/dist/main.js and
       # generates the Prisma client the boot needs. This is the SAME built artifact
       # the container CMD runs, so a DI break surfaces here exactly as in prod.
-      - name: Build (@cap/api + deps)
-        run: pnpm turbo build --filter=@cap/api
+      - name: Build (@cap-console/api + deps)
+        run: pnpm turbo build --filter=@cap-console/api
 
       # Prove predecessor rows survive the additive model-selection migration,
       # then reset the throwaway schema for the ordinary boot smoke below.
       - name: Task model migration compatibility
         env:
           CAP_TASK_MODEL_MIGRATION_TEST: "1"
-        run: pnpm --filter @cap/api test:migration:model
+        run: pnpm --filter @cap-console/api test:migration:model
 
       # Migrate the throwaway DB, boot the built app, probe /health. The helper
       # exits non-zero (and dumps the app log) on any migration / bootstrap / DI /
@@ -404,7 +404,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        run: pnpm --filter @cap/web exec playwright install --with-deps chromium
+        run: pnpm --filter @cap-console/web exec playwright install --with-deps chromium
 
       - name: Scheduled tasks live E2E
         timeout-minutes: 10

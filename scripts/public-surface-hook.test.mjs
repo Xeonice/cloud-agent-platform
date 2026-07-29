@@ -17,9 +17,9 @@ test('contracts edits typecheck all downstream consumers and run fast once', () 
     { root: ROOT },
   );
   assert.deepEqual(affectedTypecheckFilters(plan.classification), [
-    '@cap/contracts',
-    '@cap/api',
-    '@cap/web',
+    '@cap-console/contracts',
+    '@cap-console/api',
+    '@cap-console/web',
   ]);
   assert.equal(
     plan.steps.filter((step) => step.args.includes('test:public-surface')).length,
@@ -36,7 +36,7 @@ test('removing an API or Web package focused script still triggers the shared ga
     assert.equal(plan.classification.publicSurface, true, packageJson);
     assert.deepEqual(
       affectedTypecheckFilters(plan.classification),
-      ['@cap/contracts', '@cap/api', '@cap/web'],
+      ['@cap-console/contracts', '@cap-console/api', '@cap-console/web'],
       packageJson,
     );
     assert.equal(
@@ -99,7 +99,7 @@ test('overlapping API categories still produce one typecheck and one focused run
   assert.equal(plan.steps.length, 2);
   assert.deepEqual(
     plan.steps[0].args.filter((arg) => arg.startsWith('--filter=')),
-    ['--filter=@cap/api'],
+    ['--filter=@cap-console/api'],
   );
   assert.deepEqual(plan.steps[1].args, ['test:public-surface']);
 });

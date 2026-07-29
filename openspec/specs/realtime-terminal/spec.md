@@ -430,7 +430,7 @@ running-terminal history survives a reset or reconnect.
 #### Scenario: Story mounts the shared terminal wrapper
 
 - **WHEN** the xterm story is opened in local verification
-- **THEN** it mounts the same shared `@cap/ui` terminal wrapper used by the live session
+- **THEN** it mounts the same shared `@cap-console/ui` terminal wrapper used by the live session
   terminal
 - **AND** it imports the same app terminal styles needed for production-equivalent
   rendering

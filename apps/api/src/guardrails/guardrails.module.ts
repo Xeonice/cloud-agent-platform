@@ -14,7 +14,7 @@ import { RetentionCleaner } from './retention-cleaner';
 import {
   SANDBOX_RETENTION_STORE,
 } from './sandbox-retention-store';
-import { createConfiguredSandboxRetentionStore } from '@cap/sandbox';
+import { createConfiguredSandboxRetentionStore } from '@cap-console/sandbox';
 import { SessionCredentialsService } from '@/creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '@/sandbox/sandbox-provider.port';
 import { PROVISION_LOOKUP, type ProvisionLookup } from '@/provision-lookup/provision-lookup.port';

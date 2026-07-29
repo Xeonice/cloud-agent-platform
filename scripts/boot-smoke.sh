@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Boot-smoke: start the BUILT @cap/api orchestrator against a throwaway Postgres
+# Boot-smoke: start the BUILT @cap-console/api orchestrator against a throwaway Postgres
 # and prove it reaches a healthy boot by probing the unauthenticated `/health`
 # liveness endpoint.
 #
@@ -65,7 +65,7 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 2
 fi
 
-# Resolve the @cap/api package dir relative to this script so the smoke runs from
+# Resolve the @cap-console/api package dir relative to this script so the smoke runs from
 # any CWD (CI checks out at the repo root).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="${SCRIPT_DIR}/../apps/api"

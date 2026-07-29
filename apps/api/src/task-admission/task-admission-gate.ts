@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { TaskAdmissionV2GateResult } from '@cap/contracts';
+import type { TaskAdmissionV2GateResult } from '@cap-console/contracts';
 import {
   TASK_ADMISSION_V2_ATTESTATION_ENV,
   TASK_ADMISSION_V2_ENABLED_ENV,

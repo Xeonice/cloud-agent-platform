@@ -36,7 +36,7 @@ import {
   UNKNOWN_VERSION_VALUE,
   VERSION_ENV_VARS,
   UpdateStatusSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { SESSION_COOKIE_NAME } from '@/auth/session-token';
 

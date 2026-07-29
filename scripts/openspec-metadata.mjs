@@ -78,25 +78,25 @@ export const VERIFIER_ALLOWLIST = Object.freeze({
     'Validate the OpenSpec sidecar, task metadata, mirrored skills, and backbone.',
   ),
   'contracts-registry': freezeVerifier(
-    [['pnpm', '--filter', '@cap/contracts', 'test']],
+    [['pnpm', '--filter', '@cap-console/contracts', 'test']],
     'Build and test the transport-neutral public contract registry.',
   ),
   'api-public-errors': freezeVerifier(
-    [['pnpm', '--filter', '@cap/api', 'test']],
+    [['pnpm', '--filter', '@cap-console/api', 'test']],
     'Build and test the API public error boundary.',
   ),
   'api-mcp': freezeVerifier(
-    [['pnpm', '--filter', '@cap/api', 'test']],
+    [['pnpm', '--filter', '@cap-console/api', 'test']],
     'Build and test MCP registration and adapter behavior.',
   ),
   'api-v1': freezeVerifier(
-    [['pnpm', '--filter', '@cap/api', 'test']],
+    [['pnpm', '--filter', '@cap-console/api', 'test']],
     'Build and test Public V1 bindings and behavior.',
   ),
   'openapi-playground': freezeVerifier(
     [
-      ['pnpm', '--filter', '@cap/api', 'test'],
-      ['pnpm', '--filter', '@cap/web', 'test'],
+      ['pnpm', '--filter', '@cap-console/api', 'test'],
+      ['pnpm', '--filter', '@cap-console/web', 'test'],
     ],
     'Test OpenAPI and API Playground projections.',
   ),
@@ -110,7 +110,7 @@ export const VERIFIER_ALLOWLIST = Object.freeze({
   ),
   'task-model-evidence': freezeVerifier(
     [
-      ['pnpm', '-w', 'exec', 'turbo', 'run', 'build', '--filter=@cap/api'],
+      ['pnpm', '-w', 'exec', 'turbo', 'run', 'build', '--filter=@cap-console/api'],
       [process.execPath, 'apps/api/test/task-model-evidence-offline.mjs'],
     ],
     'Validate retained task-model Phase1/Phase2 evidence and checked manifest parity without credentials or network access.',

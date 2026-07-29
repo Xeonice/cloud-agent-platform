@@ -11,7 +11,7 @@ import {
   type TaskProvisioningStage,
   type TaskStatus,
   type TaskResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   BoxLiteSandboxProvider,
   FakeBoxLiteClient,
@@ -20,7 +20,7 @@ import {
   defineLocalSandboxProvider,
   materializeSandboxGitWorkspaceStaged,
   readBoxLiteProviderConfig,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { AuditService } from '@/audit/audit.service';

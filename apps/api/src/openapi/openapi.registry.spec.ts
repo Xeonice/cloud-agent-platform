@@ -7,7 +7,7 @@
  *   1. The generated OpenAPI 3.1 document describes EVERY `/v1` route and no
  *      route that is not served — a route↔schema registration DIFF: the
  *      document's `(METHOD, path)` keys equal {@link v1RouteKeys}() exactly.
- *   2. The document is built from the SAME `@cap/contracts` schemas the `/v1`
+ *   2. The document is built from the SAME `@cap-console/contracts` schemas the `/v1`
  *      controllers validate against: the registered request/response shapes are
  *      the exact exported schemas (not parallel re-declarations), proven by
  *      feeding a representative payload through both the exported schema and the
@@ -28,7 +28,7 @@ import {
   TASK_PROVISIONING_DIAGNOSTIC_MAX_PAGE_SIZE,
   TaskProvisioningDiagnosticsResponseSchema,
   type PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { REST_PUBLIC_ERROR_MAP } from '@/public-surface/public-error-mappings';
 import { decodeTaskProvisioningDiagnosticCursor } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
 

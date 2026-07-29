@@ -32,7 +32,7 @@
  * Run (stack already up):
  *   AUTH_TOKEN=... API=http://127.0.0.1:8080 node --test --test-force-exit test/aio-e2e.mjs
  * Or one-shot (build + up + run + down):
- *   pnpm --filter @cap/api test:e2e:aio
+ *   pnpm --filter @cap-console/api test:e2e:aio
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';

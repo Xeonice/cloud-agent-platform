@@ -280,7 +280,7 @@ test('task-model evidence verification is fixed, offline, and shell-free', () =>
   const verifier = VERIFIER_ALLOWLIST['task-model-evidence'];
   assert.ok(verifier);
   assert.deepEqual(verifier.argv, [
-    ['pnpm', '-w', 'exec', 'turbo', 'run', 'build', '--filter=@cap/api'],
+    ['pnpm', '-w', 'exec', 'turbo', 'run', 'build', '--filter=@cap-console/api'],
     [process.execPath, 'apps/api/test/task-model-evidence-offline.mjs'],
   ]);
   assert.doesNotMatch(

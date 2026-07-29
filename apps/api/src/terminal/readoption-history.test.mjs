@@ -26,7 +26,7 @@ const { TerminalGateway } = await import(path.join(dist, 'terminal.gateway.js'))
 const { SESSION_LOG_FILENAME, SESSION_CAST_FILENAME } = await import(
   path.join(dist, 'snapshot.js')
 );
-const { parseCast } = await import('@cap/contracts');
+const { parseCast } = await import('@cap-console/contracts');
 
 function makeOwner() {
   const resizes = [];

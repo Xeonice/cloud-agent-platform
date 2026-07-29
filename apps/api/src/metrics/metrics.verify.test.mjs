@@ -11,7 +11,7 @@
  *   - dist/metrics/resource-sampler.service.js (real ResourceSamplerService +
  *     buildSampledResources / freshnessStatus)
  *
- * These three leaf modules have only erased TYPE imports from @cap/contracts, so
+ * These three leaf modules have only erased TYPE imports from @cap-console/contracts, so
  * they load under plain `node`. Run with: `node metrics.verify.test.mjs`.
  *
  * Scenarios named by the verify task:
@@ -35,8 +35,8 @@
  *     payload (no taskSamples) still parses, and the real MetricsService.build()
  *     response keeps every prior field unchanged in name/type.
  *
- * Requires `pnpm --filter @cap/api build` (refreshes dist/) and
- * `pnpm --filter @cap/contracts build` (compiled zod schemas) before running.
+ * Requires `pnpm --filter @cap-console/api build` (refreshes dist/) and
+ * `pnpm --filter @cap-console/contracts build` (compiled zod schemas) before running.
  */
 
 import { createRequire } from 'node:module';

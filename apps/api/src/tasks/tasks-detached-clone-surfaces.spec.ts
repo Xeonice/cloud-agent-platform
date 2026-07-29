@@ -6,7 +6,7 @@ import {
   isTaskProvisioningProgressEmissionOpen,
   type TaskProvisioningSummary,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   triageParkedAdmissionMarkers,
 } from '@/task-admission/fenced-task-admission.processor';

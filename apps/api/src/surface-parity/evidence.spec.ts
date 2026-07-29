@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { PUBLIC_V1_OPERATIONS, type McpMappedOperation } from '@cap/contracts';
+import { PUBLIC_V1_OPERATIONS, type McpMappedOperation } from '@cap-console/contracts';
 
 import { MCP_ADAPTERS, type McpAdapterMap } from '@/mcp/mcp-tools';
 import { collectPublicSurfaceRuntimeEvidence } from './evidence';

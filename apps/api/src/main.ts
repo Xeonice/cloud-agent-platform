@@ -11,7 +11,7 @@ import {
   authTokenConfigSchema,
   RESERVED_CREDENTIAL_PREFIXES,
   contractsZod,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { AppModule } from './app.module';
 import { AuthSessionService } from './auth/auth-session.service';
 import {
@@ -25,14 +25,14 @@ import {
 } from './forge/git-runtime-preflight';
 
 // public-v1-api (Integration 4.1): the ONCE-per-process `extendZodWithOpenApi`
-// init, owned here (outside `@cap/contracts`) so the `.openapi(...)` augmentation
+// init, owned here (outside `@cap-console/contracts`) so the `.openapi(...)` augmentation
 // is installed before ANY schema is registered into the OpenAPI document. It is
 // idempotent (the registry also calls it defensively so it can generate in
 // isolation), but this is the canonical single call at the bootstrap seam.
 //
-// CRITICAL: it must extend the EXACT zod instance the `@cap/contracts` schemas are
+// CRITICAL: it must extend the EXACT zod instance the `@cap-console/contracts` schemas are
 // built on — re-exported as `contractsZod` — NOT the api's own `import/require('zod')`.
-// `@cap/contracts` is ESM (resolves zod's `index.js`) while the api is CJS (resolves
+// `@cap-console/contracts` is ESM (resolves zod's `index.js`) while the api is CJS (resolves
 // the SEPARATE `index.cjs` class realm); extending the CJS realm would leave every
 // ESM-built contract schema without `.openapi`, and OpenAPI generation would throw
 // `schema.openapi is not a function`. Extending `contractsZod` patches the right realm.

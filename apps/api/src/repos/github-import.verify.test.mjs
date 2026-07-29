@@ -20,7 +20,7 @@
  *   - only-imported-selectable: a plain gitSource (githubId null) repo can never
  *     be set default.
  *
- * Requires `pnpm --filter @cap/api build` (refreshes dist/) before running.
+ * Requires `pnpm --filter @cap-console/api build` (refreshes dist/) before running.
  */
 
 import { createRequire } from 'node:module';

@@ -35,7 +35,7 @@ import {
   exitCodeFromExecBody,
   selectLaunch,
   TASK_MODEL_MATERIAL_PATH,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 const CTX: LaunchContext = {
   taskId: 'task-abc',

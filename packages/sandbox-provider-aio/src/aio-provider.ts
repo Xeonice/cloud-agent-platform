@@ -34,7 +34,7 @@ import type {
   SandboxWorkspaceDeliveryHook,
   SandboxWorkspaceMaterializationHook,
   SelectedSandboxRun,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   assertSandboxProviderSupportsResources,
   assertSandboxProviderSupportsWorkspaceSource,
@@ -53,7 +53,7 @@ import {
   SandboxProviderConfigurationError,
   SandboxWorkspaceMaterializationError,
   snapshotSandboxProvisionContext,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import Docker from 'dockerode';
 import {
   AioSandboxContainerController,

@@ -6,7 +6,7 @@ TBD - created by archiving change agent-control-platform. Update Purpose after a
 ### Requirement: SandboxProvider port exposing sandbox-mode as a capability
 The system SHALL define a `SandboxProvider` port abstraction whose `provision()` method accepts a `ProvisionContext` (which no longer carries a `taskToken`, since there is no dial-back to authenticate) and returns a `SandboxConnection { taskId, baseUrl, wsUrl }` rather than `void`, so that callers can address the provisioned sandbox by container name and open its terminal WebSocket. Providers SHALL be exposed through provider descriptors that include an id, location (`local` or `cloud`), priority, supported capabilities, and the provider implementation. Capability selection SHALL be provider-neutral: callers declare required capabilities, the provider center SHALL consider only providers satisfying all required capabilities, and selection SHALL order candidates by priority with optional preferred-location tie-breaking. The port SHALL continue to expose the execution sandbox mode (one of `read-only`, `workspace-write`, `danger-full-access`) as an explicit capability via `getSandboxMode()`, but that mode SHALL be treated as INFORMATIONAL only and SHALL NOT be the scheduling boundary — under AIO Sandbox the real isolation boundary is the container with `seccomp=unconfined` plus network isolation, not the reported mode. The concrete OS-isolating implementation SHALL remain deferrable and swappable without changing callers. `teardownSandbox` SHALL be unchanged.
 
-Provider-neutral contracts and capability types SHALL live in `@cap/sandbox-core`. Provider registry, selection, lifecycle, workspace, readoption, selected-run routing, and shared terminal-session behavior SHALL live in the API-facing `@cap/sandbox` provider center. Concrete AIO, BoxLite, and cloud HTTP mechanics SHALL live in their owning provider packages. Internal scheduler, lifecycle, workspace-git, and AIO-local helpers SHALL NOT remain helper-only runtime packages, and conformance code SHALL be dev-only testkit or package test code rather than a production dependency. None of these layers SHALL require `@cap/api` internals.
+Provider-neutral contracts and capability types SHALL live in `@cap-console/sandbox-core`. Provider registry, selection, lifecycle, workspace, readoption, selected-run routing, and shared terminal-session behavior SHALL live in the API-facing `@cap-console/sandbox` provider center. Concrete AIO, BoxLite, and cloud HTTP mechanics SHALL live in their owning provider packages. Internal scheduler, lifecycle, workspace-git, and AIO-local helpers SHALL NOT remain helper-only runtime packages, and conformance code SHALL be dev-only testkit or package test code rather than a production dependency. None of these layers SHALL require `@cap-console/api` internals.
 
 #### Scenario: provision returns a SandboxConnection, not void
 - **WHEN** a caller invokes `SandboxProvider.provision()` with a `ProvisionContext`
@@ -47,8 +47,8 @@ Provider-neutral contracts and capability types SHALL live in `@cap/sandbox-core
 
 #### Scenario: Sandbox package boundaries match real extension points
 - **WHEN** sandbox provider logic and package manifests are inspected
-- **THEN** provider-neutral contracts live in `@cap/sandbox-core`, shared orchestration lives in `@cap/sandbox`, and backend mechanics live in concrete provider packages
-- **AND** helper-only packages are not production runtime dependencies, conformance is dev-only, and `@cap/api` imports only the provider-center surface
+- **THEN** provider-neutral contracts live in `@cap-console/sandbox-core`, shared orchestration lives in `@cap-console/sandbox`, and backend mechanics live in concrete provider packages
+- **AND** helper-only packages are not production runtime dependencies, conformance is dev-only, and `@cap-console/api` imports only the provider-center surface
 
 ### Requirement: Path to restore OS-level isolation is preserved
 The `SandboxProvider` port SHALL be defined such that a future implementation can provide OS-level isolation (for example a Claude Code sandbox-runtime) by satisfying the same interface, without requiring changes to the port's consumers.
@@ -807,13 +807,13 @@ Archive-variant workspace materialization SHALL report byte-based transfer progr
 - **WHEN** the deployment runs legacy admission with no provisioning work row
 - **THEN** the transfer proceeds normally and no progress write is attempted or errored
 
-### Requirement: `@cap/sandbox` is the API-facing provider center
+### Requirement: `@cap-console/sandbox` is the API-facing provider center
 
-The API SHALL consume sandbox behavior through `@cap/sandbox` as the provider center and host harness boundary. Provider registry composition, selection, explicit provider-family constraints, owner pinning, readoption routing, selected-run aggregation, workspace helpers, lifecycle planning, command executor resolution, provider readiness, and provider-neutral terminal session behavior SHALL live behind that center rather than in API-local wiring or helper-only packages.
+The API SHALL consume sandbox behavior through `@cap-console/sandbox` as the provider center and host harness boundary. Provider registry composition, selection, explicit provider-family constraints, owner pinning, readoption routing, selected-run aggregation, workspace helpers, lifecycle planning, command executor resolution, provider readiness, and provider-neutral terminal session behavior SHALL live behind that center rather than in API-local wiring or helper-only packages.
 
 #### Scenario: API imports sandbox behavior through the center
 - **WHEN** API sandbox, task, guardrail, terminal, and retention code imports sandbox-layer functionality
-- **THEN** it imports the API-facing surface from `@cap/sandbox`
+- **THEN** it imports the API-facing surface from `@cap-console/sandbox`
 - **AND** it does not import scheduler, lifecycle, workspace-git, conformance, AIO-local, or provider-helper packages directly
 - **AND** it does not import concrete provider factories, provider env readers, provider terminal transports, or provider command executor implementations
 
@@ -824,8 +824,8 @@ The API SHALL consume sandbox behavior through `@cap/sandbox` as the provider ce
 
 #### Scenario: Provider center owns configured registry creation
 - **WHEN** the API binds the sandbox provider port
-- **THEN** API passes a neutral host harness into `@cap/sandbox`
-- **AND** `@cap/sandbox` composes AIO, BoxLite, cloud-http, and future provider descriptors according to configuration
+- **THEN** API passes a neutral host harness into `@cap-console/sandbox`
+- **AND** `@cap-console/sandbox` composes AIO, BoxLite, cloud-http, and future provider descriptors according to configuration
 - **AND** API does not branch on provider family or provider capability implementation details
 
 ### Requirement: Helper-only sandbox packages are not runtime extension packages
@@ -840,8 +840,8 @@ misdirects work onto files that no build would ever compile.
 
 #### Scenario: Internal helpers move under owning packages
 - **WHEN** the sandbox package graph is inspected after the refactor
-- **THEN** scheduler, lifecycle, and workspace helper code is under `@cap/sandbox`
-- **AND** AIO local configuration/spec helper code is under `@cap/sandbox-provider-aio`
+- **THEN** scheduler, lifecycle, and workspace helper code is under `@cap-console/sandbox`
+- **AND** AIO local configuration/spec helper code is under `@cap-console/sandbox-provider-aio`
 - **AND** conformance helpers are dev-only testkit or test code rather than runtime dependencies
 
 #### Scenario: A superseded package leaves no directory behind
@@ -855,7 +855,7 @@ misdirects work onto files that no build would ever compile.
 Each provider package SHALL expose descriptor factories and provider instances that the provider center can register without API-specific dependencies.
 
 #### Scenario: A provider registers without Nest dependencies
-- **WHEN** `@cap/sandbox` registers AIO or BoxLite provider descriptors
+- **WHEN** `@cap-console/sandbox` registers AIO or BoxLite provider descriptors
 - **THEN** the descriptor is created from provider package exports and injected hooks
 - **AND** the provider package does not import Nest, Prisma, API controllers, or API-local module wiring
 

@@ -6,12 +6,12 @@ import type {
   BoxLiteClient,
   BoxLiteProviderConfig,
   SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   BOXLITE_DEFAULT_DISK_SIZE_GB,
   BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
-} from '@cap/sandbox';
-import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
+} from '@cap-console/sandbox';
+import type { RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
 import {
   ConfiguredRuntimeModelTasklessProbeLifecycle,
   buildCodexModelProbeCommand,

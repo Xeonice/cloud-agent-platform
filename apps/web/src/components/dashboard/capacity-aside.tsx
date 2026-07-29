@@ -34,7 +34,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 
-import type { MetricsResponse, Task } from "@cap/contracts";
+import type { MetricsResponse, Task } from "@cap-console/contracts";
 import {
   metricsQuery,
   poolPanelQuery,

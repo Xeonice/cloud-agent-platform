@@ -18,7 +18,7 @@ import type {
   AvailableGithubRepo,
   RepoResponse,
   SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { RepoCopyService } from './repo-copy.service';
 
 import { GithubImportController } from './github-import.controller';

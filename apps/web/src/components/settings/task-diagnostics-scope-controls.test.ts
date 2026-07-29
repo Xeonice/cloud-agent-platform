@@ -1,4 +1,4 @@
-import { ScopeSchema } from "@cap/contracts";
+import { ScopeSchema } from "@cap-console/contracts";
 import { describe, expect, it } from "vitest";
 
 import {

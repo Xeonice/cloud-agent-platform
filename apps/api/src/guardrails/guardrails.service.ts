@@ -11,7 +11,7 @@ import type {
   TaskProvisioningDiagnosticCleanupSummary,
   TaskProvisioningStage,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   AdmissionTransitionIndeterminateError,
   TASK_OPERATIONS,
@@ -54,7 +54,7 @@ import {
   type SandboxWorkspaceProgressEvent,
   type SandboxWorkspaceProgressReporter,
   type WorkspaceSource,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionLeaseLostError,

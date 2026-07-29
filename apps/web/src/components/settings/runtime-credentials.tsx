@@ -23,7 +23,7 @@ import type {
   CodexCredentialMode,
   Runtime,
   TaskFailureCode,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 

@@ -23,7 +23,7 @@ import {
   type TaskProvisioningDiagnosticProviderFamily,
   type TaskProvisioningDiagnosticStage,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 

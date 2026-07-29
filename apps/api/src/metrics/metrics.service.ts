@@ -4,7 +4,7 @@ import type {
   ProvisioningDiagnosticsMetrics,
   TaskResourceResponse,
   TerminalDiagnosticsMetrics,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { GuardrailsService } from '@/guardrails/guardrails.service';
 import { TaskProvisioningDiagnosticsMetricsService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
 import {

@@ -25,7 +25,7 @@ import {
   type ScheduleRunResponse,
   type ScheduleTaskTemplate,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';

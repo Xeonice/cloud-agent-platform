@@ -420,7 +420,7 @@ if [[ "${SCHEDULE_E2E_SKIP_BUILD:-0}" != 1 ]]; then
     HOME="$ISOLATED_HOME" \
     TMPDIR="${ARTIFACT_DIR}/tmp" \
     CI=true \
-    pnpm --filter @cap/sandbox build
+    pnpm --filter @cap-console/sandbox build
 
   log "building web workspace dependencies with an explicit environment"
   env -i \
@@ -429,7 +429,7 @@ if [[ "${SCHEDULE_E2E_SKIP_BUILD:-0}" != 1 ]]; then
     HOME="$ISOLATED_HOME" \
     TMPDIR="${ARTIFACT_DIR}/tmp" \
     CI=true \
-    pnpm --filter @cap/ui build
+    pnpm --filter @cap-console/ui build
 
   log "generating Prisma client from the isolated schema copy"
   (
@@ -459,7 +459,7 @@ if [[ "${SCHEDULE_E2E_SKIP_BUILD:-0}" != 1 ]]; then
   )
 fi
 [[ -f apps/api/dist/app.module.js ]] || die "apps/api/dist/app.module.js is missing; build the API first"
-[[ -f packages/ui/dist/index.js ]] || die "packages/ui/dist/index.js is missing; build @cap/ui first"
+[[ -f packages/ui/dist/index.js ]] || die "packages/ui/dist/index.js is missing; build @cap-console/ui first"
 
 log "applying Prisma migrations from the isolated schema copy"
 (

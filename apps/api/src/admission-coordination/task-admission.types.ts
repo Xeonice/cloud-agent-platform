@@ -1,8 +1,8 @@
 import type {
   TaskProvisioningStage,
   TaskStatus,
-} from '@cap/contracts';
-import type { SandboxResourceSnapshot } from '@cap/sandbox';
+} from '@cap-console/contracts';
+import type { SandboxResourceSnapshot } from '@cap-console/sandbox';
 import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
 
 export type TaskAdmissionClaimSourceState =

@@ -23,7 +23,7 @@ import {
   RepoResponseSchema,
   isLocalRepoGitSource,
   repoOffersForgeDelivery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { DefaultForgeRegistry } from '@/forge/forge-registry';

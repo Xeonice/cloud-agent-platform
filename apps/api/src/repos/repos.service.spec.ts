@@ -8,7 +8,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { ForgeKind, RepoResponse } from '@cap/contracts';
+import type { ForgeKind, RepoResponse } from '@cap-console/contracts';
 
 import { normalizeRepoGitSource, ReposService } from './repos.service';
 import type {

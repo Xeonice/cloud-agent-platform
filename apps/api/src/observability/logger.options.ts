@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import {
   TaskProvisioningDiagnosticCauseSchema,
   TaskProvisioningDiagnosticCommandKindSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { Params } from 'nestjs-pino';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { getTaskLogContext } from './log-context';

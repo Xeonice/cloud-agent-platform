@@ -1,4 +1,4 @@
-import type { Decision, DecisionBehavior } from '@cap/contracts';
+import type { Decision, DecisionBehavior } from '@cap-console/contracts';
 
 /**
  * Any-deny-wins resolution (agent-events-and-approvals spec, "Any-deny-wins

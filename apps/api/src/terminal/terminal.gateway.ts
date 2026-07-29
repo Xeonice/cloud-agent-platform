@@ -1,5 +1,5 @@
 /**
- * @cap/api — realtime terminal WebSocket gateway.
+ * @cap-console/api — realtime terminal WebSocket gateway.
  *
  * Streams a task's terminal over a SINGLE WebSocket carrying two logically
  * distinct channels (D4):
@@ -80,7 +80,7 @@ import {
   type TerminalResponseFrame,
   parseAsciicastEvent,
   parseAsciicastHeader,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   BackpressureController,
   type FlowSignal,
@@ -125,8 +125,8 @@ import {
   type TerminalViewerAttachment,
   type TerminalViewerAttachmentFactory,
   type TerminalViewerAttachmentOutcome,
-} from '@cap/sandbox';
-import type { SelectedSandboxRun } from '@cap/sandbox';
+} from '@cap-console/sandbox';
+import type { SelectedSandboxRun } from '@cap-console/sandbox';
 import type { SandboxConnection } from '@/sandbox/sandbox-provider.port';
 // add-claude-code-runtime Track 3 (3.2): the gateway resolves the task's selected
 // AgentRuntime (Track 2's RuntimeRegistry) and threads it into the SandboxTerminalSession so

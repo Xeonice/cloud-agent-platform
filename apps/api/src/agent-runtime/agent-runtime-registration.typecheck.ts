@@ -1,4 +1,4 @@
-import type { AgentRuntimeId } from '@cap/contracts';
+import type { AgentRuntimeId } from '@cap-console/contracts';
 import type { AgentRuntime, RuntimeId } from '@/agent-runtime/agent-runtime.port';
 
 /**

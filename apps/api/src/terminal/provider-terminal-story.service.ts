@@ -15,7 +15,7 @@ import {
   type SandboxTerminalStoryReadiness,
   type SandboxProviderCapability,
   type SelectedSandboxRun,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,

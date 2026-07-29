@@ -6,7 +6,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import {
   RuntimeModelErrorSchema,
   type PublicV1OperationId,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   publicV1HttpExceptionForOperation,

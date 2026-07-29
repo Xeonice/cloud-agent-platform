@@ -1,5 +1,5 @@
 {
-  "name": "@cap/ui",
+  "name": "@cap-console/ui",
   "version": "0.0.0",
   "private": true,
   "description": "Shared component library (shadcn + Tailwind primitives and the xterm <Terminal> wrapper) consumed by apps/web.",
@@ -24,7 +24,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@cap/contracts": "workspace:*",
+    "@cap-console/contracts": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-serialize": "^0.13.0",
     "@xterm/addon-unicode11": "^0.8.0",
@@ -38,8 +38,8 @@
     "react-dom": "^18.3.1 || ^19.0.0"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "eslint": "^9.27.0",

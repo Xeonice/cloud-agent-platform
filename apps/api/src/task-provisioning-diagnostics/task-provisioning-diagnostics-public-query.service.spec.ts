@@ -5,7 +5,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import {
   TaskProvisioningDiagnosticsResponseSchema,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { PublicSurfaceError } from '@/public-surface/public-surface-error';
 import type { TaskProvisioningDiagnosticRecorderResult } from './task-provisioning-diagnostic-recorder.port';

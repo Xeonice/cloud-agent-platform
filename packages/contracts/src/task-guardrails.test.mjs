@@ -7,7 +7,7 @@
  * (never fabricated → no implicit idle reclaim), and that `cancelled` is a
  * distinct terminal status.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node task-guardrails.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node task-guardrails.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

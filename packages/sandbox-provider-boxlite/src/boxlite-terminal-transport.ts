@@ -8,7 +8,7 @@ import type {
   TerminalTransportFrame,
   TerminalTransportReadyState,
   TerminalTransportWriteOutcome,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import { BOXLITE_TERMINAL_BYTE_BRIDGE_PATH } from './boxlite-preflight.js';
 
 export interface BoxLiteTerminalTransportLogger {

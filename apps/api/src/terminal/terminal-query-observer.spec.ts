@@ -5,7 +5,7 @@ import {
   MAX_TERMINAL_PIXEL_DIMENSION,
   XTERM_5_5_0_RESPONSE_PROFILE,
   type TerminalResponseProfile,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   MAX_TERMINAL_QUERY_CAPACITY,
   MAX_TERMINAL_QUERY_CARRY_BYTES,

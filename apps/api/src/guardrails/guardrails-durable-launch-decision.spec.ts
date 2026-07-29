@@ -7,7 +7,7 @@ import {
   type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningDiagnosticProviderFamily,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   SandboxCleanupCoordinationPendingError,
   SandboxCleanupPendingError,
@@ -17,7 +17,7 @@ import {
   type SandboxDetachedWorkspaceTransferJob,
   type SandboxProvisionContext,
   type SandboxRunCleanupAuthorityProjection,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import type { PrismaService } from '@/prisma/prisma.service';

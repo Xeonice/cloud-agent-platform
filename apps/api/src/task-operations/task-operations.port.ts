@@ -18,7 +18,7 @@ import type {
   TaskProvisioningStage,
   TaskResponse,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { RuntimeOutputFailure } from '@/agent-runtime/agent-runtime.port';
 import type {

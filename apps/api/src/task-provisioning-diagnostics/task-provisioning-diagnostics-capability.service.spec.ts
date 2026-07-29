@@ -5,7 +5,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import {
   TASK_PROVISIONING_DIAGNOSTICS_REQUIRED_CAPABILITIES,
   type TaskProvisioningDiagnosticsDeploymentAttestation,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   TASK_PROVISIONING_DIAGNOSTICS_ATTESTATION_ENV,

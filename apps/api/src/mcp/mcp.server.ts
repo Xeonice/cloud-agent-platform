@@ -27,7 +27,7 @@ import { type IAgentRuntimeRegistry } from '@/tasks/tasks.service';
 import { RUNTIME_REGISTRY } from '@/sandbox/sandbox.module';
 import { Inject, Injectable } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SessionHistory } from '@cap/contracts';
+import type { SessionHistory } from '@cap-console/contracts';
 import { TasksService } from '@/tasks/tasks.service';
 import { ReposService } from '@/repos/repos.service';
 import { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';

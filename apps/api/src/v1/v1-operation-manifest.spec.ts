@@ -24,7 +24,7 @@ import {
   DispatchScheduleRequestSchema,
   PUBLIC_V1_OPERATIONS,
   UpdateScheduleRequestSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { AppModule } from '@/app.module';
 import { OpenApiController } from '@/openapi/openapi.controller';

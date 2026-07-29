@@ -56,7 +56,7 @@ import {
   type V1ListScheduleRunsResponse,
   type V1ListTasksResponse,
   type V1ScheduleListQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import {
   PublicSurfaceError,

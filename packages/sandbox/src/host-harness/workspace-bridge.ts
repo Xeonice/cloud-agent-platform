@@ -6,15 +6,15 @@ import type {
   SandboxDeliverWorkspaceResult,
   SandboxWorkspaceDescriptor,
   SelectedSandboxRun,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   isSandboxLegacyDeliverWorkspaceArgs,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   AIO_SANDBOX_WORKSPACE_DIR,
   createAioHttpCommandExecutor,
   scrubAioExecSecrets,
-} from '@cap/sandbox-provider-aio';
+} from '@cap-console/sandbox-provider-aio';
 import {
   buildGitCloneCommand,
 } from '../workspace/git.js';

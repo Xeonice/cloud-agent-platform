@@ -1,4 +1,4 @@
-import type { TerminalHandle } from "@cap/ui";
+import type { TerminalHandle } from "@cap-console/ui";
 
 export interface FixtureProgress {
   readonly fixtureDone: boolean;

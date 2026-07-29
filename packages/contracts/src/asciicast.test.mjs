@@ -5,7 +5,7 @@
  * rejected WITHOUT aborting the whole parse, and that the endpoint path/content-
  * type contracts are stable.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node asciicast.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node asciicast.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

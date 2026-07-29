@@ -3,8 +3,8 @@ import {
   type SessionHistory,
   type SessionTurn,
   type SystemTurn,
-} from '@cap/contracts';
-import { selectRetainedTranscriptSandboxProvider } from '@cap/sandbox';
+} from '@cap-console/contracts';
+import { selectRetainedTranscriptSandboxProvider } from '@cap-console/sandbox';
 import {
   type RuntimeId,
   type TranscriptFormat,

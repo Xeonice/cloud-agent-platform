@@ -5,7 +5,7 @@ import {
   type RepoStoreVolumeInspector,
   type SandboxProviderCapability,
   type WorkspaceSource,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RepoStoreService } from '@/repo-store/repo-store.service';
 

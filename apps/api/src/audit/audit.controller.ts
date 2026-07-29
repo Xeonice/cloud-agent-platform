@@ -8,7 +8,7 @@ import {
   TaskStatusSchema,
   type ListAuditEventsResponse,
   type ListPendingApprovalsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { AuditService } from './audit.service';
 import { TerminalGateway } from '@/terminal/terminal.gateway';
 

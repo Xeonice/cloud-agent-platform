@@ -256,16 +256,16 @@ assert(
 );
 
 // The api image's isolated Docker build must build the sandbox provider graph
-// before Nest compiles @cap/api; otherwise TS resolves @cap/sandbox/provider
+// before Nest compiles @cap-console/api; otherwise TS resolves @cap-console/sandbox/provider
 // package imports to missing dist/.
 const apiDockerfile = readFileSync(join(here, '..', 'apps/api/Dockerfile'), 'utf8');
-const sandboxCoreBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox-core build');
-const aioProviderBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox-provider-aio build');
+const sandboxCoreBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap-console/sandbox-core build');
+const aioProviderBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap-console/sandbox-provider-aio build');
 const boxLiteProviderBuildIdx = apiDockerfile.indexOf(
-  'pnpm --filter @cap/sandbox-provider-boxlite build',
+  'pnpm --filter @cap-console/sandbox-provider-boxlite build',
 );
-const sandboxBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox build');
-const apiBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/api build');
+const sandboxBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap-console/sandbox build');
+const apiBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap-console/api build');
 assert(
   sandboxCoreBuildIdx !== -1 &&
     aioProviderBuildIdx !== -1 &&
@@ -277,7 +277,7 @@ assert(
     aioProviderBuildIdx < sandboxBuildIdx &&
     boxLiteProviderBuildIdx < sandboxBuildIdx &&
     sandboxBuildIdx < apiBuildIdx,
-  'api Dockerfile: builds sandbox core/providers before @cap/sandbox, then @cap/api',
+  'api Dockerfile: builds sandbox core/providers before @cap-console/sandbox, then @cap-console/api',
 );
 
 console.log(`\n${'─'.repeat(48)}`);

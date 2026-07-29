@@ -24,12 +24,12 @@ import type {
   SettleLegacySandboxRunCleanupResult,
   SettleSandboxCleanupAttemptResult,
   ValidateLegacySandboxRunCreateFenceArgs,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   SANDBOX_CLEANUP_ATTEMPT_MAX,
   validateSandboxCleanupAttemptEvidence,
   validateSandboxCleanupAttemptId,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import { planInMemoryCleanupAttempt } from './cleanup-attempt.js';
 
 export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {

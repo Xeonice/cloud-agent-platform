@@ -3,7 +3,7 @@ import {
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
 } from './codex-launch';
-import { createSandboxRuntimePrivateFile } from '@cap/sandbox';
+import { createSandboxRuntimePrivateFile } from '@cap-console/sandbox';
 import { claudeProjectSlug } from './claude-transcript';
 import type {
   AgentRuntime,

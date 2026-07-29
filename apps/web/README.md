@@ -1,6 +1,6 @@
-# @cap/web — TanStack Start console
+# @cap-console/web — TanStack Start console
 
-The web console for cloud-agent-platform. Web-only: it talks to the `@cap/api`
+The web console for cloud-agent-platform. Web-only: it talks to the `@cap-console/api`
 backend over an env-configured **cross-origin** contract and is deployed to
 Vercel. It reproduces all 10 designed pages (landing, login, workspace, resume,
 dashboard, repositories, settings, history, create-task, session).
@@ -12,7 +12,7 @@ dashboard, repositories, settings, history, create-task, session).
   `vercel.json`).
 - **React 19**, **TanStack Router** + **TanStack Query v5** (with
   `react-router-ssr-query`).
-- **shadcn/ui** components (via `@cap/ui`) + **Tailwind v4**.
+- **shadcn/ui** components (via `@cap-console/ui`) + **Tailwind v4**.
 - Terminal via `@xterm/xterm`.
 
 > **Vite plugin order is load-bearing** (see `vite.config.ts`):
@@ -25,12 +25,12 @@ Run from the repo root.
 
 | Task | Command |
 | --- | --- |
-| Dev server (port 3000) | `pnpm --filter @cap/web dev` |
-| Production build | `pnpm --filter @cap/web build` |
-| Run built server | `pnpm --filter @cap/web start` |
-| Typecheck | `pnpm --filter @cap/web typecheck` |
-| Unit tests | `pnpm --filter @cap/web test` |
-| Lint | `pnpm --filter @cap/web lint` |
+| Dev server (port 3000) | `pnpm --filter @cap-console/web dev` |
+| Production build | `pnpm --filter @cap-console/web build` |
+| Run built server | `pnpm --filter @cap-console/web start` |
+| Typecheck | `pnpm --filter @cap-console/web typecheck` |
+| Unit tests | `pnpm --filter @cap-console/web test` |
+| Lint | `pnpm --filter @cap-console/web lint` |
 | Verify everything (root) | `pnpm verify` |
 
 ## Data layer: the single real/mock seam

@@ -5,7 +5,7 @@
  * (no line unless chosen) and the OFF sentinel round-trips to null.
  */
 import { describe, it, expect } from "vitest";
-import type { SandboxEnvironment } from "@cap/contracts";
+import type { SandboxEnvironment } from "@cap-console/contracts";
 
 import {
   buildCommandPreview,

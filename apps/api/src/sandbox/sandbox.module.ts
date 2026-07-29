@@ -1,5 +1,5 @@
 import { Global, Logger, Module } from '@nestjs/common';
-import { createConfiguredSandboxProvider } from '@cap/sandbox';
+import { createConfiguredSandboxProvider } from '@cap-console/sandbox';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
 import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
@@ -63,7 +63,7 @@ const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
  * the port by token, consumes the returned {@link SandboxConnection} handle, and
  * honours whatever `getSandboxMode()` it reports.
  *
- * The exported implementation is created by the `@cap/sandbox` host harness:
+ * The exported implementation is created by the `@cap-console/sandbox` host harness:
  * this module provides API-local ports (lookup/runtime/material/auth/skills), but
  * provider registration and concrete backend wiring stay inside the sandbox
  * package.

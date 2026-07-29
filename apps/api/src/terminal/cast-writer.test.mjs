@@ -1,7 +1,7 @@
 /**
  * Focused unit test for the pure asciicast v2 line builders
  * (session-terminal-replay, Track 2). Compiles `cast-writer.ts` standalone with
- * tsc (the only import is a type-only `@cap/contracts` symbol, which elides) and
+ * tsc (the only import is a type-only `@cap-console/contracts` symbol, which elides) and
  * asserts the header/event/resize lines are well-formed asciicast and that a
  * multibyte UTF-8 `data` round-trips byte-for-byte through JSON.
  *

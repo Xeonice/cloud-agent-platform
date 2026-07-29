@@ -9,7 +9,7 @@ import {
   RuntimeModelTasklessProbeAbortedError,
   runTasklessRuntimeModelProbe,
 } from './runtime-model-probe.port';
-import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
+import type { RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
 
 const HANDLE: RuntimeModelTasklessProbeHandle = { id: 'probe-1' };
 const ENVIRONMENT = {

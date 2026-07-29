@@ -39,7 +39,7 @@ export const SMTP_CONFIG_ROW_ID = 'smtp';
 /**
  * The save payload: the non-secret host/port/user/from plus the password, which
  * is present ONLY on save (never on a read). Declared locally so this storage
- * service stays self-contained; the `@cap/contracts` `SaveSmtpConfigRequest`
+ * service stays self-contained; the `@cap-console/contracts` `SaveSmtpConfigRequest`
  * (track contracts, task 1.1) is the wire shape the admin controller (task 4.1)
  * validates and adapts onto this.
  */
@@ -59,7 +59,7 @@ export interface SaveSmtpConfigInput {
 /**
  * The masked read projection (design D6): the non-secret host/port/user/from
  * plus a masked password indicator (`passLast4` + `hasPassword`). NEVER carries
- * the plaintext password. Mirrors `@cap/contracts` `SmtpConfigRead`. Null when
+ * the plaintext password. Mirrors `@cap-console/contracts` `SmtpConfigRead`. Null when
  * no DB config row exists.
  */
 export interface SmtpConfigRead {

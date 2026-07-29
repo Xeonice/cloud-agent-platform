@@ -2,7 +2,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { SessionHistory } from "@cap/contracts";
+import type { SessionHistory } from "@cap-console/contracts";
 import {
   actualModelFromHistory,
   TaskModelFacts,

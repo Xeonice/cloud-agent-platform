@@ -12,7 +12,7 @@
  * merely missed a sampling tick keeps its (carried-forward) numbers — the backend
  * returns `sampled` with a larger `ageMs`, never `not-running`, on a transient miss.
  */
-import type { ContainerResourceSample, TaskResourceResponse } from "@cap/contracts";
+import type { ContainerResourceSample, TaskResourceResponse } from "@cap-console/contracts";
 
 /** Human-readable bytes (MiB/GiB) for the resource readout. */
 export function formatBytes(bytes: number): string {

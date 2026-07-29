@@ -15,7 +15,7 @@
  * is generated per encryption so encrypting the same key twice yields different
  * ciphertext.
  *
- * Secret discipline (mirrors the contract in `@cap/contracts/settings`): the
+ * Secret discipline (mirrors the contract in `@cap-console/contracts/settings`): the
  * plaintext key is accepted only on the encrypt path and is NEVER returned by a
  * read shape. {@link maskApiKeySuffix} derives the display-only last-4 suffix.
  */

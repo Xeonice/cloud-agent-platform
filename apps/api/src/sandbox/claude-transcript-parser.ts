@@ -1,5 +1,5 @@
 /**
- * Pure parser: Claude Code session JSONL → the `@cap/contracts` session-history
+ * Pure parser: Claude Code session JSONL → the `@cap-console/contracts` session-history
  * render-contract (add-headless-execution-track). The claude sibling of
  * {@link parseRollout}; the sandbox transcript-read layer dispatches to it by the
  * runtime's declared `transcriptFormat === 'claude-jsonl'`, so the AgentRuntime port
@@ -20,7 +20,7 @@
  * Defensive by construction: a torn final line (frozen-layer read) or an unknown type never
  * aborts the parse — a best-effort read of a frozen sandbox yields "what was parseable".
  */
-import type { SessionTurn, SessionHistoryMeta, ToolTurn } from '@cap/contracts';
+import type { SessionTurn, SessionHistoryMeta, ToolTurn } from '@cap-console/contracts';
 import type { ParsedRollout } from './rollout-parser';
 import { CallPairing } from './transcript-call-pairing';
 import type { TranscriptParser, TranscriptSourceFor } from './transcript-source';

@@ -7,7 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const apiRoot = resolve(__dirname, '..', '..');
 const repoRoot = resolve(apiRoot, '..', '..');
 
-const forbiddenImportPattern = /from\s+['"](@cap\/sandbox-[^'"]+)['"]|import\(\s*['"](@cap\/sandbox-[^'"]+)['"]\s*\)/g;
+const forbiddenImportPattern = /from\s+['"](@cap-console\/sandbox-[^'"]+)['"]|import\(\s*['"](@cap-console\/sandbox-[^'"]+)['"]\s*\)/g;
 const sourceBoundaryRoots = [
   join(apiRoot, 'src', 'sandbox'),
   join(apiRoot, 'src', 'terminal'),
@@ -15,7 +15,7 @@ const sourceBoundaryRoots = [
 const forbiddenSourcePatterns = [
   {
     pattern: /\bdefineAioSandboxProvider\b|\bdefineAioSandboxProviderFromDocker\b|\bdefineBoxLiteSandboxProvider\b|\bdefineHttpCloudSandboxProvider\b/,
-    reason: 'concrete provider factories belong in @cap/sandbox or provider packages',
+    reason: 'concrete provider factories belong in @cap-console/sandbox or provider packages',
   },
   {
     pattern: /\bAioSandboxContainerController\b|\bDocker\b|\bdockerode\b/,
@@ -63,16 +63,16 @@ const packageJson = JSON.parse(
   readFileSync(join(apiRoot, 'package.json'), 'utf8'),
 );
 const directSandboxDeps = Object.keys(packageJson.dependencies ?? {}).filter(
-  (name) => name.startsWith('@cap/sandbox-'),
+  (name) => name.startsWith('@cap-console/sandbox-'),
 );
 
 assert.deepEqual(
   directSandboxDeps,
   [],
-  'apps/api must depend on @cap/sandbox only, not sandbox subpackages',
+  'apps/api must depend on @cap-console/sandbox only, not sandbox subpackages',
 );
 assert.equal(
-  packageJson.dependencies?.['@cap/sandbox'],
+  packageJson.dependencies?.['@cap-console/sandbox'],
   'workspace:*',
   'apps/api must consume the sandbox facade package',
 );
@@ -121,12 +121,12 @@ for (const root of sourceBoundaryRoots) {
 assert.deepEqual(
   violations,
   [],
-  'apps/api source must import sandbox APIs through @cap/sandbox only',
+  'apps/api source must import sandbox APIs through @cap-console/sandbox only',
 );
 assert.deepEqual(
   concreteProviderViolations,
   [],
-  'apps/api must not define concrete sandbox provider classes; use @cap/sandbox registry descriptors',
+  'apps/api must not define concrete sandbox provider classes; use @cap-console/sandbox registry descriptors',
 );
 assert.deepEqual(
   sourceBoundaryViolations,
@@ -134,4 +134,4 @@ assert.deepEqual(
   'apps/api/src/sandbox and apps/api/src/terminal must not contain provider-specific implementation details',
 );
 
-console.log('ok - apps/api imports sandbox domain through @cap/sandbox facade only');
+console.log('ok - apps/api imports sandbox domain through @cap-console/sandbox facade only');

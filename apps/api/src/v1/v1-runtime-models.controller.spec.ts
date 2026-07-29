@@ -11,7 +11,7 @@ import { Test } from '@nestjs/testing';
 import {
   RuntimeModelCatalogSchema,
   type RuntimeModelCatalogQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { OperatorPrincipal } from '@/principal/operator-principal';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { RuntimeModelCatalogService } from '@/runtime-models/runtime-model-catalog.service';

@@ -1,5 +1,5 @@
-import type { Runtime, RuntimeModelCatalogQuery } from '@cap/contracts';
-import type { SandboxEnvironmentSelection } from '@cap/sandbox';
+import type { Runtime, RuntimeModelCatalogQuery } from '@cap-console/contracts';
+import type { SandboxEnvironmentSelection } from '@cap-console/sandbox';
 import type {
   EffectiveRuntimeModelPolicy,
   ResolvedRuntimeModelEnvironment,

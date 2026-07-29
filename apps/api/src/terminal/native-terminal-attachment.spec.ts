@@ -6,7 +6,7 @@ import {
   XTERM_5_5_0_RESPONSE_PROFILE,
   XTERM_5_5_0_RESPONSE_PROFILE_ID,
   type SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   AgentTerminalPty,
   TerminalTransportCleanupSettlement,
@@ -14,7 +14,7 @@ import type {
   TerminalViewerAttachment,
   TerminalViewerAttachmentFactory,
   TerminalViewerAttachmentOutcome,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AuthSessionService } from '@/auth/auth-session.service';
 import { WriteLockService } from '@/write-lock/write-lock.service';
 import { TerminalDiagnosticsMetricsService } from '@/metrics/terminal-diagnostics-metrics.service';

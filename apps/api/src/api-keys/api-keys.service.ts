@@ -11,7 +11,7 @@ import {
   type ApiKeyMintRequest,
   type ApiKeyMintResponse,
   type Scope,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { hashSessionToken } from '@/auth/session-token';
 import {

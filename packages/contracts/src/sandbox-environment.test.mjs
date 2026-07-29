@@ -3,7 +3,7 @@
  * compiled zod schemas from dist/ so api + web share the same simplified image
  * model.
  *
- * Requires `pnpm --filter @cap/contracts build` first.
+ * Requires `pnpm --filter @cap-console/contracts build` first.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

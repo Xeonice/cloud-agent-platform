@@ -5,7 +5,7 @@ import {
   SandboxMetadataSchema,
   type Runtime,
   type RuntimeExecutionEnvironmentSnapshot,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   resolveConfiguredDeploymentEnvironmentTarget,
   resolveConfiguredProviderIdForFamily,
@@ -14,7 +14,7 @@ import {
   type SandboxEnvironmentSourceDescriptor,
   type ResolvedSandboxEnvironment,
   type SandboxEnvironmentSelection,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { PrismaService } from '@/prisma/prisma.service';
 import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {

@@ -6,7 +6,7 @@ import {
   type OnModuleDestroy,
 } from '@nestjs/common';
 import { statfs } from 'node:fs/promises';
-import { createConfiguredSandboxRetentionStore } from '@cap/sandbox';
+import { createConfiguredSandboxRetentionStore } from '@cap-console/sandbox';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
   SANDBOX_RETENTION_STORE,
@@ -20,7 +20,7 @@ import {
  * Providers may retain stopped/parked artifacts so transcripts and recovery
  * metadata remain readable after task settlement. This periodic sweep is the
  * API-side policy driver; the concrete artifact listing/removal lives behind the
- * sandbox retention store supplied by `@cap/sandbox`.
+ * sandbox retention store supplied by `@cap-console/sandbox`.
  *
  *  - Policy 1 (age): remove a stopped retained sandbox artifact whose
  *    time-since-stop exceeds the retention window. The window reuses the operator-facing

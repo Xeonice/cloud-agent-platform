@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { V1_LIST_DEFAULT_LIMIT, V1_LIST_MAX_LIMIT } from '@cap/contracts';
+import { V1_LIST_DEFAULT_LIMIT, V1_LIST_MAX_LIMIT } from '@cap-console/contracts';
 
 /**
  * Keyset (cursor) pagination over the unique `(createdAt, id)` tuple

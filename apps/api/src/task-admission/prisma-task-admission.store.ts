@@ -3,12 +3,12 @@ import {
   TaskProvisioningStageSchema,
   TaskStatusSchema,
   type TaskProvisioningStage,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN,
   snapshotSandboxResources,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';

@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { isAdminSession } from "../shell/update-banner";
-import type { SessionUser } from "@cap/contracts";
+import type { SessionUser } from "@cap-console/contracts";
 
 // ---------------------------------------------------------------------------
 // Helpers

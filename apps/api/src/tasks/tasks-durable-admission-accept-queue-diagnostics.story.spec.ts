@@ -7,11 +7,11 @@ import {
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningStage,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   SandboxConnection,
   SandboxProvisionContext,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';

@@ -18,7 +18,7 @@ import {
   type ApiKeyMintResponse,
   type ApiKeyRevokeResponse,
   type SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { ApiKeysService } from './api-keys.service';

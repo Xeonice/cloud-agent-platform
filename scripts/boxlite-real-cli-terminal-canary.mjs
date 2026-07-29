@@ -88,7 +88,7 @@ const {
   XTERM_5_5_0_RESPONSE_PROFILE_DESCRIPTOR,
   XTERM_5_5_0_RESPONSE_PROFILE_FINGERPRINT,
   XTERM_5_5_0_RESPONSE_PROFILE_ID,
-} = requireFromApi('@cap/contracts');
+} = requireFromApi('@cap-console/contracts');
 const WsPackage = requireFromApi('ws');
 const { WebSocket: NodeWebSocket, WebSocketServer } = WsPackage;
 const { chromium } = requireFromWeb('@playwright/test');

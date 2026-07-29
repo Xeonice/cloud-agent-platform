@@ -29,14 +29,14 @@ import type {
   TaskProvisioningDiagnosticProviderFamily,
   TaskProvisioningDiagnosticStage,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   selectSandboxProvider,
   snapshotSandboxProvisionContext,
   type SandboxProvisioningDiagnosticEmitter,
   type SandboxProvisioningDiagnosticFact,
   type AgentTerminalLaunchOutcome,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AdmissionTransitionResult } from '@/task-operations/task-operations.port';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type {

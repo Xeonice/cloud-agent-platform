@@ -8,7 +8,7 @@ import type {
   SandboxResolvedEnvironmentMetadata,
   SandboxTranscriptSourceBase,
   TaskModelIntent,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type { SandboxHostImageParameterProfile } from './image-parameters.js';
 
 export interface SandboxHostLogger {

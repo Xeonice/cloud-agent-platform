@@ -12,7 +12,7 @@
  * A null/undefined runtime (legacy rows, or an omitted-on-create value) defaults
  * to `Codex`, matching the backend `DEFAULT_TASK_RUNTIME = 'codex'` semantics.
  */
-import type { Runtime } from "@cap/contracts";
+import type { Runtime } from "@cap-console/contracts";
 
 /**
  * Display names for the runtimes this console ships copy for. A total mapping,

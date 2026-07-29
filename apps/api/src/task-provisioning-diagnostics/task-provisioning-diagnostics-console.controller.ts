@@ -5,7 +5,7 @@ import {
   TaskProvisioningDiagnosticsResponseSchema,
   type TaskProvisioningDiagnosticsQuery,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { zodParam, zodQuery } from '@/http/zod-validation.pipe';

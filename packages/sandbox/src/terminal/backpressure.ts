@@ -1,5 +1,5 @@
 /**
- * @cap/api — server-side application-layer backpressure (Track 5, tasks 5.2/5.3).
+ * @cap-console/api — server-side application-layer backpressure (Track 5, tasks 5.2/5.3).
  *
  * WebSocket exposes no native flow control, and xterm.js cannot keep pace with a
  * GB/s PTY producer (D3). The orchestrator therefore tracks, per client, how many
@@ -13,10 +13,10 @@
  * "sent" offset, and each client `ack` frame advances the "drained" offset. The
  * gap between them is the un-acknowledged byte count this controller bounds.
  */
-import { HIGH_WATER_MARK_BYTES } from '@cap/contracts';
-import type { PausablePty } from '@cap/sandbox-core';
+import { HIGH_WATER_MARK_BYTES } from '@cap-console/contracts';
+import type { PausablePty } from '@cap-console/sandbox-core';
 
-export type { PausablePty } from '@cap/sandbox-core';
+export type { PausablePty } from '@cap-console/sandbox-core';
 
 /**
  * The high-water mark for un-acknowledged raw output, in bytes. Sourced from the

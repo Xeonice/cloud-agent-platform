@@ -5,7 +5,7 @@ import {
   type V1ListQuery,
   type V1ListReposResponse,
   type V1ListTasksResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
   TASK_RESPONSE_INCLUDE,

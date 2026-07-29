@@ -31,7 +31,7 @@ import type {
   SaveSmtpConfigRequest,
   SmtpConfigRead,
   TestSmtpConfigRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { SmtpController } from './smtp.controller';
 import { SmtpConfigService } from './smtp-config.service';

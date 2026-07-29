@@ -37,7 +37,7 @@ import {
   replayPresentationState,
   type SandboxMetadata,
   type TaskResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   taskQuery,
   taskContextQuery,

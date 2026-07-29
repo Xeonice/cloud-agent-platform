@@ -6,7 +6,7 @@ import type {
   SlotOccupancy,
   TaskMetricsSample,
   TaskResourceScope,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * Pure derived-capacity projection (be-metrics, tasks 5.1 & 5.2).

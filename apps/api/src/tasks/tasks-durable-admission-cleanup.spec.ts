@@ -6,13 +6,13 @@ import {
   TaskProvisioningDiagnosticAttemptSchema,
   TaskProvisioningDiagnosticEventSchema,
   type TaskProvisioningDiagnosticCleanupSummary,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
   defineLocalSandboxProvider,
   type SandboxPhysicalCleanupResult,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import { AuditService } from '@/audit/audit.service';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';

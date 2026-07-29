@@ -6,7 +6,7 @@ TBD - created by archiving change enforce-api-mcp-development-parity. Update Pur
 ### Requirement: Canonical public capability registry
 
 The system SHALL keep one literal-preserving public capability registry in
-`@cap/contracts`. Every entry SHALL have a unique stable operation id and SHALL
+`@cap-console/contracts`. Every entry SHALL have a unique stable operation id and SHALL
 declare its canonical wire input and output schemas, authorization policy,
 read/write semantics, stable public error codes, REST mapping, and either an MCP
 tool mapping or an explicit MCP exclusion with a non-empty protocol reason. An

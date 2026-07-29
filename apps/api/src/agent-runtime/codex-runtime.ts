@@ -9,7 +9,7 @@ import {
   assertNativeCodexInteractiveLaunchArgv,
   createSandboxRuntimePrivateFile,
   DEFAULT_CODEX_INTERACTIVE_LAUNCH_ARGV,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type {
   AgentRuntime,
   AuthMaterial,

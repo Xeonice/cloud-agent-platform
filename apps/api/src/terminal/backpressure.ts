@@ -5,4 +5,4 @@ export {
   type BackpressureOptions,
   type FlowSignal,
   type PausablePty,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';

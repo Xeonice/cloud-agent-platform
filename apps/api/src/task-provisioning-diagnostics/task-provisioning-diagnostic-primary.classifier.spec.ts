@@ -11,7 +11,7 @@ import {
   SandboxWorkspaceMaterializationError,
   type RuntimeModelSetupFailurePhase,
   type SandboxWorkspaceOperationFailure,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 import {
   TaskBranchResolutionError,

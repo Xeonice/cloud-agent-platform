@@ -12,8 +12,8 @@ const moduleSource = readFileSync(
 
 assert.match(
   moduleSource,
-  /import\s+\{\s*createConfiguredSandboxProvider\s*\}\s+from\s+['"]@cap\/sandbox['"]/,
-  'SandboxModule must bind SANDBOX_PROVIDER through the @cap/sandbox host-harness factory',
+  /import\s+\{\s*createConfiguredSandboxProvider\s*\}\s+from\s+['"]@cap-console\/sandbox['"]/,
+  'SandboxModule must bind SANDBOX_PROVIDER through the @cap-console/sandbox host-harness factory',
 );
 
 assert.match(

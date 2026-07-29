@@ -6,7 +6,7 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { SandboxEnvironment } from "@cap/contracts";
+import type { SandboxEnvironment } from "@cap-console/contracts";
 
 import {
   EditParametersFields,

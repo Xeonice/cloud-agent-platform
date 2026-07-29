@@ -1,5 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
-import type { UpdateStatus } from '@cap/contracts';
+import type { UpdateStatus } from '@cap-console/contracts';
 import { UpdateStatusService } from './update-status.service';
 
 /**

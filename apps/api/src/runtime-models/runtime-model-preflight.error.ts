@@ -1,4 +1,4 @@
-import type { RuntimeModelError } from '@cap/contracts';
+import type { RuntimeModelError } from '@cap-console/contracts';
 
 /** Transport-neutral, already-redacted model-preflight failure. */
 export class RuntimeModelPreflightError extends Error {

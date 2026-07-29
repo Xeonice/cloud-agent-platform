@@ -4,12 +4,12 @@ import type { ModuleRef } from '@nestjs/core';
 import {
   TERMINAL_TASK_STATUSES,
   type TaskProvisioningStage,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   SandboxWorkspaceTransferDetachedSignal,
   type SandboxDetachedWorkspaceTransferJob,
   type SandboxProvisionContext,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';

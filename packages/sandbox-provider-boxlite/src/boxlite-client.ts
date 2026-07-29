@@ -7,7 +7,7 @@ import type {
   SandboxProvisioningDiagnosticChannel,
   SandboxProvisioningDiagnosticCommandKind,
   SandboxProvisioningDiagnosticObserver,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   classifySandboxCommandExecutionRejection,
   classifySandboxCommandExecutionResult,
@@ -15,7 +15,7 @@ import {
   sandboxCommandExecutionDiagnosticFields,
   SandboxCommandOutputSettlementError,
   SandboxCommandSettlementError,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   boxLiteHttpStatusClass,
   startBoxLiteProvisioningDiagnostic,

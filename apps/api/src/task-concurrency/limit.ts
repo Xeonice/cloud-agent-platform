@@ -7,7 +7,7 @@
  * so guardrails reached into settings for it and the two directories formed a
  * cycle. The rule belongs to neither: it belongs to the concurrency limit.
  */
-import { DEFAULT_MAX_CONCURRENT_TASKS } from '@cap/contracts';
+import { DEFAULT_MAX_CONCURRENT_TASKS } from '@cap-console/contracts';
 
 /**
  * Bounds of the contracts `MaxConcurrentTasksSchema`

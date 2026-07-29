@@ -44,7 +44,7 @@ import type {
   CodexCredentialMode,
   Runtime,
   TaskFailureCode,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   apiKeysQuery,
   authSessionQuery,

@@ -55,13 +55,13 @@ COPY apps/web ./apps/web
 # via workspace:*).
 RUN pnpm install --frozen-lockfile
 
-# Build the workspace deps first — @cap/contracts and @cap/ui both resolve via
-# their `dist/` build output (package `exports`), and @cap/ui itself depends on
-# @cap/contracts, so the order is contracts -> ui -> web. Then build the web app
+# Build the workspace deps first — @cap-console/contracts and @cap-console/ui both resolve via
+# their `dist/` build output (package `exports`), and @cap-console/ui itself depends on
+# @cap-console/contracts, so the order is contracts -> ui -> web. Then build the web app
 # with the node-server preset (emits .output/server/index.mjs).
-RUN pnpm --filter @cap/contracts build \
-  && pnpm --filter @cap/ui build \
-  && pnpm --filter @cap/web build
+RUN pnpm --filter @cap-console/contracts build \
+  && pnpm --filter @cap-console/ui build \
+  && pnpm --filter @cap-console/web build
 
 # --- runtime ----------------------------------------------------------------
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime

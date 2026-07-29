@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, CircleAlert, LoaderCircle } from "lucide-react";
 
-import type { TaskProvisioningState, TaskResponse } from "@cap/contracts";
+import type { TaskProvisioningState, TaskResponse } from "@cap-console/contracts";
 import { Button } from "@/components/ui/button";
 import {
   TASK_PROVISIONING_STAGE_LABELS,

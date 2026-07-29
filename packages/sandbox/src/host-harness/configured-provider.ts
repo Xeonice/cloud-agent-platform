@@ -6,7 +6,7 @@ import type {
   SandboxProviderDescriptor,
   SandboxRuntimePrivateFilePort,
   SandboxTranscriptSourceBase,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   classifySandboxRuntimeCommandExecution,
   SandboxRuntimeCommandExecutionError,
@@ -14,12 +14,12 @@ import {
   scrubSandboxCommandOutput,
   validateSandboxRuntimePreflightCommandDescriptor,
   validateSandboxRuntimeSetupCommandDescriptor,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   SANDBOX_METADATA_PATH,
   parseSandboxMetadataText,
   type SandboxMetadata,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   AIO_SANDBOX_SKILL_INSTALL_TIMEOUT_MS,
   AIO_SANDBOX_TRIM_TIMEOUT_MS,
@@ -27,14 +27,14 @@ import {
   defineAioSandboxProviderFromDocker,
   scrubAioExecSecrets,
   type AioSandboxContainerController,
-} from '@cap/sandbox-provider-aio';
-import { defineHttpCloudSandboxProvider } from '@cap/sandbox-cloud-http';
+} from '@cap-console/sandbox-provider-aio';
+import { defineHttpCloudSandboxProvider } from '@cap-console/sandbox-cloud-http';
 import {
   createBoxLiteRuntimePreflight,
   defineBoxLiteSandboxProvider,
   readBoxLiteProviderConfig,
   requiredToolsForBoxLiteCapabilities,
-} from '@cap/sandbox-provider-boxlite';
+} from '@cap-console/sandbox-provider-boxlite';
 import {
   buildSandboxImageParameterSetupCommands,
   removeSandboxImageParameterFile,
@@ -48,7 +48,7 @@ import {
 } from '../provider-center/router.js';
 import type {
   SandboxWorkspaceMaterializationHook,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   deliverSandboxGitWorkspaceStaged,
   materializeSandboxGitWorkspaceStaged,
@@ -1056,7 +1056,7 @@ async function runBoxLiteRuntimeSetup<
   TAuthMaterial,
 >(args: {
   readonly taskId: string;
-  readonly modelIntent: import('@cap/sandbox-core').TaskModelIntent;
+  readonly modelIntent: import('@cap-console/sandbox-core').TaskModelIntent;
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
   readonly runtimeId?: string | null;

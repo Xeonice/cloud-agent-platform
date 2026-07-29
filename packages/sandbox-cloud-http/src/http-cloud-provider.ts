@@ -25,7 +25,7 @@ import type {
   SandboxTeardownResult,
   SandboxTerminalEndpointDescriptor,
   SandboxTranscriptSourceBase,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   assertSandboxProviderSupportsResources,
   createNonPersistingSandboxProvisioningDiagnosticObserver,
@@ -41,7 +41,7 @@ import {
   snapshotSandboxProvisionContext,
   type SelectedSandboxRun,
   type SandboxProviderDescriptor,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 /**
  * Capabilities backed by the current cloud HTTP adapter without transferring

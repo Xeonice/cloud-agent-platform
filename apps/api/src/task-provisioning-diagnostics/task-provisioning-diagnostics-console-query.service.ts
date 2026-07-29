@@ -10,7 +10,7 @@ import {
   TaskProvisioningDiagnosticsUnavailableErrorSchema,
   type TaskProvisioningDiagnosticsQuery,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { PrismaService } from '@/prisma/prisma.service';
 import {

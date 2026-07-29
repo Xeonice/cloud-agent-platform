@@ -1,7 +1,7 @@
 import { MutationObserver, QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ListReposResponse, RepoResponse } from "@cap/contracts";
+import type { ListReposResponse, RepoResponse } from "@cap-console/contracts";
 
 const mocks = vi.hoisted(() => ({
   refreshRepoDefaultBranch: vi.fn(),

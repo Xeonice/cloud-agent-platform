@@ -38,7 +38,7 @@ import {
   type SandboxWorkspaceMaterializationStage,
   type SandboxWorkspaceFailureCause,
   type SandboxWorkspaceProgressEvent,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   createRepoStoreArchiveStream,
   estimateRepoStoreCopyBytes,

@@ -37,13 +37,13 @@ RUN pnpm install --frozen-lockfile
 # Build workspace libraries then the api (prisma generate runs inside the api build script).
 # Dev deps (the prisma CLI + nest build toolchain) are intentionally kept so
 # `prisma migrate deploy` can run at container start in the runtime stage.
-RUN pnpm --filter @cap/contracts build \
-  && pnpm --filter @cap/sandbox-core build \
-  && pnpm --filter @cap/sandbox-cloud-http build \
-  && pnpm --filter @cap/sandbox-provider-aio build \
-  && pnpm --filter @cap/sandbox-provider-boxlite build \
-  && pnpm --filter @cap/sandbox build \
-  && pnpm --filter @cap/api build
+RUN pnpm --filter @cap-console/contracts build \
+  && pnpm --filter @cap-console/sandbox-core build \
+  && pnpm --filter @cap-console/sandbox-cloud-http build \
+  && pnpm --filter @cap-console/sandbox-provider-aio build \
+  && pnpm --filter @cap-console/sandbox-provider-boxlite build \
+  && pnpm --filter @cap-console/sandbox build \
+  && pnpm --filter @cap-console/api build
 
 # --- runtime ----------------------------------------------------------------
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime

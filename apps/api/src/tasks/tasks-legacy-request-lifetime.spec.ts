@@ -20,7 +20,7 @@ import {
   type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProvisioningStageError,
@@ -28,7 +28,7 @@ import {
   defineLocalSandboxProvider,
   type SandboxPhysicalCleanupResult,
   type SandboxProvisionContext,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import type { OperatorPrincipal } from '@/principal/operator-principal';

@@ -8,7 +8,7 @@
  * no runtime dependency (its only import is an erased TYPE), so it loads
  * standalone.
  *
- * Requires `pnpm --filter @cap/api build` (refreshes dist/) before running.
+ * Requires `pnpm --filter @cap-console/api build` (refreshes dist/) before running.
  *
  * Covers:
  *   - classifyGithubListError: missing/expired(401)/revoked-scope(403)-PAT ->

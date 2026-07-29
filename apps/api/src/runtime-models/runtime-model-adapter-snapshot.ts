@@ -1,4 +1,4 @@
-import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
+import type { RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
 
 /** Recheck the immutable snapshot at the adapter boundary before discovery. */
 export function assertRuntimeModelAdapterSnapshot(

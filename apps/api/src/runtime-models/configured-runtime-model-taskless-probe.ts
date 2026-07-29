@@ -21,8 +21,8 @@ import {
   type BoxLiteProviderConfig,
   type BoxLiteSandbox,
   type SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox';
-import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
+} from '@cap-console/sandbox';
+import type { RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
 import type {
   ReadyOfficialCodexCredential,
   RuntimeModelAdapterResult,

@@ -1,5 +1,5 @@
 /**
- * @cap/ui — shared component library consumed by apps/web via workspace:*.
+ * @cap-console/ui — shared component library consumed by apps/web via workspace:*.
  *
  * Holds the shadcn + Tailwind primitives and the xterm `<Terminal>` wrapper
  * (frontend-console spec, D14). apps/web imports these rather than redefining
@@ -7,7 +7,7 @@
  */
 
 /** Package marker retained from the foundation scaffold for wiring proofs. */
-export const UI_PACKAGE = "@cap/ui" as const;
+export const UI_PACKAGE = "@cap-console/ui" as const;
 
 export { cn } from "./lib/cn.js";
 export {

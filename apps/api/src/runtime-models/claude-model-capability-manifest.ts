@@ -3,7 +3,7 @@ import {
   Sha256ChecksumSchema,
   TaskModelSelectorSchema,
   type SandboxProviderFamily,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * The provider seams a Claude capability manifest may attest. An explicit

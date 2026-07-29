@@ -2,7 +2,7 @@
  * app.css — Tailwind v4 entry + the SINGLE design-token contract for the
  * console (rebuild-console-tanstack-start D4; Track 9 fe-tokens-shadcn).
  *
- * This file is the one source of truth for tokens. `@cap/ui`'s styles.css
+ * This file is the one source of truth for tokens. `@cap-console/ui`'s styles.css
  * re-imports it, so the shared Button/Card/Badge/Terminal stay color-matched
  * with the app pages (no "脱色"/desaturation).
  *
@@ -340,7 +340,7 @@
 
   /*
    * Console canvas at BODY level (console-design-pixel-merge D5): the design
-   * baseline paints html/body with var(--console), so @cap/ui components and
+   * baseline paints html/body with var(--console), so @cap-console/ui components and
    * standalone pages inherit it automatically — no per-layout wrapper class
    * (the old `bg-[#f8f9fb]` in _app.tsx) and no per-package divergence.
    */

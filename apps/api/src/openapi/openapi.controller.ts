@@ -13,7 +13,7 @@ import {
  * metadata and carry NO secrets:
  *
  *   - `GET /v1/openapi.json` — the OpenAPI 3.1 document, generated from the
- *     `@cap/contracts` zod schemas the `/v1` controllers validate against, so
+ *     `@cap-console/contracts` zod schemas the `/v1` controllers validate against, so
  *     the spec cannot drift from the wire (D3). Covers every `/v1` route.
  *   - `GET /v1/docs` — an interactive Swagger UI page pointed at the spec above.
  *

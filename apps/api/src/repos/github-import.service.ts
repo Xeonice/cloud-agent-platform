@@ -11,7 +11,7 @@ import {
   type DefaultRepoResponse,
   type ImportRepoRequest,
   type RepoResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { decryptStored } from '@/crypto/secret-storage';
 import {

@@ -28,7 +28,7 @@ import {
   type PublicV1OperationById,
   type PublicV1OperationId,
   type PublicV1OperationShape,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { z } from "zod";
 
 import {

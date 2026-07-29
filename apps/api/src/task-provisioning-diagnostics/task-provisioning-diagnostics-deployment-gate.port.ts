@@ -2,7 +2,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import {
   TaskProvisioningDiagnosticsUnavailableErrorSchema,
   type Scope,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 const UNAVAILABLE_ERROR =
   TaskProvisioningDiagnosticsUnavailableErrorSchema.parse({

@@ -5,7 +5,7 @@ import { cn } from "../lib/cn.js";
 /**
  * shadcn/ui-style `<Button>` primitive (Tailwind + class-variance-authority).
  *
- * Exported from `@cap/ui` so `apps/web` consumes it via `workspace:*` rather
+ * Exported from `@cap-console/ui` so `apps/web` consumes it via `workspace:*` rather
  * than redefining its own button (frontend-console spec: "Web app consumes
  * shared components").
  */

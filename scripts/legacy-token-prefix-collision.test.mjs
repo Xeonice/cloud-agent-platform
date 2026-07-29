@@ -4,7 +4,7 @@
  *
  * Exercises the *exact* predicate used by the main.ts boot assertion
  * (RESERVED_CREDENTIAL_PREFIXES.find(prefix => authToken.startsWith(prefix))),
- * sourced directly from the compiled @cap/contracts package (no build step
+ * sourced directly from the compiled @cap-console/contracts package (no build step
  * needed — the dist is already built).
  *
  * Run: node scripts/legacy-token-prefix-collision.test.mjs

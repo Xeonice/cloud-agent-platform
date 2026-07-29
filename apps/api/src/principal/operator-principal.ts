@@ -40,8 +40,8 @@
  * admit/deny, and the reserved-mcp deny.
  */
 
-import type { Scope, SessionUser } from '@cap/contracts';
-import { CREDENTIAL_PREFIX } from '@cap/contracts';
+import type { Scope, SessionUser } from '@cap-console/contracts';
+import { CREDENTIAL_PREFIX } from '@cap-console/contracts';
 import { constantTimeEqual } from '@/crypto/constant-time';
 import { LEGACY_TOKEN_ENV, isLegacyTokenEnabled } from './legacy-token';
 

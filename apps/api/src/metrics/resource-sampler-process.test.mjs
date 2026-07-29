@@ -9,7 +9,7 @@
  *
  * Drives the REAL compiled ResourceSamplerService from dist/ (white-box: sets the
  * internal carry-forward / snapshot state, no live docker/fetch).
- * Requires `pnpm --filter @cap/api build`. Run: `node resource-sampler-process.test.mjs`.
+ * Requires `pnpm --filter @cap-console/api build`. Run: `node resource-sampler-process.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

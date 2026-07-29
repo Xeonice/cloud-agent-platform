@@ -22,7 +22,7 @@ import {
   type ProvisioningDiagnosticsMetrics,
   type ProvisioningDiagnosticsRetryEntry,
   type ProvisioningDiagnosticsStageOutcomeEntry,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 

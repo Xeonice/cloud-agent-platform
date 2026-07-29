@@ -8,7 +8,7 @@ import {
   type ScheduleRecurrence,
   type ScheduleResponse,
   type UpdateScheduleRequest,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 import { SCHEDULE_TIMEZONE_FALLBACK } from "./schedule-timezone";
 

@@ -3,7 +3,7 @@ import type {
   SandboxProviderCapability,
   SandboxProviderLocation,
   SandboxResourceSnapshot,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
   SANDBOX_DISK_SIZE_CAPABILITY,
@@ -16,7 +16,7 @@ import {
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN,
   resolveSandboxResources,
   snapshotSandboxResources,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export const BOXLITE_SANDBOX_PROVIDER_ID = 'boxlite';
 export const BOXLITE_DEFAULT_WORKSPACE_PATH = '/home/gem/workspace';

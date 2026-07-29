@@ -14,7 +14,7 @@ import {
   type TerminalTransportFrame,
   type TerminalTransportWriteOutcome,
   type TerminalViewerAttachmentFactory,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';

@@ -5,7 +5,7 @@ import {
   type LocalRepoImportAvailability,
   type LocalRepoImportRequest,
   type RepoResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { readLocalImportRoot, resolveLocalImportTarget } from './local-import';
 import { throwLocalImportRejection } from './local-import-errors';

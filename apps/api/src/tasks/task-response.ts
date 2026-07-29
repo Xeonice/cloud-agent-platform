@@ -12,7 +12,7 @@ import {
   type TaskSandboxEnvironmentSummary,
   type TaskSandboxProvider,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { taskFailureFromRecord } from '@/task-failure/task-failure';
 
 /** Relations required by every full TaskResponse projection. */

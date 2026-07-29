@@ -48,7 +48,7 @@ import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { Repo, Task } from "@cap/contracts";
+import type { Repo, Task } from "@cap-console/contracts";
 import { metricsQuery, reposQuery, tasksQuery } from "@/lib/api/queries";
 import { Button } from "@/components/ui/button";
 import { LandingNav } from "@/components/shell/landing-nav";

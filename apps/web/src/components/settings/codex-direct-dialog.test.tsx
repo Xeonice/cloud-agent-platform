@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   CodexDeviceLoginStartResponse,
   CodexDeviceLoginStatus,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   adoptStartedDeviceLoginSession,
   CodexDeviceLoginAttemptTracker,

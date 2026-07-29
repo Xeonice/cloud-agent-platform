@@ -11,7 +11,7 @@ import {
   PUBLIC_V1_OPERATIONS,
   type McpMappedOperation,
   type PublicV1Operation,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   MCP_ADAPTERS,

@@ -21,12 +21,12 @@
  */
 import * as React from "react";
 import type { ITheme } from "@xterm/xterm";
-import { Terminal, type TerminalHandle } from "@cap/ui";
+import { Terminal, type TerminalHandle } from "@cap-console/ui";
 import {
   parseCast,
   type AsciicastEvent,
   type AsciicastHeader,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   getSessionCast,
   sessionCastUnavailableReasonFromApiError,

@@ -23,7 +23,7 @@ import {
   type ScheduleResponse,
   type Scope,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { type AuthenticatedRequest } from '@/auth/auth.guard';
 import { hasScope } from '@/principal/operator-principal';
 import { ZodValidationPipe } from '@/http/zod-validation.pipe';

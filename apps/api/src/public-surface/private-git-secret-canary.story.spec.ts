@@ -28,7 +28,7 @@ import {
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningDiagnosticsResponse,
   type TaskResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   createExactHostGitCredential,
   createSandboxSecretFilePort,
@@ -38,8 +38,8 @@ import {
   type SandboxGitDeadlineDriver,
   type SandboxGitStageExecution,
   type SandboxWorkspaceProgressEvent,
-} from '@cap/sandbox';
-import { createGeneratedPrivateGitFixture } from '@cap/sandbox/testing';
+} from '@cap-console/sandbox';
+import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox/testing';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { AuditService } from '@/audit/audit.service';
@@ -67,7 +67,7 @@ import { McpServerFactory } from '@/mcp/mcp.server';
 import { buildV1OpenApiDocument } from '@/openapi/openapi.registry';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ReposController } from '@/repos/repos.controller';
-import type { RepoResponse } from '@cap/contracts';
+import type { RepoResponse } from '@cap-console/contracts';
 import { ReposService } from '@/repos/repos.service';
 import type { RepoCopyService } from '@/repos/repo-copy.service';
 import { SandboxRunOwnerService } from '@/sandbox/sandbox-run-owner.service';

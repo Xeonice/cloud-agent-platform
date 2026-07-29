@@ -4,7 +4,7 @@ import {
   Sha256ChecksumSchema,
   TaskModelSelectorSchema,
   type SandboxProviderFamily,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   ClaudeModelCapabilityManifestSchema,
   type ClaudeModelCapabilityManifest,

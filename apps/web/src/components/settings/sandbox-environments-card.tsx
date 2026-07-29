@@ -17,7 +17,7 @@ import type {
   CreateSandboxEnvironmentRequest,
   SandboxEnvironment,
   UpdateSandboxEnvironmentParametersRequest,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

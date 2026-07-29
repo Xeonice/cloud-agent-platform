@@ -2,7 +2,7 @@ import { Get, Req } from '@nestjs/common';
 import {
   type TaskProvisioningDiagnosticsQuery,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {

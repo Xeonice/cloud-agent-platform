@@ -8,12 +8,12 @@ import {
   type DispatchScheduleRequest,
   type ScheduleResponse,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   ScheduleRunResponse,
   V1ListScheduleRunsResponse,
   V1ListSchedulesResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import type { OperatorPrincipal } from '@/principal/operator-principal';
 import type { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';

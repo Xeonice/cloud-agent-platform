@@ -5,7 +5,7 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { LOCAL_REPO_IMPORT_ROOT_ENV } from '@cap/contracts';
+import { LOCAL_REPO_IMPORT_ROOT_ENV } from '@cap-console/contracts';
 import type { LocalImportRejection } from './local-import';
 
 /**

@@ -17,7 +17,7 @@
  * `task-lifecycle.test.mjs`), this inlines a FAITHFUL mirror of ONLY the seams
  * under test — `TasksService.create`/`toResponse` and the contract runtime
  * validation — plus in-memory fakes, because the real modules pull in
- * `@cap/contracts` + Nest. The REAL service is additionally exercised by
+ * `@cap-console/contracts` + Nest. The REAL service is additionally exercised by
  * `test/api-e2e.mjs`.
  */
 import test from 'node:test';
@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 
 // --- mirrored constants (kept byte-for-byte with the real sources) -----------
 
-/** Mirror of `@cap/contracts` RuntimeSchema's allowed set + default. */
+/** Mirror of `@cap-console/contracts` RuntimeSchema's allowed set + default. */
 const RUNTIME_VALUES = ['claude-code', 'codex'];
 const DEFAULT_TASK_RUNTIME = 'codex';
 

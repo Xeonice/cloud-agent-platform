@@ -5,7 +5,7 @@ TBD - created by archiving change add-marketing-www-site. Update Purpose after a
 ## Requirements
 ### Requirement: Standalone statically-exported site
 
-The marketing site SHALL be a new workspace app `apps/www` (`@cap/www`) built
+The marketing site SHALL be a new workspace app `apps/www` (`@cap-console/www`) built
 with Next.js App Router configured for static export (`output: 'export'`),
 producing only static assets with no serverless functions, and SHALL slot into
 the existing pnpm + Turborepo workspace.
@@ -19,18 +19,18 @@ the existing pnpm + Turborepo workspace.
 #### Scenario: Passes the workspace CI gate
 
 - **WHEN** the repo CI gate runs (install → turbo build → typecheck → lint)
-- **THEN** `@cap/www` builds, typechecks, and lints with no errors
+- **THEN** `@cap-console/www` builds, typechecks, and lints with no errors
 
 ### Requirement: Decoupled from console and backend
 
-The site SHALL NOT import from `@cap/api`, read any auth/session state, or call
+The site SHALL NOT import from `@cap-console/api`, read any auth/session state, or call
 the backend at runtime; it SHALL render identically whether or not the backend
 is reachable.
 
 #### Scenario: No backend coupling
 
 - **WHEN** the site source is inspected and built
-- **THEN** it contains no import of `@cap/api`, no session/auth query, and no
+- **THEN** it contains no import of `@cap-console/api`, no session/auth query, and no
   runtime fetch to the backend, and the static output renders fully offline
 
 ### Requirement: Landing information architecture

@@ -16,7 +16,7 @@
  * ten entries, each one a call site the compiler will point at.
  */
 
-import type { TaskStatus } from '@cap/contracts';
+import type { TaskStatus } from '@cap-console/contracts';
 import type { AdmissionTransitionResult } from '@/task-operations/task-operations.port';
 import type { BegunTaskProvisioningDiagnosticObserver } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter';
 

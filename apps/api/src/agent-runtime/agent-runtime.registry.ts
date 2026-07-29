@@ -72,7 +72,7 @@ export class AgentRuntimeRegistry {
    * That claim used to be false in this file: `RuntimeId` was a literal union
    * maintained by hand three modules away, so a third runtime could not even be
    * held here without editing it. `RuntimeId` is now the single declaration in
-   * `@cap/contracts`, and the production wiring is a total mapping over it — so
+   * `@cap-console/contracts`, and the production wiring is a total mapping over it — so
    * registering a third runtime genuinely needs no edit here, and DECLARING one
    * without registering it stops the build.
    */

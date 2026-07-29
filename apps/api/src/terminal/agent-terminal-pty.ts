@@ -2,4 +2,4 @@ export type {
   AgentTerminalLaunchOutcome,
   AgentTerminalOutputMeta,
   AgentTerminalPty,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';

@@ -4,14 +4,14 @@ import type {
   SandboxTerminalProtocol,
   SelectedSandboxRun,
   TerminalTransportFactory,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export type {
   TerminalTransport,
   TerminalTransportFactory,
   TerminalTransportFrame,
   TerminalTransportReadyState,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export interface TerminalTransportBuildArgs {
   readonly taskId: string;

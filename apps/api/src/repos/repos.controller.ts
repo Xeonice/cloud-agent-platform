@@ -10,7 +10,7 @@ import {
   Req,
   UsePipes,
 } from '@nestjs/common';
-import { createRepoBodySchema, type CreateRepoBody, type RepoResponse } from '@cap/contracts';
+import { createRepoBodySchema, type CreateRepoBody, type RepoResponse } from '@cap-console/contracts';
 import { type AuthenticatedRequest } from '@/auth/auth.guard';
 import { hasScope } from '@/principal/operator-principal';
 import { ReposService } from './repos.service';

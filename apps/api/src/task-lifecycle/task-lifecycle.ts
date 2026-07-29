@@ -1,4 +1,4 @@
-import type { TaskStatus } from '@cap/contracts';
+import type { TaskStatus } from '@cap-console/contracts';
 
 /**
  * Task lifecycle state machine.

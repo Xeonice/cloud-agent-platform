@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 import { AuthSessionService } from './auth-session.service';
 import {
   resolveOperatorPrincipal,
@@ -85,7 +85,7 @@ export class AuthGuard implements CanActivate {
    *     operator principal, exactly like `/health`.
    *   - `/v1/openapi.json` — the OpenAPI 3.1 document for the public `/v1`
    *     surface (public-v1-api, design D3 / task 4.3). It is read-only API
-   *     metadata generated from the `@cap/contracts` schemas; it carries no
+   *     metadata generated from the `@cap-console/contracts` schemas; it carries no
    *     secrets, so it needs no operator principal, exactly like `/version`.
    *   - `/v1/docs` — the interactive Swagger UI page that renders the document
    *     above (same rationale: read-only public API metadata, no secrets).

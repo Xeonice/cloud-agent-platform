@@ -27,8 +27,8 @@ import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   RuntimeExecutionEnvironmentSnapshotSchema,
   type TaskResponse,
-} from '@cap/contracts';
-import type { CreateTaskBody } from '@cap/contracts';
+} from '@cap-console/contracts';
+import type { CreateTaskBody } from '@cap-console/contracts';
 import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
 import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 

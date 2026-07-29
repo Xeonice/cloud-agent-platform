@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { SCHEDULE_MINUTE_INTERVALS } from "@cap/contracts";
+import { SCHEDULE_MINUTE_INTERVALS } from "@cap-console/contracts";
 
 import {
   HOURLY_MINUTE_OPTIONS,

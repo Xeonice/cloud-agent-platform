@@ -50,7 +50,7 @@ import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
 import { PrincipalThrottlerGuard } from '@/rate-limit/principal.throttler-guard';
 import { CreateThrottleGuard } from '@/rate-limit/create-throttle.guard';
 import type { OperatorPrincipal } from '@/principal/operator-principal';
-import type { TaskResponse } from '@cap/contracts';
+import type { TaskResponse } from '@cap-console/contracts';
 
 // ---------------------------------------------------------------------------
 // Constants

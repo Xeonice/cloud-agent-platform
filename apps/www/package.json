@@ -1,8 +1,8 @@
 {
-  "name": "@cap/www",
+  "name": "@cap-console/www",
   "version": "0.0.0",
   "private": true,
-  "description": "Public marketing site (Next.js App Router, static export). Fully decoupled from the console (apps/web) and backend (apps/api): no @cap/api or session imports, renders identically with the backend unreachable. Deployed as its own Vercel project on its own domain.",
+  "description": "Public marketing site (Next.js App Router, static export). Fully decoupled from the console (apps/web) and backend (apps/api): no @cap-console/api or session imports, renders identically with the backend unreachable. Deployed as its own Vercel project on its own domain.",
   "type": "module",
   "scripts": {
     "dev": "next dev --turbopack",
@@ -22,8 +22,8 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@tailwindcss/postcss": "4.3.0",
     "@types/node": "^22.15.21",
     "@types/react": "19.2.16",

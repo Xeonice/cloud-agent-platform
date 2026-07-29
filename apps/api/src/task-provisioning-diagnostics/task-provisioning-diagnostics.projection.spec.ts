@@ -7,7 +7,7 @@ import {
   TaskProvisioningDiagnosticEventSchema,
   type TaskProvisioningDiagnosticAttempt,
   type TaskProvisioningDiagnosticEvent,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   decodeTaskProvisioningDiagnosticCursor,

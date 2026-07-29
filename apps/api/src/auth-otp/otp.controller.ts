@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { AuthSessionResponse } from '@cap/contracts';
+import type { AuthSessionResponse } from '@cap-console/contracts';
 import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { buildSessionCookies } from '@/auth/session-cookie';
 import { EmailOtpService } from './email-otp.service';
@@ -19,7 +19,7 @@ import { MailService } from '@/mail/mail.service';
 /**
  * Request body for `POST /auth/otp/request` — just the email a code is requested
  * for. Defined locally so the mail-otp track stays buildable in isolation; the
- * integration track may swap to the shared `@cap/contracts` schema (task 1.4).
+ * integration track may swap to the shared `@cap-console/contracts` schema (task 1.4).
  */
 const OtpRequestSchema = z.object({ email: z.string().min(1) });
 type OtpRequestBody = z.infer<typeof OtpRequestSchema>;

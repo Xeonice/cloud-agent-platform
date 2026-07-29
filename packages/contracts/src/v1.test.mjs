@@ -10,7 +10,7 @@
  * `{ items, nextCursor }` envelope), and the `/v1` shapes themselves carry the
  * additions.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node v1.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node v1.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

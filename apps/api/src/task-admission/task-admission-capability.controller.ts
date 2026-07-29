@@ -3,7 +3,7 @@ import {
   TASK_ADMISSION_V2_CAPABILITY,
   TaskAdmissionV2CapabilityStatusSchema,
   type TaskAdmissionV2CapabilityStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { TaskAdmissionCapabilityService } from './task-admission-capability.service';
 
 /** Safe read-only operational status; raw attestation and environment stay private. */

@@ -1983,7 +1983,7 @@ async function loadSandboxProductTerminalModule() {
     return await sandboxProductModulePromise;
   } catch (error) {
     throw new Error(
-      'AIO product viewer dist is unavailable or incompatible; run pnpm --filter @cap/sandbox build',
+      'AIO product viewer dist is unavailable or incompatible; run pnpm --filter @cap-console/sandbox build',
       { cause: error },
     );
   }

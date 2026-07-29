@@ -1,4 +1,4 @@
-# @cap/release-cache-worker
+# @cap-console/release-cache-worker
 
 A public, **cache-only** Cloudflare Worker that fronts cap's update-availability
 check. It transparently proxies GitHub's `releases/latest` for a validated
@@ -23,10 +23,10 @@ Worker MUST be bound to a custom domain on a Cloudflare zone (`wrangler.toml`
 ## Develop / test / deploy
 
 ```bash
-pnpm --filter @cap/release-cache-worker build       # tsc → dist (also what tests import)
-pnpm --filter @cap/release-cache-worker test        # node:test over the pure proxy logic
-pnpm --filter @cap/release-cache-worker typecheck
-pnpm --filter @cap/release-cache-worker deploy      # wrangler deploy (needs a Workers-edit CF token)
+pnpm --filter @cap-console/release-cache-worker build       # tsc → dist (also what tests import)
+pnpm --filter @cap-console/release-cache-worker test        # node:test over the pure proxy logic
+pnpm --filter @cap-console/release-cache-worker typecheck
+pnpm --filter @cap-console/release-cache-worker deploy      # wrangler deploy (needs a Workers-edit CF token)
 ```
 
 Verify after deploy: a repeat request to a valid path reports `cf-cache-status: HIT`,

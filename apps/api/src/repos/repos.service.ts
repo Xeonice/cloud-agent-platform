@@ -14,7 +14,7 @@ import {
   type CreateRepoBody,
   type ForgeKind,
   type RepoResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   ForgeHttpError,

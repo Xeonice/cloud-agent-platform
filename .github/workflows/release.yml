@@ -340,7 +340,7 @@ jobs:
       # The generator validates its output against the UNCHANGED contracts
       # attestation schema, which it loads from the built dist output.
       - name: Build contracts schema for attestation validation
-        run: pnpm --filter @cap/contracts build
+        run: pnpm --filter @cap-console/contracts build
 
       - name: Generate task model attestation asset
         env:

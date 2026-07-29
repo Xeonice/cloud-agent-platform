@@ -48,7 +48,7 @@ import {
   type SessionUser,
   type UpdateMcpServerSettingsRequest,
   type UpdateSettingsRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { isAdminPrincipal } from '@/principal/admin';
 import { ZodValidationPipe, zodParam } from '@/http/zod-validation.pipe';

@@ -80,7 +80,7 @@ import {
   type TaskProvisioningDiagnosticsResponse,
   type TaskResponse,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { MCP_PUBLIC_ERROR_MAP } from '@/public-surface/public-error-mappings';
 import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';

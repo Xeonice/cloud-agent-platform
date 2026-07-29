@@ -29,14 +29,14 @@ import {
   TERMINAL_PROTOCOL_VERSION,
   XTERM_5_5_0_RESPONSE_PROFILE_ID,
   type SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   AgentTerminalPty,
   AgentTerminalLaunchOutcome,
   OpenTerminalViewerAttachmentArgs,
   TerminalViewerAttachment,
   TerminalViewerAttachmentFactory,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AuthSessionService } from '@/auth/auth-session.service';
 import { WriteLockService } from '@/write-lock/write-lock.service';
 import { TerminalGateway, type TerminalSession } from './terminal.gateway';

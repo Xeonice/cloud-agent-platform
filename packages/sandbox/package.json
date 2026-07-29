@@ -1,5 +1,5 @@
 {
-  "name": "@cap/sandbox",
+  "name": "@cap-console/sandbox",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -34,25 +34,25 @@
     "docs"
   ],
   "scripts": {
-    "build": "pnpm --filter @cap/contracts build && pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-environment build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && pnpm --filter @cap/sandbox-conformance build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @cap-console/contracts build && pnpm --filter @cap-console/sandbox-core build && pnpm --filter @cap-console/sandbox-environment build && pnpm --filter @cap-console/sandbox-cloud-http build && pnpm --filter @cap-console/sandbox-provider-aio build && pnpm --filter @cap-console/sandbox-provider-boxlite build && pnpm --filter @cap-console/sandbox-conformance build && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "pnpm -w exec turbo run build --filter=@cap/sandbox",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap-console/sandbox",
     "test": "node --test --test-force-exit \"test/**/*.test.mjs\"",
     "coverage": "c8 --100 --include=dist/**/*.js --reporter=text node --test --test-force-exit \"test/**/*.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "@cap/contracts": "workspace:*",
-    "@cap/sandbox-cloud-http": "workspace:*",
-    "@cap/sandbox-core": "workspace:*",
-    "@cap/sandbox-environment": "workspace:*",
-    "@cap/sandbox-provider-aio": "workspace:*",
-    "@cap/sandbox-provider-boxlite": "workspace:*"
+    "@cap-console/contracts": "workspace:*",
+    "@cap-console/sandbox-cloud-http": "workspace:*",
+    "@cap-console/sandbox-core": "workspace:*",
+    "@cap-console/sandbox-environment": "workspace:*",
+    "@cap-console/sandbox-provider-aio": "workspace:*",
+    "@cap-console/sandbox-provider-boxlite": "workspace:*"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/sandbox-conformance": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/sandbox-conformance": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@types/node": "^20.14.0",
     "@types/ws": "^8.5.12",
     "eslint": "^9.27.0",

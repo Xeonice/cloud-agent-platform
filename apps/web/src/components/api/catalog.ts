@@ -27,7 +27,7 @@ import {
   type PublicV1OperationId,
   type PublicV1OperationShape,
   type Scope,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 /** An HTTP method a catalog endpoint can use. */
 export type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE";

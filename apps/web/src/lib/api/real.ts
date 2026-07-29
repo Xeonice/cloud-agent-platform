@@ -4,7 +4,7 @@
  *
  * Every request targets the env-configured cross-origin {@link apiBaseUrl} and
  * carries the operator bearer token (D12). Response bodies are validated
- * against the `@cap/contracts` schemas so the web app never re-declares the
+ * against the `@cap-console/contracts` schemas so the web app never re-declares the
  * shared shapes — contracts is the single source of truth.
  *
  * Requests are sent with `credentials: "include"` so the httpOnly session cookie
@@ -113,7 +113,7 @@ import {
   type LocalRepoImportAvailability,
   type TaskRepoCopyNotReadyError,
   type Scope,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { createParser } from "eventsource-parser";
 import {
   ListAvailableForgeReposResponseSchema,
@@ -125,7 +125,7 @@ import {
   type ConnectForgeCredentialRequest,
   type CreateRepoRequest,
   type ForgeKind,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   ApiKeyMintResponseSchema,
   ApiKeyListResponseSchema,
@@ -134,8 +134,8 @@ import {
   type ApiKeyMintResponse,
   type ApiKeyListResponse,
   type ApiKeyRevokeResponse,
-} from "@cap/contracts";
-import type { AgentRuntimeId } from "@cap/contracts";
+} from "@cap-console/contracts";
+import type { AgentRuntimeId } from "@cap-console/contracts";
 import { apiBaseUrl, operatorToken } from "../config";
 import { getIncomingCookieHeader } from "../server-cookie";
 
@@ -147,7 +147,7 @@ import { getIncomingCookieHeader } from "../server-cookie";
 // "once the contracts schema lands, these collapse onto it with no call-site
 // change". The schema landed and the collapse never happened, so the console
 // carried a fourth independent statement of which runtimes exist, in a file that
-// already imports from `@cap/contracts` twenty lines below. It now derives.
+// already imports from `@cap-console/contracts` twenty lines below. It now derives.
 //
 // The readiness shape below stays local and stays deliberately looser than the
 // contract — see the note on `RuntimeReadiness.id`.
@@ -348,7 +348,7 @@ async function requestText(path: string, init?: RequestInit): Promise<string> {
 // Generic API Playground runner (add-api-playground D3) — REAL-only
 //
 // The endpoint-specific helpers below each target ONE path and parse against a
-// fixed `@cap/contracts` schema. The in-console API Playground needs the
+// fixed `@cap-console/contracts` schema. The in-console API Playground needs the
 // opposite: ONE generic runner that can send ANY catalog `/v1` request and
 // surface the RAW response (status/timing/size/headers/body) for inspection —
 // it deliberately does NOT Zod-validate (the playground shows whatever the api
@@ -521,7 +521,7 @@ function isJsonContentType(contentType: string | null): boolean {
 /**
  * The generic API Playground runner (add-api-playground D3). Sends ONE raw,
  * session-authed request to the cross-origin api and resolves to the RAW
- * outcome for inspection — it does NOT parse against `@cap/contracts` and does
+ * outcome for inspection — it does NOT parse against `@cap-console/contracts` and does
  * NOT throw on a non-2xx (a `4xx`/`5xx` is a normal `kind: "response"` result).
  * A transport failure resolves to a `kind: "error"` result so the response panel
  * renders honestly instead of crashing (spec). Reuses the same base URL +
@@ -915,7 +915,7 @@ export async function listScheduleRuns(
 // flag may still be `false` (mock) pending end-to-end verification against the
 // running api + a session. They live here, fully written, so flipping a
 // flag to `true` is the entire integration step — no page rewrite, no new
-// function. Each parses against `@cap/contracts` exactly like the four live
+// function. Each parses against `@cap-console/contracts` exactly like the four live
 // endpoints above and rides the same `credentials: "include"` session-cookie
 // transport (D6). Until a flag flips, `queries.ts` simply never calls these.
 // ---------------------------------------------------------------------------
@@ -978,7 +978,7 @@ export async function getAuthCapabilities(): Promise<AuthCapabilities | null> {
  * falling back to `container`), and `sampledAt`/`ageMs`/`stale` freshness —
  * so the pool panel's per-runner rows render from this ONE poll instead of a
  * per-task fan-out. The section rides the SAME shared
- * `MetricsResponseSchema` from `@cap/contracts` (no web-side re-declaration),
+ * `MetricsResponseSchema` from `@cap-console/contracts` (no web-side re-declaration),
  * so this client validates it with no shape of its own to drift. Gated by
  * `BACKEND_CAPABILITIES.metrics`.
  */
@@ -1004,7 +1004,7 @@ export async function getTaskResource(
  * `GET /tasks/:id/session-history` — the parsed, read-only codex transcript of a
  * FINISHED task (or an honest empty/expired state), read from its settled
  * retained sandbox (session-sandbox-retention). The wire shape is the
- * discriminated `SessionHistorySchema` from `@cap/contracts` — validated here so
+ * discriminated `SessionHistorySchema` from `@cap-console/contracts` — validated here so
  * no malformed transcript reaches the replay UI. Gated by
  * `BACKEND_CAPABILITIES.sessionHistory`.
  */
@@ -1093,7 +1093,7 @@ export async function saveClaudeCredential(
  * `POST /settings/codex/models` — probe a CANDIDATE compatible provider for its
  * available model ids, validating the operator-supplied `{baseUrl, apiKey}`
  * BEFORE anything is persisted (nothing is stored by this call). The request and
- * response shapes are the shared `@cap/contracts` discovery schemas (the same
+ * response shapes are the shared `@cap-console/contracts` discovery schemas (the same
  * `DiscoverModelsRequestSchema` the api controller's pipe validates), so the web
  * app and api share one shape with nothing re-declared web-side.
  *
@@ -1387,7 +1387,7 @@ export async function listSandboxEnvironmentValidations(
  * releaseName, checkedAt }` — `updateAvailable` is true ONLY when the current
  * version is known AND a newer Release exists; otherwise it degrades to `false`
  * with `latestVersion: null` (source build / no releases / fetch failure), never
- * a fabricated prompt. Validated against the shared `@cap/contracts`
+ * a fabricated prompt. Validated against the shared `@cap-console/contracts`
  * `UpdateStatusSchema` so no shape is re-declared web-side. The endpoint is
  * operator-guarded (like `/metrics`); this rides the same session-cookie
  * transport. Gated by `BACKEND_CAPABILITIES.updateCheck`.
@@ -1399,7 +1399,7 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
 // ---------------------------------------------------------------------------
 // MCP server tokens (remote-mcp-server) — LOCAL request/response shapes
 //
-// DELIBERATELY LOCAL web types, NOT `@cap/contracts` schemas (the
+// DELIBERATELY LOCAL web types, NOT `@cap-console/contracts` schemas (the
 // `SelfUpdateRequest` / `RuntimeId` precedent above): the MCP-token DTOs are
 // owned by the contracts track of this same change, and a shared schema imported
 // by both api + web would be a cross-track shared file (tasks.md NOTE). The api
@@ -1676,7 +1676,7 @@ export async function revokeApiKey(id: string): Promise<ApiKeyRevokeResponse> {
 /**
  * `POST /self-update` request — the bounded upgrade target.
  *
- * DELIBERATELY a LOCAL web type, NOT a `@cap/contracts` schema: a shared contract
+ * DELIBERATELY a LOCAL web type, NOT a `@cap-console/contracts` schema: a shared contract
  * would be imported by both api + web and become a cross-track shared file
  * (tasks.md NOTE). The shape is intentionally minimal — just the `target` version
  * tag the banner already reads from `UpdateStatus.latestVersion`. The api does the
@@ -1731,7 +1731,7 @@ export async function postSelfUpdate(
 // ---------------------------------------------------------------------------
 // SMTP configuration (add-smtp-config-ui) — LOCAL request/response shapes
 //
-// DELIBERATELY LOCAL web types, NOT `@cap/contracts` schemas (the
+// DELIBERATELY LOCAL web types, NOT `@cap-console/contracts` schemas (the
 // `SelfUpdateRequest` / `RuntimeId` / `McpTokenSummary` precedent above): the
 // SMTP DTOs are owned by the CONTRACTS track of this same change, and a shared
 // schema imported by both api + web would be a cross-track shared file (tasks.md
@@ -1806,7 +1806,7 @@ export interface TestSmtpConfigResponse {
 
 /**
  * Structurally validate a `GET /settings/smtp` body into {@link SmtpConfigRead}
- * (local web type — no `@cap/contracts` schema; see the SMTP types note above).
+ * (local web type — no `@cap-console/contracts` schema; see the SMTP types note above).
  * Coerces missing/odd fields into safe defaults so a shape drift never crashes
  * the card, and DROPS any plaintext `pass` the server must never send.
  */

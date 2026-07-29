@@ -32,7 +32,7 @@ import {
   MAX_TERMINAL_INPUT_BYTES,
   TERMINAL_PROTOCOL_VERSION,
   createCurrentTerminalAttachFrame,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { wsUrl, operatorToken } from "./config";
 
 function base64ToBytes(b64: string): Uint8Array {

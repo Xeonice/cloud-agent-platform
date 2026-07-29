@@ -18,8 +18,8 @@ import {
   deleteBoxLiteSandboxAndConfirm,
   materializeSandboxGitWorkspaceStaged,
   readBoxLiteProviderConfig,
-} from '@cap/sandbox';
-import { createGeneratedPrivateGitFixture } from '@cap/sandbox-conformance';
+} from '@cap-console/sandbox';
+import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox-conformance';
 
 const LIVE_GATE = 'BOXLITE_NATIVE_PRIVATE_GIT_E2E';
 const LIVE_ENABLED = process.env[LIVE_GATE] === '1';

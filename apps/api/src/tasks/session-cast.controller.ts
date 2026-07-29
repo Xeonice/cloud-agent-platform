@@ -8,12 +8,12 @@ import {
 } from '@nestjs/common';
 import { open } from 'node:fs/promises';
 import * as path from 'node:path';
-import { CAST_CONTENT_TYPE } from '@cap/contracts';
+import { CAST_CONTENT_TYPE } from '@cap-console/contracts';
 import { resolveWorkspaceDir } from './session-transcript.service';
 // Straight from the package that defines it — `terminal/snapshot` only
 // re-exports it, so importing it from there made tasks depend on terminal for
 // a constant terminal does not own.
-import { SESSION_CAST_FILENAME } from '@cap/sandbox';
+import { SESSION_CAST_FILENAME } from '@cap-console/sandbox';
 import {
   readTerminalRecordingPolicy,
   type TerminalRawArtifactPolicy,

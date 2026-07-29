@@ -13,7 +13,7 @@
 import { describe, it, expect } from "vitest";
 import { filterItems, ALL } from "./use-client-filter";
 import type { ClientFilterState, FilterAccessors } from "./use-client-filter";
-import type { AuditLevel, TaskStatus } from "@cap/contracts";
+import type { AuditLevel, TaskStatus } from "@cap-console/contracts";
 
 interface Row {
   title: string;

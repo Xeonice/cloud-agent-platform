@@ -2,9 +2,9 @@ import type {
   CreateTaskBody,
   Runtime,
   RuntimeExecutionEnvironmentSnapshot,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { ExecutionMode } from '@/agent-runtime/agent-runtime.port';
-import type { SandboxResourceSnapshot } from '@cap/sandbox';
+import type { SandboxResourceSnapshot } from '@cap-console/sandbox';
 
 export type PreparedTaskAdmissionMode = 'legacy' | 'durable-v2';
 

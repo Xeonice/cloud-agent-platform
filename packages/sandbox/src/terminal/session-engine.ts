@@ -42,11 +42,11 @@ import type {
   TerminalTransportFrame,
   TaskModelIntent,
   TaskModelLaunchMaterial,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   SandboxRuntimeModelSetupError,
   taskModelLaunchMaterial,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type {
   SandboxLegacyTerminalExec,
   SandboxResolvedTaskLaunchContext,

@@ -13,7 +13,7 @@ import type {
   ForgeKind,
   RegisterForgeConnectionRequest,
   SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {

@@ -19,7 +19,7 @@ import {
   TASK_ADMISSION_V2_CAPABILITY,
   TaskAdmissionV2GateClosedReasonSchema,
   type TaskAdmissionV2GateResult,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   ADMISSION_GATE_ABSENT,

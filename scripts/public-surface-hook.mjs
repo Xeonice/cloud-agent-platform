@@ -28,9 +28,9 @@ export function affectedTypecheckFilters(classification) {
   const categories = new Set(classification.categories);
   const filters = new Set();
   if (categories.has('contracts') || categories.has('developerWorkflow')) {
-    filters.add('@cap/contracts');
-    filters.add('@cap/api');
-    filters.add('@cap/web');
+    filters.add('@cap-console/contracts');
+    filters.add('@cap-console/api');
+    filters.add('@cap-console/web');
   }
   if (
     categories.has('publicV1') ||
@@ -38,9 +38,9 @@ export function affectedTypecheckFilters(classification) {
     categories.has('openapi') ||
     categories.has('publicErrors')
   ) {
-    filters.add('@cap/api');
+    filters.add('@cap-console/api');
   }
-  if (categories.has('playground')) filters.add('@cap/web');
+  if (categories.has('playground')) filters.add('@cap-console/web');
   return Object.freeze([...filters]);
 }
 

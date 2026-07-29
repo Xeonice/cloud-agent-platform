@@ -19,7 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
-import { API_KEY_PREFIX } from '@cap/contracts';
+import { API_KEY_PREFIX } from '@cap-console/contracts';
 
 import { ApiKeysService } from './api-keys.service';
 import { ApiKeysController } from './api-keys.controller';

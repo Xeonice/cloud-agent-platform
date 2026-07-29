@@ -1,6 +1,6 @@
 import { Controller, Get, HttpStatus, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import type { AuthCapabilities, AuthSessionResponse } from '@cap/contracts';
+import type { AuthCapabilities, AuthSessionResponse } from '@cap-console/contracts';
 import { AuthSessionService } from './auth-session.service';
 import { PrismaService } from '@/prisma/prisma.service';
 // The OTP capability question is answered by the mailer's OWN configured-ness

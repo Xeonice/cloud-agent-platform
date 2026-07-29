@@ -18,12 +18,12 @@ Each concrete sandbox provider package SHALL own an `e2e/` suite that provisions
 
 #### Scenario: AIO provider e2e starts real AIO containers without CAP API
 - **WHEN** the AIO provider e2e suite runs with its Docker prerequisites satisfied
-- **THEN** it provisions a real AIO sandbox container through `@cap/sandbox-provider-aio`
+- **THEN** it provisions a real AIO sandbox container through `@cap-console/sandbox-provider-aio`
 - **AND** it verifies readiness, command execution, selected-run descriptors, workspace behavior, readoption, and teardown without starting the CAP API server
 
 #### Scenario: BoxLite provider e2e starts real BoxLite sandboxes without CAP API
 - **WHEN** the BoxLite provider e2e suite runs with valid `BOXLITE_*` configuration
-- **THEN** it provisions a real BoxLite sandbox through `@cap/sandbox-provider-boxlite`
+- **THEN** it provisions a real BoxLite sandbox through `@cap-console/sandbox-provider-boxlite`
 - **AND** it verifies readiness, command execution, selected-run descriptors, workspace behavior, readoption when supported, and teardown without starting the CAP API server
 
 #### Scenario: Missing provider e2e prerequisites skip or fail clearly
@@ -47,7 +47,7 @@ API source boundary tests SHALL prevent concrete provider implementation logic f
 #### Scenario: Boundary rejects provider composer code in API sandbox
 - **WHEN** `apps/api/src/sandbox` contains concrete provider factories, provider env/config readers, Docker lifecycle, AIO/BoxLite lifecycle helpers, provider-family selection, provider command protocol switches, or provider workspace fallbacks
 - **THEN** the API boundary test fails
-- **AND** the fix is to move that code into `@cap/sandbox` or the owning provider package
+- **AND** the fix is to move that code into `@cap-console/sandbox` or the owning provider package
 
 #### Scenario: Boundary rejects provider terminal code in API terminal
 - **WHEN** `apps/api/src/terminal` contains provider terminal transports, provider protocol registrations, direct AIO/BoxLite terminal clients, provider command executor fallback logic, or provider-specific readiness/env checks

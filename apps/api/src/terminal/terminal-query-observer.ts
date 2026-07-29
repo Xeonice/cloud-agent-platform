@@ -11,7 +11,7 @@ import {
   terminalResponseClassEnabled,
   type TerminalResponseClassification,
   type TerminalResponseProfile,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /** A short authorization window for an xterm response to an observed PTY query. */
 export const DEFAULT_TERMINAL_QUERY_TTL_MS = 5_000;

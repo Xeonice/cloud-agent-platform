@@ -15,7 +15,7 @@
  *   - wrapper stripping on the exec-mode fallback (no user_message events)
  *
  * Mirrors the repo's `.test.mjs` convention (compile the real `.ts`, plain
- * `node`, inline assertions, no framework). The `@cap/contracts` imports in the
+ * `node`, inline assertions, no framework). The `@cap-console/contracts` imports in the
  * parser are type-only and elide at compile, so this compiles standalone.
  */
 

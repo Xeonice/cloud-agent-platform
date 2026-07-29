@@ -11,7 +11,7 @@ import {
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningStage,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
@@ -20,7 +20,7 @@ import {
   type SandboxConnection,
   type SandboxProvisionContext,
   type SelectedSandboxRun,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 import { AuditService } from '@/audit/audit.service';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';

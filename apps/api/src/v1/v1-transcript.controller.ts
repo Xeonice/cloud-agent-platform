@@ -5,7 +5,7 @@ import {
   Inject,
   Req,
 } from '@nestjs/common';
-import { type SessionHistory } from '@cap/contracts';
+import { type SessionHistory } from '@cap-console/contracts';
 import {
   PublicV1Controller,
   PublicV1Input,

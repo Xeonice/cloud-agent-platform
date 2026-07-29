@@ -1,1 +1,1 @@
-export * from '@cap/sandbox-core';
+export * from '@cap-console/sandbox-core';

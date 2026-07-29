@@ -1,5 +1,5 @@
 {
-  "name": "@cap/sandbox-provider-aio",
+  "name": "@cap-console/sandbox-provider-aio",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -20,23 +20,23 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @cap-console/sandbox-core build && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "pnpm -w exec turbo run build --filter=@cap/sandbox-provider-aio --filter=@cap/sandbox-conformance",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap-console/sandbox-provider-aio --filter=@cap-console/sandbox-conformance",
     "test": "node --test --test-force-exit \"test/**/*.test.mjs\"",
     "test:e2e": "pnpm build && node --test --test-force-exit e2e/*.e2e.mjs",
     "coverage": "c8 --100 --include=dist/**/*.js --reporter=text node --test --test-force-exit \"test/**/*.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "@cap/sandbox-core": "workspace:*",
+    "@cap-console/sandbox-core": "workspace:*",
     "dockerode": "^5.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/sandbox-conformance": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/sandbox-conformance": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@types/dockerode": "^4.0.1",
     "@types/node": "^20.14.0",
     "@types/ws": "^8.5.12",

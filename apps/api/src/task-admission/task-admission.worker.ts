@@ -4,7 +4,7 @@ import {
   TaskProvisioningStageSchema,
   type TaskProvisioningStage,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { canTransition, isTerminal } from '@/task-lifecycle/task-lifecycle';
 import type { TaskAdmissionWakePort } from './task-admission-gate';
 import {

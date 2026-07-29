@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { hashPassword, verifyPassword } from '@/auth/argon2';
 import { normalizeEmail } from '@/auth-otp/email-otp.service';

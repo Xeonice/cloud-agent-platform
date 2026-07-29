@@ -9,7 +9,7 @@ import {
   type V1ListQuery,
   type V1ListTasksResponse,
   type TaskResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { TasksService } from '@/tasks/tasks.service';
 import { type OperatorPrincipal } from '@/principal/operator-principal';

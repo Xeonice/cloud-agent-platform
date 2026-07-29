@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import Docker from 'dockerode';
-import { BoxLiteRestClient } from '@cap/sandbox';
+import { BoxLiteRestClient } from '@cap-console/sandbox';
 import { CodexOfficialModelAdapter } from '../dist/runtime-models/codex-official-model.adapter.js';
 import { ConfiguredRuntimeModelTasklessProbeLifecycle } from '../dist/runtime-models/configured-runtime-model-taskless-probe.js';
 import { buildRuntimeExecutionEnvironmentSnapshot } from '../dist/runtime-models/runtime-model-snapshot.js';

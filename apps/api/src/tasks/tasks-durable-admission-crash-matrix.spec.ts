@@ -4,13 +4,13 @@ import type { ModuleRef } from '@nestjs/core';
 import type {
   TaskProvisioningStage,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
   defineLocalSandboxProvider,
   type SandboxProvisionContext,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { PrismaService } from '@/prisma/prisma.service';
 import { AuditService } from '@/audit/audit.service';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';

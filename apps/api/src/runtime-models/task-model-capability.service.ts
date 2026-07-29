@@ -11,7 +11,7 @@ import {
   type TaskModelSelectionLocalRoleReport,
   type TaskModelSelectionWorkerRole,
   type TaskModelSelectionDeploymentAttestation,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { RuntimeModelPreflightError } from './runtime-model-preflight.error';
 
 export const TASK_MODEL_SELECTION_ENABLED_ENV =

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { BadRequestException } from '@nestjs/common';
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 
 import {
   ClaudeCredentialProbe,

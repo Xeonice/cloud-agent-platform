@@ -1,5 +1,5 @@
 import { Controller, Get, Param } from '@nestjs/common';
-import type { MetricsResponse, TaskResourceResponse } from '@cap/contracts';
+import type { MetricsResponse, TaskResourceResponse } from '@cap-console/contracts';
 import { MetricsService } from './metrics.service';
 
 /**

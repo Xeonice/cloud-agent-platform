@@ -9,7 +9,7 @@ The API SHALL act as a sandbox host harness, not a concrete sandbox provider com
 
 #### Scenario: API module binds one neutral sandbox factory
 - **WHEN** `apps/api/src/sandbox/sandbox.module.ts` binds `SANDBOX_PROVIDER`
-- **THEN** it calls a neutral `@cap/sandbox` host-harness factory with API-owned host ports
+- **THEN** it calls a neutral `@cap-console/sandbox` host-harness factory with API-owned host ports
 - **AND** it does not import or call concrete provider factories such as AIO, BoxLite, or cloud-http descriptor builders
 - **AND** it does not instantiate Docker clients, provider controllers, provider env readers, or provider-family selectors
 
@@ -18,18 +18,18 @@ The API SHALL act as a sandbox host harness, not a concrete sandbox provider com
 - **THEN** it contains API host ports, Prisma adapters, DI tokens, and neutral sandbox aliases only
 - **AND** it does not contain AIO or BoxLite lifecycle code, provider readiness code, provider command protocol switches, provider workspace fallbacks, or provider env parsing
 
-### Requirement: Provider registry composition lives in `@cap/sandbox`
+### Requirement: Provider registry composition lives in `@cap-console/sandbox`
 
-`@cap/sandbox` SHALL own configured provider registry composition. It SHALL read provider selection configuration, register concrete provider package descriptors, enforce explicit provider-family fail-closed behavior, and return the API-facing sandbox provider facade.
+`@cap-console/sandbox` SHALL own configured provider registry composition. It SHALL read provider selection configuration, register concrete provider package descriptors, enforce explicit provider-family fail-closed behavior, and return the API-facing sandbox provider facade.
 
 #### Scenario: Provider packages are imported by the sandbox center
 - **WHEN** configured provider registry code is inspected
-- **THEN** `@cap/sandbox` imports provider package factories and env/config readers as needed
-- **AND** API code imports only the `@cap/sandbox` facade and host-harness types
+- **THEN** `@cap-console/sandbox` imports provider package factories and env/config readers as needed
+- **AND** API code imports only the `@cap-console/sandbox` facade and host-harness types
 
 #### Scenario: Explicit provider family does not leak into API
 - **WHEN** an operator sets `CAP_SANDBOX_PROVIDER` to AIO, BoxLite, or a control-plane provider
-- **THEN** `@cap/sandbox` resolves and validates the configured provider family
+- **THEN** `@cap-console/sandbox` resolves and validates the configured provider family
 - **AND** API code does not branch on provider family names
 
 ### Requirement: API terminal code consumes a neutral sandbox terminal harness
@@ -67,4 +67,4 @@ The repository SHALL include boundary tests that prevent provider-specific sandb
 #### Scenario: Boundary test rejects provider-specific implementation in API
 - **WHEN** API source contains concrete provider factories, provider config readers, Docker lifecycle code, provider terminal transports, provider protocol strings, or command protocol switches
 - **THEN** the API boundary test fails with a clear message naming the disallowed boundary
-- **AND** implementation must move the logic to `@cap/sandbox` or the owning provider package instead of adding an API allowlist
+- **AND** implementation must move the logic to `@cap-console/sandbox` or the owning provider package instead of adding an API allowlist

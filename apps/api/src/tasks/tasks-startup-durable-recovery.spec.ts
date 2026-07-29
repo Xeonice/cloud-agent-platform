@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskProvisioningStage } from '@cap/contracts';
+import type { TaskProvisioningStage } from '@cap-console/contracts';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type { SandboxConnection, SelectedSandboxRun } from '@/sandbox/sandbox-provider.port';
 import {

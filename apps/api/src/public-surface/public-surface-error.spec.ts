@@ -14,7 +14,7 @@ import {
   type PublicErrorCode,
   type PublicRestErrorProjection,
   type PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { z } from 'zod';
 import {
   assertPublicErrorMappingComplete,

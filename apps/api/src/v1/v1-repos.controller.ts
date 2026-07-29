@@ -6,7 +6,7 @@ import {
   type V1ListQuery,
   type V1ListReposResponse,
   type RepoResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ReposService } from '@/repos/repos.service';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';

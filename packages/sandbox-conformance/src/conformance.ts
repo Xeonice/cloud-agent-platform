@@ -28,7 +28,7 @@ import {
   type SelectedSandboxRun,
   type TaskModelIntent,
   type WorkspaceSource,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   createExactHostGitCredential,
   missingCapabilities,
@@ -37,7 +37,7 @@ import {
   snapshotSandboxProvisionContext,
   workspaceSourceRequiredCapabilities,
   type SandboxProviderCapability,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export interface SandboxProviderConformanceOptions<
   TCloneSpec,

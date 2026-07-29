@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
-import { AGENT_RUNTIME_IDS, type AgentRuntimeId } from '@cap/contracts';
+import { AGENT_RUNTIME_IDS, type AgentRuntimeId } from '@cap-console/contracts';
 
 import {
   CLAUDE_AUTH_SOURCE,

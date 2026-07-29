@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   createExactHostGitCredential,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   AioSandboxContainerController,
   createAioMode0600FileArchive,

@@ -27,7 +27,7 @@
  *     here (no auth-exemption), exercised end-to-end by the guard's own tests.
  *
  * Compiled WITHOUT emitDecoratorMetadata so the type-only `TasksService` import
- * elides (no need to drag in the whole service tree); `@cap/contracts` and
+ * elides (no need to drag in the whole service tree); `@cap-console/contracts` and
  * `@nestjs/common` resolve from node_modules; the value-imported port +
  * rollout-parser are compiled alongside.
  */

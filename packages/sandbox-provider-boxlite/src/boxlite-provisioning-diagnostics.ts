@@ -9,12 +9,12 @@ import type {
   SandboxProvisioningDiagnosticOperation,
   SandboxProvisioningDiagnosticStage,
   SandboxProvisioningDiagnosticTerminalOutcome,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   validateSandboxProvisioningDiagnosticFact,
   type SandboxProvisioningDiagnosticFact,
   type SandboxProvisioningDiagnosticTerminalFact,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export interface BoxLiteProvisioningDiagnosticOperationDescriptor {
   /** Closed adapter-local replay identity; never copied into a fact. */

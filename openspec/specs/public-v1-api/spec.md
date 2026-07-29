@@ -77,7 +77,7 @@ container output or constructing a transport-specific timeline.
 ### Requirement: /v1-only contract schemas are additive
 
 The `/v1`-only request/response shapes SHALL remain new schemas in
-`@cap/contracts`, added alongside the Console schemas: task create with
+`@cap-console/contracts`, added alongside the Console schemas: task create with
 `repoId` in the body, the paginated list envelopes, and the idempotency shape.
 A new task field that is semantically shared by Console, V1, MCP, and schedule templates
 SHALL be added once as a backward-compatible optional field on the canonical
@@ -98,7 +98,7 @@ accepted requests SHALL remain compatible.
 
 ### Requirement: OpenAPI spec generated from the zod contracts
 
-The system SHALL serve an OpenAPI 3.1 document at `GET /v1/openapi.json`, generated from the `@cap/contracts` zod schemas the `/v1` controllers validate against (so the spec cannot drift from the wire), plus an interactive `GET /v1/docs`. Both SHALL be reachable WITHOUT an operator credential (read-only public metadata). The generated document SHALL describe every `/v1` route and its request/response schemas.
+The system SHALL serve an OpenAPI 3.1 document at `GET /v1/openapi.json`, generated from the `@cap-console/contracts` zod schemas the `/v1` controllers validate against (so the spec cannot drift from the wire), plus an interactive `GET /v1/docs`. Both SHALL be reachable WITHOUT an operator credential (read-only public metadata). The generated document SHALL describe every `/v1` route and its request/response schemas.
 
 #### Scenario: Spec is served and covers every /v1 route
 
@@ -108,7 +108,7 @@ The system SHALL serve an OpenAPI 3.1 document at `GET /v1/openapi.json`, genera
 #### Scenario: Spec stays in sync with the wire
 
 - **WHEN** a `/v1` route's request/response schema changes
-- **THEN** the generated spec reflects it because both derive from the one `@cap/contracts` schema (asserted by a generation test that every `/v1` route's schema is registered)
+- **THEN** the generated spec reflects it because both derive from the one `@cap-console/contracts` schema (asserted by a generation test that every `/v1` route's schema is registered)
 
 #### Scenario: Documented failures match runtime behavior
 
@@ -185,7 +185,7 @@ Each `/v1` operation SHALL enforce the shared scope vocabulary via the principal
 The `GET /v1/tasks/:id/transcript` response SHALL surface the additive
 session-history fields introduced for the transcript timeline — per-turn
 timestamps, the `system` milestone turn kind, tool diffstat, and session totals —
-serialized from the SAME `@cap/contracts` session-history schema the console
+serialized from the SAME `@cap-console/contracts` session-history schema the console
 consumes. The additions SHALL be ADDITIVE and OPTIONAL so existing `/v1`
 consumers are not broken, and the `GET /v1/openapi.json` document SHALL be
 regenerated so it continues to describe the transcript response from the same
@@ -233,7 +233,7 @@ behavior.
   field and the task response schema documents the public environment summary
 
 ### Requirement: /v1 schedule contracts are additive and documented
-The `/v1` schedule request/response schemas SHALL be added to `@cap/contracts`
+The `/v1` schedule request/response schemas SHALL be added to `@cap-console/contracts`
 alongside existing `/v1` schemas. The schedule schemas SHALL include create,
 update, schedule response, schedule-run response, paginated list envelopes, and
 recurrence descriptors for product clients. The generated OpenAPI 3.1 document
@@ -252,7 +252,7 @@ documented product path.
   descriptors that do not require cron syntax
 
 #### Scenario: Schedule schemas do not mutate task create schemas
-- **WHEN** schedule DTOs are added to `@cap/contracts`
+- **WHEN** schedule DTOs are added to `@cap-console/contracts`
 - **THEN** existing task create and task read schemas remain backward-compatible
 - **AND** schedule-specific create/update fields are not required by
   `POST /v1/tasks`

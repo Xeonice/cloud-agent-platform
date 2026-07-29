@@ -43,7 +43,7 @@ import {
   type Runtime,
   type TaskResponse,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
@@ -70,7 +70,7 @@ import {
   type SandboxEnvironmentProviderFamily,
   type SandboxEnvironmentSelection,
   type SandboxResourceSnapshot,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { SandboxRunOwnerService } from '@/sandbox/sandbox-run-owner.service';
 import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
@@ -197,7 +197,7 @@ export interface DurableAdmissionFailureRequest {
     'pending' | 'queued' | 'running' | 'awaiting_input'
   >;
   readonly expectedLifecycleVersion: number;
-  readonly stage: import('@cap/contracts').TaskProvisioningStage;
+  readonly stage: import('@cap-console/contracts').TaskProvisioningStage;
   readonly causeCode: ProvisioningTaskFailureCode;
 }
 
@@ -2562,7 +2562,7 @@ export class TasksService
 
   private async requireProvisioningFailureAudit(
     taskId: string,
-    stage: import('@cap/contracts').TaskProvisioningStage,
+    stage: import('@cap-console/contracts').TaskProvisioningStage,
     attempt: number,
     failure: ProvisioningAuditFailure,
   ): Promise<void> {

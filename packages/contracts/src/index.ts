@@ -1,5 +1,5 @@
 /**
- * @cap/contracts — single source of truth.
+ * @cap-console/contracts — single source of truth.
  *
  * Exports zod schemas alongside their `z.infer` types. All apps
  * (`apps/api`, `apps/web`) consume shared shapes from here via

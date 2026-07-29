@@ -10,7 +10,7 @@ import {
 import {
   TaskProvisioningDiagnosticsResponseSchema,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { PrismaService } from '@/prisma/prisma.service';
 import type { TaskProvisioningDiagnosticRecorderResult } from './task-provisioning-diagnostic-recorder.port';

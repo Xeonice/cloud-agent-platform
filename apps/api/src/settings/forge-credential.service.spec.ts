@@ -13,7 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 import { ForgeCredentialService } from './forge-credential.service';
 import { encryptToStored } from '@/crypto/secret-storage';
 import type { PrismaService } from '@/prisma/prisma.service';

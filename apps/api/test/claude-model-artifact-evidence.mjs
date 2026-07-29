@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { TaskModelSelectorSchema } from '@cap/contracts';
+import { TaskModelSelectorSchema } from '@cap-console/contracts';
 import {
   ClaudeArtifactCompatibilityE2eConfigSchema,
   evidenceChecksum,

@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   GitBranchNameSchema,
   type TaskFailureCode,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ForgeTargetResolver } from './forge-target-resolver';
 import {

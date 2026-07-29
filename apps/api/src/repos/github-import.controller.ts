@@ -7,7 +7,7 @@ import {
   type ImportRepoRequest,
   type RepoResponse,
   type SetDefaultRepoRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {
   GithubAuthorizationRequiredException,

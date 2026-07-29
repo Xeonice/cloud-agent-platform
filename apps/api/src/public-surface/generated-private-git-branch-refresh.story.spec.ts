@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { HttpException } from '@nestjs/common';
 import type { ModuleRef } from '@nestjs/core';
-import { createGeneratedPrivateGitFixture } from '@cap/sandbox/testing';
+import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox/testing';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import type { ForgeTarget } from '@/forge/forge.port';
@@ -19,7 +19,7 @@ import {
   type GuardrailsConfig,
 } from '@/guardrails/guardrails.service';
 import type { PrismaService } from '@/prisma/prisma.service';
-import type { RepoResponse } from '@cap/contracts';
+import type { RepoResponse } from '@cap-console/contracts';
 import { ReposService } from '@/repos/repos.service';
 import type { RepoCopyService } from '@/repos/repo-copy.service';
 import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';

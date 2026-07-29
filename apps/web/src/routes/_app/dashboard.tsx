@@ -40,7 +40,7 @@ import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { Repo } from "@cap/contracts";
+import type { Repo } from "@cap-console/contracts";
 import { reposQuery, tasksQuery } from "@/lib/api/queries";
 import { SegmentedControl } from "@/components/segmented-control";
 import { QueuePanel } from "@/components/dashboard/queue-panel";

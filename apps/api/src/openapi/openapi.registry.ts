@@ -29,7 +29,7 @@ import {
   type V1ListSchedulesResponse,
   type V1ListTasksResponse,
   type PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   PUBLIC_ERROR_SEMANTICS,
   REST_PUBLIC_ERROR_MAP,
@@ -69,7 +69,7 @@ export type V1ScheduleRunListResponse = V1ListScheduleRunsResponse;
 
 /**
  * Backward-compatible registry name. The route inventory itself now lives in
- * `@cap/contracts`, where OpenAPI, Web, and MCP can consume the same manifest.
+ * `@cap-console/contracts`, where OpenAPI, Web, and MCP can consume the same manifest.
  */
 export const V1_ROUTES: readonly PublicV1OperationShape[] =
   PUBLIC_V1_OPERATIONS;

@@ -17,7 +17,7 @@
  *
  * Pure + deterministic: no `window`, no clock, no random — SSR-safe.
  */
-import type { TaskStatus } from "@cap/contracts";
+import type { TaskStatus } from "@cap-console/contracts";
 
 import type { StatusPillVariant } from "@/components/status-pill";
 

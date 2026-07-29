@@ -1,6 +1,6 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, relative, resolve, basename } from 'node:path';
-import { GitBranchNameSchema, LOCAL_REPO_IMPORT_ROOT_ENV } from '@cap/contracts';
+import { GitBranchNameSchema, LOCAL_REPO_IMPORT_ROOT_ENV } from '@cap-console/contracts';
 
 /**
  * Local-path import gate (local-repo-import).

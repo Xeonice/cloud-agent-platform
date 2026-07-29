@@ -15,7 +15,7 @@ import {
   type LocalRepoImportAvailability,
   type LocalRepoImportRequest,
   type RepoResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { requireConsoleAccountId } from './console-account';
 import { LocalRepoImportService } from './local-import.service';

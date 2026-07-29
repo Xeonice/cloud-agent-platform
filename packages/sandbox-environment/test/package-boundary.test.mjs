@@ -8,7 +8,7 @@ const packageRoot = resolve(__dirname, '..');
 const sourceRoot = join(packageRoot, 'src');
 
 const forbiddenImportPattern =
-  /from\s+['"](@nestjs\/|@prisma\/|@cap\/ui|@cap\/sandbox-provider-|dockerode|ws|react|@tanstack\/|\.prisma\/|prisma)['"][^;\n]*|import\(\s*['"](@nestjs\/|@prisma\/|@cap\/ui|@cap\/sandbox-provider-|dockerode|ws|react|@tanstack\/|\.prisma\/|prisma)['"]\s*\)/g;
+  /from\s+['"](@nestjs\/|@prisma\/|@cap-console\/ui|@cap-console\/sandbox-provider-|dockerode|ws|react|@tanstack\/|\.prisma\/|prisma)['"][^;\n]*|import\(\s*['"](@nestjs\/|@prisma\/|@cap-console\/ui|@cap-console\/sandbox-provider-|dockerode|ws|react|@tanstack\/|\.prisma\/|prisma)['"]\s*\)/g;
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
@@ -25,7 +25,7 @@ function walk(dir, out = []) {
 }
 
 const packageJson = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
-assert.deepEqual(Object.keys(packageJson.dependencies ?? {}), ['@cap/sandbox-core']);
+assert.deepEqual(Object.keys(packageJson.dependencies ?? {}), ['@cap-console/sandbox-core']);
 
 const violations = [];
 for (const file of walk(sourceRoot)) {
@@ -42,7 +42,7 @@ for (const file of walk(sourceRoot)) {
 assert.deepEqual(
   violations,
   [],
-  '@cap/sandbox-environment must stay provider-neutral and framework-free',
+  '@cap-console/sandbox-environment must stay provider-neutral and framework-free',
 );
 
-console.log('ok - @cap/sandbox-environment imports only provider-neutral dependencies');
+console.log('ok - @cap-console/sandbox-environment imports only provider-neutral dependencies');

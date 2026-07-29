@@ -24,7 +24,7 @@
  *     tool/thinking turns carry `at`; no `system` turns are ever emitted.
  *
  * Mirrors the repo's `.test.mjs` convention (compile the real `.ts`, plain
- * `node`, inline assertions, no framework). The `@cap/contracts` imports are
+ * `node`, inline assertions, no framework). The `@cap-console/contracts` imports are
  * type-only and elide at compile, so this compiles standalone.
  */
 

@@ -35,7 +35,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import type { Repo } from "@cap/contracts";
+import type { Repo } from "@cap-console/contracts";
 import {
   authSessionQuery,
   metricsQuery,

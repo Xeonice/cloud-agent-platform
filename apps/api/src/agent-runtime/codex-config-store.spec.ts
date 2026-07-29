@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createSandboxRuntimePrivateFilePort } from '@cap/sandbox';
+import { createSandboxRuntimePrivateFilePort } from '@cap-console/sandbox';
 import { CodexRuntime } from './codex-runtime';
 import type {
   AuthMaterial,

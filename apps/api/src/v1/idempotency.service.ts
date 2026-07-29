@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ConflictException, Injectable } from '@nestjs/common';
-import type { TaskResponse } from '@cap/contracts';
+import type { TaskResponse } from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 
 /**

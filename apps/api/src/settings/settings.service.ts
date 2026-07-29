@@ -18,7 +18,7 @@ import {
   type SaveCodexCredentialRequest,
   type SessionUser,
   type UpdateSettingsRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { PrismaService } from '@/prisma/prisma.service';
 import { GuardrailsService } from '@/guardrails/guardrails.service';
 import {

@@ -5,7 +5,7 @@ import {
   type TaskFailureCode,
   type TaskProvisioningDiagnosticEvent,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { ModuleRef } from '@nestjs/core';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
@@ -19,7 +19,7 @@ import {
   SandboxRuntimeModelSetupError,
   type AgentTerminalLaunchOutcome,
   type SandboxProvisionContext,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { TaskBranchResolutionError } from '@/forge/task-branch-resolver';
 import type { TaskProvisioningDiagnosticRecorderPort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
 import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
@@ -214,11 +214,11 @@ function diagnosticSettlementHarness(options: {
   const primaryInputs: unknown[] = [];
   const cleanupInputs: unknown[] = [];
   let persistedPrimaryState: Exclude<
-    import('@cap/contracts').TaskProvisioningDiagnosticAttemptState,
+    import('@cap-console/contracts').TaskProvisioningDiagnosticAttemptState,
     'active'
   > | undefined;
   let persistedCleanup:
-    | import('@cap/contracts').TaskProvisioningDiagnosticCleanupSummary
+    | import('@cap-console/contracts').TaskProvisioningDiagnosticCleanupSummary
     | undefined;
   const failure = {
     ok: false as const,

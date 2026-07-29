@@ -1,4 +1,4 @@
-# @cap/sandbox-provider-aio
+# @cap-console/sandbox-provider-aio
 
 AIO/Docker sandbox provider lifecycle controller.
 

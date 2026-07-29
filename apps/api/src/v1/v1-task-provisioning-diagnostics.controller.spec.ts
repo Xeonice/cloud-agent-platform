@@ -17,7 +17,7 @@ import { Test } from '@nestjs/testing';
 import {
   TaskProvisioningDiagnosticsResponseSchema,
   type TaskProvisioningDiagnosticsQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { OperatorPrincipal } from '@/principal/operator-principal';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';

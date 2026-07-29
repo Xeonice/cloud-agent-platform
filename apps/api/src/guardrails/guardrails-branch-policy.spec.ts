@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
 
-import type { SandboxProvisionPlan } from '@cap/sandbox';
+import type { SandboxProvisionPlan } from '@cap-console/sandbox';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import { TaskBranchResolutionError } from '@/forge/task-branch-resolver';
 import type {

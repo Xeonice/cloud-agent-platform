@@ -8,7 +8,7 @@ import {
   TaskProvisioningDiagnosticAttemptSchema,
   TaskProvisioningDiagnosticEventSchema,
   type TaskProvisioningDiagnosticCleanupSummary,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
@@ -19,7 +19,7 @@ import {
   type SandboxProvisionContext,
   type SandboxRunCleanupAuthorization,
   type SettleSandboxCleanupAttemptResult,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
