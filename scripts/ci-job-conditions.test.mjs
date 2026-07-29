@@ -99,6 +99,31 @@ test('an unusable base ref fails open rather than skipping every gate', () => {
   );
 });
 
+test('the match itself fails open: only a definite no-match lowers the flag', () => {
+  const job = workflowJob(workflow, 'changes');
+
+  assert.match(
+    job,
+    /^          BACKEND=true$/mu,
+    'the flag must start true so any unexpected path leaves the gates running',
+  );
+  assert.match(
+    job,
+    /^          if \[\[ "\$\{MATCH_STATUS\}" -eq 1 \]\]; then$/mu,
+    'only grep exit 1 (definite no-match) may lower the flag; exit >1 is an error and must not skip gates',
+  );
+  assert.doesNotMatch(
+    job,
+    /if grep -qE .* <<<|if echo "\$\{CHANGED\}" \| grep/u,
+    'branching directly on grep is what inverted this filter once: `grep -q` closes its input on first match, and under pipefail a successful match reported failure',
+  );
+  assert.doesNotMatch(
+    job,
+    /\| grep/u,
+    'no pipe into grep — the writer can take SIGPIPE and pipefail turns that into a false negative',
+  );
+});
+
 test('the path filter treats package and tooling edits as backend-affecting', () => {
   const job = workflowJob(workflow, 'changes');
   const pattern = job.match(/grep -qE '\^\((.+?)\)'/u)?.[1];

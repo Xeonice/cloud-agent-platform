@@ -67,11 +67,27 @@ jobs:
           CHANGED="$(git diff --name-only "${BASE_SHA}" HEAD)"
           echo "changed files:" >&2
           echo "${CHANGED}" >&2
-          if echo "${CHANGED}" | grep -qE '^(apps/api/|packages/|scripts/|\.github/workflows/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json)'; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "backend=false" >> "$GITHUB_OUTPUT"
+          # Fails OPEN by construction: `backend` starts true and is lowered only
+          # on grep's exit code 1, which means a definite no-match. An error
+          # (exit >1) leaves it true, so a broken filter runs the gates rather
+          # than silently skipping them.
+          #
+          # A here-string, not a pipe. The first version of this piped into
+          # `grep -q`; CI logged `echo: write error: Broken pipe` on that line and
+          # the filter reported no backend changes for a branch that rewrites the
+          # api throughout. The exact mechanism was not reproducible locally even
+          # at the same input size, which is itself the reason the logic above no
+          # longer depends on getting it right.
+          BACKEND=true
+          set +e
+          grep -qE '^(apps/api/|packages/|scripts/|\.github/workflows/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json)' <<<"${CHANGED}"
+          MATCH_STATUS=$?
+          set -e
+          if [[ "${MATCH_STATUS}" -eq 1 ]]; then
+            BACKEND=false
           fi
+          echo "grep exit ${MATCH_STATUS} -> backend=${BACKEND}" >&2
+          echo "backend=${BACKEND}" >> "$GITHUB_OUTPUT"
 
   # Stable merge-gating context for the shared Public V1/MCP contract. Branch
   # protection must require the exact context `public-surface-parity` after this
