@@ -427,7 +427,13 @@ test(
         providerOperations.push(operation);
       },
     };
-    const gate: TaskAdmissionGatePort = { isEnabled: () => true };
+    const gate: TaskAdmissionGatePort = {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    };
     const environments = {
       async resolveTaskAdmission() {
         return Object.freeze({

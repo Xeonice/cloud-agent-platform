@@ -101,18 +101,36 @@ assert.match(
   'PrismaProvisionLookup must expose getTaskWorkspaceSource when a resolver is injected',
 );
 
-const guardrailsSource = readFileSync(
+// The two provisioning paths no longer share a file: the durable one is still
+// in the guardrails orchestrator, the inline one lives in `inline-admission`.
+// The count stays 2 on purpose — one per path — so dropping the wiring from
+// either path still fails here, exactly as it did when both were in one file.
+const provisioningPathSources = [
   join(apiRoot, 'src', 'guardrails', 'guardrails.service.ts'),
-  'utf8',
-);
+  join(apiRoot, 'src', 'inline-admission', 'inline-admission.pipeline.ts'),
+].map((path) => readFileSync(path, 'utf8'));
+
+const countAcrossProvisioningPaths = (pattern) =>
+  provisioningPathSources.reduce(
+    (total, source) => total + (source.match(pattern) ?? []).length,
+    0,
+  );
+
+// Asserted per file rather than as a total: the guardrails source also names
+// `resolveWorkspaceSource` once more in the port adapter that hands the method
+// to the inline pipeline, and that wiring line is not a provisioning path. The
+// exact-count check below still pins the number of provision contexts at 2.
+for (const [index, source] of provisioningPathSources.entries()) {
+  assert.match(
+    source,
+    /resolveWorkspaceSource\(\s*taskId/,
+    `provisioning path ${index === 0 ? 'durable' : 'inline'} must resolve a workspace source`,
+  );
+}
 assert.equal(
-  (guardrailsSource.match(/this\.resolveWorkspaceSource\(/g) ?? []).length,
-  2,
-  'both provisioning paths (durable + legacy) must resolve a workspace source',
-);
-assert.equal(
-  (guardrailsSource.match(/workspaceSource === undefined \? \{\} : \{ workspaceSource \}/g) ?? [])
-    .length,
+  countAcrossProvisioningPaths(
+    /workspaceSource === undefined \? \{\} : \{ workspaceSource \}/g,
+  ),
   2,
   'both provision contexts must carry the resolved workspace source to the provider',
 );

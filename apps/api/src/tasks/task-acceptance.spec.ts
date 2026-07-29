@@ -358,9 +358,20 @@ test('gate is read once during preparation and a later flip cannot change the wr
   const resourceResolutions: unknown[] = [];
   const service = serviceWith(prisma, {
     gate: {
-      isEnabled() {
+      evaluate() {
         gateReads += 1;
-        return enabled;
+        return enabled
+          ? {
+              capability: 'task-admission-v2',
+              open: true,
+              verifiedRoles: ['api', 'worker'],
+            }
+          : {
+              capability: 'task-admission-v2',
+              open: false,
+              reason: 'disabled',
+              missingRoles: [],
+            };
       },
     },
     branches: {
@@ -440,7 +451,13 @@ test('explicit-model durable preparation freezes snapshot resources through one 
   const policyCalls: unknown[] = [];
   let legacyEnvironmentCalls = 0;
   const service = serviceWith(prisma, {
-    gate: { isEnabled: () => true },
+    gate: {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    },
     taskModelCapability: {
       assertOpen() {},
     } as unknown as TaskModelCapabilityService,
@@ -519,7 +536,13 @@ test('explicit-model durable preparation fails closed when provider capability r
   let branchCalls = 0;
   const policyCalls: unknown[] = [];
   const service = serviceWith(prisma, {
-    gate: { isEnabled: () => true },
+    gate: {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    },
     taskModelCapability: {
       assertOpen() {},
     } as unknown as TaskModelCapabilityService,

@@ -129,7 +129,7 @@ test('EnvironmentTaskAdmissionGate opens only for full attestation plus local id
     },
     () => {
       const service = new TaskAdmissionCapabilityService();
-      assert.equal(new EnvironmentTaskAdmissionGate(service).isEnabled(), false);
+      assert.equal(new EnvironmentTaskAdmissionGate(service).evaluate().open, false);
     },
   );
 
@@ -143,7 +143,7 @@ test('EnvironmentTaskAdmissionGate opens only for full attestation plus local id
     () => {
       const service = new TaskAdmissionCapabilityService();
       assert.equal(service.evaluate(NOW).open, true);
-      assert.equal(new EnvironmentTaskAdmissionGate(service).isEnabled(), true);
+      assert.equal(new EnvironmentTaskAdmissionGate(service).evaluate().open, true);
       assert.deepEqual(
         service.localRoleReports(NOW).map((report) => report.role),
         ['api', 'worker'],

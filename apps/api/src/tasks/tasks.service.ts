@@ -93,6 +93,10 @@ import {
   type TaskAdmissionCancellationPort,
 } from '@/admission-coordination/task-admission.types';
 import {
+  isDegradedAdmission,
+  resolveAdmissionMode,
+} from '@/task-admission/admission-mode-policy';
+import {
   TASK_ADMISSION_GATE_TOKEN,
   TASK_ADMISSION_WAKE_TOKEN,
   type TaskAdmissionGatePort,
@@ -1109,10 +1113,22 @@ export class TasksService
   ): Promise<PreparedTaskCreate> {
     const normalizedBody = createTaskBodySchema.parse(body);
     // Read the rollout gate exactly once for this acceptance. Every later
-    // decision, including the transaction write, consumes the frozen mode.
-    const admissionMode = (this.taskAdmissionGate?.isEnabled() ?? false)
-      ? 'durable-v2'
-      : 'legacy';
+    // decision, including the transaction write, consumes the frozen decision.
+    // The policy is total over the gate's outcomes, so a new closed reason
+    // cannot reach here without someone having stated its consequence.
+    const admissionDecision = resolveAdmissionMode(
+      this.taskAdmissionGate?.evaluate(),
+    );
+    const admissionMode = admissionDecision.mode;
+    if (isDegradedAdmission(admissionDecision)) {
+      // Say which capability was unproven and why, at the point the consequence
+      // is taken. Attribution only — the deployment-capability endpoint stays
+      // the authority on the gate's current state, and no persisted schema
+      // gains a field for this.
+      this.logger.warn(
+        `admission degraded to ${admissionMode}: ${admissionDecision.capability} unproven (${admissionDecision.outcome})`,
+      );
+    }
     if (normalizedBody.model !== undefined && !acceptedExplicitModel) {
       // The deployment cutover fence must run before repo/runtime/readiness,
       // environment resolution, credential work, or a taskless catalog probe.

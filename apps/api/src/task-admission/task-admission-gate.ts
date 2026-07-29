@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { TaskAdmissionV2GateResult } from '@cap/contracts';
 import {
   TASK_ADMISSION_V2_ATTESTATION_ENV,
   TASK_ADMISSION_V2_ENABLED_ENV,
@@ -15,23 +16,32 @@ export {
 export const TASK_ADMISSION_GATE_TOKEN = Symbol('TASK_ADMISSION_GATE');
 export const TASK_ADMISSION_WAKE_TOKEN = Symbol('TASK_ADMISSION_WAKE');
 
-/** Read exactly once while preparing one acceptance, then freeze the result. */
+/**
+ * Read exactly once while preparing one acceptance, then freeze the result.
+ *
+ * This returns the gate's full result rather than a boolean on purpose. A
+ * `isEnabled(): boolean` here destroyed the closed reason before any call site
+ * could see it, so the acceptance path could only recover it by reading
+ * deployment state a second time — and two reads of one mutable state can
+ * disagree. The reason has to travel with the reading that the decision is made
+ * from. See `admission-mode-policy.ts`.
+ */
 export interface TaskAdmissionGatePort {
-  isEnabled(): boolean;
+  evaluate(): TaskAdmissionV2GateResult;
 }
 
 /**
  * Process-local gate reader. The explicit rollout switch opens only when the
  * complete deployment attestation is also valid and this API/worker process is
- * one of its matching ready members. The writer freezes this boolean before its
+ * one of its matching ready members. The writer freezes this reading before its
  * transaction and never re-reads mutable deployment state inside that boundary.
  */
 @Injectable()
 export class EnvironmentTaskAdmissionGate implements TaskAdmissionGatePort {
   constructor(private readonly capabilities: TaskAdmissionCapabilityService) {}
 
-  isEnabled(): boolean {
-    return this.capabilities.isOpen();
+  evaluate(): TaskAdmissionV2GateResult {
+    return this.capabilities.evaluate();
   }
 }
 

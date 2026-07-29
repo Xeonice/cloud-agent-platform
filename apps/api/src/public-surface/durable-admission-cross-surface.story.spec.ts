@@ -1159,7 +1159,13 @@ class StoryHarness {
       this.audit,
       this.database.prisma,
     );
-    const gate: TaskAdmissionGatePort = { isEnabled: () => true };
+    const gate: TaskAdmissionGatePort = {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    };
     const tasks = new TasksService(
       this.database.prisma,
       guardrails as unknown as IGuardrailsService,
