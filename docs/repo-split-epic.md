@@ -248,6 +248,7 @@ cap  （上游总仓 —— 治理 + 验证 + 钉版，不含可编辑代码）
 | **指针舞**：跨端功能变成 5 步（contracts PR → 发版 → api PR → web PR → 总仓 bump） | 最后一步由 CI 自动化（D7）。前四步是拆分的既定成本，不可消除，见 §2.2 |
 | **submodule 咬智能体**：detached HEAD、认错仓库、漏 bump | D7 铁律 + CI 自动 bump。这是方案成立的**前提**而非缓解措施 |
 | **Phase 4 打到已上线的 self-update** | 单独成 change，活环境验证后再切；保留回滚路径 |
+| **仓外配置也引用包名** | **已发生。** `@cap-console` 改名后 Vercel 的 cap-web 构建挂了：`No package found with name '@cap/web'` —— 构建命令配在 Vercel 面板里，不在仓库中，所以仓内的全量替换够不着它。修法不是改面板，而是把配置搬进仓（`apps/web/vercel.json`）并改用**路径过滤器** `--filter=./apps/web`，它天然免疫改名。Phase 3 拆仓会产生更多仓外配置（每个子仓一套 CI、Vercel、部署接线），**清点仓外引用必须是拆分前的一项任务，而不是拆完再发现** |
 | **git 历史丢失** | Phase 3 用 filter-repo，历史保留列为验收条件 |
 | **仓数量为 6** | 已接受（D8）。合并 `cap-edge` 已被否——受众边界是拆分的目的本身，不是可以为省一个仓而让步的东西 |
 | **Phase 0 的改名波及构建/部署配置** | 不只是 import：lockfile、两个 workflow、web 的 Dockerfile、两个 shell 脚本都含旧 scope。验收必须包含一次完整的 build + boot-smoke，不能只看 typecheck 通过 |
