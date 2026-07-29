@@ -30,6 +30,49 @@ permissions:
   contents: read
 
 jobs:
+  # Which parts of the tree a change touches. Its own job so the results are
+  # available to `needs:`, and dependency-free (a git diff, not a marketplace
+  # action) so nothing new enters the supply chain for a path check.
+  #
+  # NOT used to gate `public-surface-parity` or `typecheck + lint + test`: both
+  # are REQUIRED status checks on `main`, and a required check that is skipped
+  # rather than reported blocks a merge permanently. That is the same class of
+  # silent failure as an unconditioned job wasting minutes, in the opposite
+  # direction and worse, so those two continue to run for every change.
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `backend` is true when a change can reach the api, its Prisma schema, any
+      # workspace package it builds on, or the dependency graph itself. It is
+      # deliberately broad: a false negative silently skips a gate, while a false
+      # positive only costs the minutes the job would have taken anyway.
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
+            echo "no usable base ref; treating as backend-affecting" >&2
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "${BASE_SHA}" HEAD)"
+          echo "changed files:" >&2
+          echo "${CHANGED}" >&2
+          if echo "${CHANGED}" | grep -qE '^(apps/api/|packages/|scripts/|\.github/workflows/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Stable merge-gating context for the shared Public V1/MCP contract. Branch
   # protection must require the exact context `public-surface-parity` after this
   # job has reported once; hooks and CI intentionally call the same root command.
@@ -65,6 +108,10 @@ jobs:
 
   task-model-n-minus-one-compat:
     name: task model N-1 compatibility
+    # Subject is api sources plus the Prisma client; unreachable from a docs- or console-only change.
+    # Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -103,6 +150,10 @@ jobs:
 
   task-admission-migration-compatibility:
     name: task admission migration compatibility
+    # Subject is api sources plus a live database migration; unreachable from a docs- or console-only change.
+    # Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -304,6 +355,10 @@ jobs:
   # (api-key-machine-identity Track 5), the failure class this gate guards.
   boot-smoke:
     name: boot-smoke
+    # Subject is boots the built api against a database; unreachable from a docs- or console-only change.
+    # Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
 
     # Throwaway Postgres the orchestrator's Prisma layer connects to at boot. A

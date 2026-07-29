@@ -6,6 +6,11 @@ the schema fork works, and where to find the canonical workflow wiring. This
 guide carries the *model*; it routes you to the source of truth rather than
 restating authoritative detail.
 
+This guide is about the repository's **workflow** — `.claude/` and `openspec/`.
+Its sibling, [`product-layout.md`](./product-layout.md), answers the other
+question: what the software is made of, what deploys, and what an operator has to
+run. If you came looking for `apps/` or `packages/`, that is the guide you want.
+
 ## The two-bucket model
 
 The repository splits into two cooperating buckets: `.claude/` holds the

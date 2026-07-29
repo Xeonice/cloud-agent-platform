@@ -186,6 +186,10 @@ cap  （上游总仓 —— 治理 + 验证 + 钉版，不含可编辑代码）
   这里先写好就是直接迁移。
 - **`docs/product-layout.md`**：谁是谁、自托管要哪些、web 是可选的（动机 ②③）。
 - **CI `paths` 过滤**：7 job 全量跑 → 按受影响范围收敛（§2.6）。
+- **⚠ 未完成的验证**：`scope-agent-context-and-document-layout` 给三个 CI job 加了
+  路径条件，但**条件的两个方向尚未在真实 PR 上观察**（`ci.yml` 只在
+  `pull_request` / `push to main` 触发，推分支不触发）。见该 change 的 task 3.4。
+  在此之前，「CI 只跑受影响的 job」这条是接好了、未经证实。
 - **scope 改名 `@cap/*` → `@cap-console/*`**（D12）：实测 1,116 处 / 597 个文件的机械替换，
   含 `pnpm-lock.yaml`、`.github/workflows/{ci,release}.yml`、`apps/web/Dockerfile`、
   `scripts/{boot-smoke,scheduled-tasks-live-e2e}.sh`。一次跑完全量验证确认。
