@@ -165,13 +165,26 @@ WS_URL="http://127.0.0.1:${PORT}/terminal"
 ws_handshake_status() {
   # Prints the numeric status of the upgrade response. `--http1.1` because an
   # upgrade is HTTP/1.1-only; the key is fixed since we never read a frame.
-  curl -sS -o /dev/null -D - --max-time 5 --http1.1 \
-    -H 'Connection: Upgrade' \
-    -H 'Upgrade: websocket' \
-    -H 'Sec-WebSocket-Version: 13' \
-    -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
-    -H "Origin: $1" \
-    "${WS_URL}" 2>>"${LOG_FILE}" \
+  #
+  # curl's exit code is deliberately discarded, because on THIS probe a success
+  # is what makes it non-zero: a refused handshake closes the connection and curl
+  # exits 0, while an ACCEPTED one (101) leaves the socket open until `--max-time`
+  # kills it, exiting 28. Under `set -euo pipefail` that killed the whole script
+  # at the moment the thing being tested worked. The headers have already been
+  # written by then, so the status is read from them and the exit code is ignored;
+  # a genuinely unreachable server yields an empty status, which every caller
+  # already treats as a failure.
+  local headers
+  headers="$(
+    curl -sS -o /dev/null -D - --max-time 5 --http1.1 \
+      -H 'Connection: Upgrade' \
+      -H 'Upgrade: websocket' \
+      -H 'Sec-WebSocket-Version: 13' \
+      -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
+      -H "Origin: $1" \
+      "${WS_URL}" 2>>"${LOG_FILE}" || true
+  )"
+  printf '%s\n' "${headers}" \
     | awk 'toupper($0) ~ /^HTTP\// { code = $2 } END { print code }'
 }
 
