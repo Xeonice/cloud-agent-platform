@@ -4,6 +4,7 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { Logger } from 'nestjs-pino';
 
 import { AppModule } from '../dist/app.module.js';
+import { CONSOLE_CORS_ALLOWED_HEADERS } from '../dist/auth/auth-config.js';
 import { PrismaService } from '../dist/prisma/prisma.service.js';
 import { ScheduledTasksService } from '../dist/scheduled-tasks/scheduled-tasks.service.js';
 import { SANDBOX_PROVIDER } from '../dist/sandbox/sandbox-provider.port.js';
@@ -38,12 +39,11 @@ try {
     origin: webOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'Idempotency-Key',
-      'Last-Event-ID',
-    ],
+    // The SAME list `main.ts` serves, not a copy of it. This bootstrap answers the
+    // preflights the browser in this e2e actually sends, so a header admitted in
+    // production and forgotten here fails the e2e for a reason that looks nothing
+    // like the truth — a timeout waiting for a request the browser never sent.
+    allowedHeaders: [...CONSOLE_CORS_ALLOWED_HEADERS],
   });
 
   await app.listen(apiPort, API_HOST);

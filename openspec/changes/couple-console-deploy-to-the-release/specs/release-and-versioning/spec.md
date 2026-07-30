@@ -66,6 +66,16 @@ yet read it ignores the field rather than rejecting the message.
 - **THEN** the request or connection is refused, and the refusal names both
   versions so an operator can see which side is behind
 
+The api SHALL admit the identity header at the CORS preflight. The console and the
+api are different origins, so attaching a header that the preflight rejects does not
+weaken the identity check — it stops the request from being sent at all, and the
+console goes dark with nothing reporting why.
+
+#### Scenario: The identity header survives a cross-origin preflight
+
+- **WHEN** a console on one origin sends the identity to an api on another
+- **THEN** the api's CORS preflight admits the header, so the request is issued
+
 #### Scenario: An api that does not read the identity is not broken by it
 
 - **WHEN** a console that sends the identity talks to an api built before the api

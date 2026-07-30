@@ -20,6 +20,7 @@
     "test:contracts-shared": "node scripts/contracts-shared-export-check.mjs && node --test --test-force-exit scripts/contracts-shared-export-check.test.mjs",
     "test:contracts-executed": "node scripts/contracts-executed-schema-check.mjs && node --test --test-force-exit scripts/contracts-executed-schema-check.test.mjs",
     "test:module-layout": "node scripts/api-module-layout-check.mjs && node --test --test-force-exit scripts/api-module-layout-check.test.mjs",
+    "test:cors-headers": "node scripts/console-request-header-cors-check.mjs && node --test --test-force-exit scripts/console-request-header-cors-check.test.mjs",
     "test:scripts": "node scripts/run-suite.mjs \"scripts/*.test.mjs\"",
     "verify": "turbo typecheck lint build && pnpm verify:terminal-response-profile",
     "verify:terminal-response-profile": "node scripts/terminal-response-profile-source-conformance.mjs && node --test scripts/terminal-response-profile-source-conformance.test.mjs",

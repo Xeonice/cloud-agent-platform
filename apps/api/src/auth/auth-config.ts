@@ -8,6 +8,7 @@
  * separately through forge PAT credentials.
  */
 
+import { CONSOLE_BUILD_ID_HEADER } from '@cap-console/contracts';
 
 /** Env var names, centralised so the controller/service/tests agree on spelling. */
 export const ENV = {
@@ -63,6 +64,42 @@ export function isPasswordAuthEnabled(env: NodeJS.ProcessEnv = process.env): boo
   const v = raw.trim().toLowerCase();
   return !(v === 'false' || v === '0' || v === 'no');
 }
+
+/**
+ * The request headers the credentialed (console) CORS surface admits at a
+ * preflight. The origin half of this policy already had one declaration —
+ * {@link parseWebOrigins} below — while the header half had two: `main.ts` and the
+ * scheduled-tasks browser e2e harness each carried their own array.
+ *
+ * That is not a cosmetic duplication. The console and the api are different
+ * origins in every deployment that matters, so any header outside the CORS
+ * safelist makes the request PREFLIGHTED, and a header missing from the array
+ * that answers the preflight does not weaken a check — it stops the request from
+ * being sent at all. The console shows empty state and nothing anywhere reports
+ * why, because the api never sees the request.
+ *
+ * Both copies were four entries long and both were missing `x-cap-console-build`
+ * when `couple-console-deploy-to-the-release` began attaching it to every REST
+ * call. Fixing only `main.ts` would have left the e2e red while making a gate that
+ * reads `main.ts` green — which is why the declaration converged instead.
+ *
+ * `/mcp` is deliberately NOT covered: it is a distinct, bearer-only,
+ * non-credentialed CORS domain with its own narrower list, and folding the two
+ * together would hand a wildcard-origin surface headers it has no use for.
+ */
+export const CONSOLE_CORS_ALLOWED_HEADERS: readonly string[] = [
+  'Content-Type',
+  'Authorization',
+  // Public task-create retry key. Without this entry a browser client is blocked
+  // by the CORS preflight even though POST /v1/tasks accepts it.
+  'Idempotency-Key',
+  // Explicit for non-EventSource SSE clients that resume with this header.
+  'Last-Event-ID',
+  // Which release the console was built from, attached by `authHeaders()` to every
+  // REST call. Named from the shared constant so the header the console sends and
+  // the header this api admits cannot drift apart.
+  CONSOLE_BUILD_ID_HEADER,
+];
 
 /**
  * Parse the comma-separated `WEB_ORIGIN` allow-list into a trimmed, de-duplicated
