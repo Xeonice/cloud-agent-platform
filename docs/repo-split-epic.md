@@ -100,6 +100,55 @@ web 从 `@cap-console/contracts` 导入 213 个符号：
 集中处：`frontend-console` 26、`realtime-terminal` 7、`mcp-server` 6、
 `session-history-replay` 6、`agent-runtime` 5。
 
+### 2.4b 契约重声明审计（24 个符号 · 23 个裁定）
+
+传递可达把「谁在共享」量清楚了，但它量不到另一件事：**契约里有定义、消费者却
+另起炉灶自己声明了一份。** 机械扫描出 24 个同名候选，逐个派 agent 读两处真实
+声明后分类，并对 DIVERGENT / COLLISION / DERIVED 三类做双镜头对抗性驳斥——
+判错这三类，真重复就溜过去了。驳斥推翻了 2 个判决。
+
+```
+DUPLICATE   13   ← 真缺陷：同概念、同意图、本地副本无理由存在
+DERIVED      5   ← 别名/收窄，不是独立重述
+DIVERGENT    4   ← 同概念但刻意不同
+COLLISION    1   ← 撞名，概念无关
+```
+
+（1 个符号因 agent 报 403 未裁定：`SandboxEnvironmentCompatibility`。）
+
+**今天造成运行时故障的 DUPLICATE：0 个。** 已经漂移但没人执行的：2 处。其余
+全是**丢失的编译期信号**。严重性不在「现在有错」，而在「即将建的版本闸门会
+建在没人执行的声明之上」。两处已漂移的，逐行核实过：
+
+```
+契约 SmtpConfigReadSchema   host/user/from .min(1) · port .min(1)
+api  实发                    { host:'', port:0, user:'', from:'', … }   ← smtp.controller.ts:259
+                             没人发现，因为该 schema 全仓零调用点
+
+契约 RuntimeReadinessResponseSchema = z.array(…)
+api  实发                    { runtimes: [...] }                        ← runtimes.service.ts:83
+                             web 为此长了防御代码（real.ts:776）
+```
+
+#### 「被重复致死」是模式，不是孤例
+
+零消费者的 contracts 导出**至少 6 处**：`sandbox.ts`(整模块) · `runtime.ts`(整模块) ·
+`auth-account` 的 `AdminRevealResponse` · `runtime-model` 的 `RuntimeModelPreflightError` ·
+`settings` 的 `SmtpConfigReadSchema` · `sandbox-environment` 的
+`SandboxEnvironmentProviderFamily`(类型)。
+
+后三例发生在**看起来很活跃**的模块内部，逐模块可达性分析看不见它们。
+
+**一张没人执行的 schema，会静默地变成假的。**
+
+#### 数字的诚实边界
+
+- **上限**：机械扫描按同名匹配，`import { type X }` 被误判为声明。已证实的误报有
+  `SandboxEnvironmentProviderFamily`(5 处中 4 处)、`ForgeKind`、`Scope`、
+  `TaskFailure`、`sandboxProviderLabel`。
+- **下限**：改了名的本地副本不在视野内——`AdminRevealCredentials`、`McpTokenScope`、
+  `SandboxPreflightProbeResult` 等。所以「6 处死声明」是保守数。
+
 ### 2.5 仓级闸门耦合很轻
 
 `scripts/` 下只有 **3 个**同时推理两端，且全是驱动真实浏览器/终端打活 api
@@ -134,6 +183,73 @@ web 从 `@cap-console/contracts` 导入 213 个符号：
 | D8 | **`cap-www` 与 `cap-release-cache-worker` 各自独立成仓** | 合并为 `cap-edge` 被否；留在总仓被否（破坏 D7）。理由是**受众边界**而非维护面：宣传站只由维护者本人负责，贡献 api 或 web 的人世界里不该有它。这与动机 ①② 同源 |
 | D9 | **历史提取用 `git filter-repo`** | 实测跨未来仓边界的文件移动为 **0**，三个子仓都是干净的子目录提取，`subtree split` 亦可；选 filter-repo 因其对目录内重命名的跟随更好、大历史上更快，且它是 git 官方文档在 `filter-branch` 处推荐的替代工具。注意：非 git 自带，Phase 3 需先安装 |
 | D10 | **总仓 CI 拉源码跑 e2e，不拉发布镜像** | 拉镜像与 D5 因果颠倒——总仓 tag 是「已验证的组合」，用镜像则必须先发布才能验证。且今天 `scripts/aio-e2e.sh` 本就从检出源码构建 compose 栈，拉源码是原样平移，不新增凭据 |
+
+| D14 | **sandbox 词汇表统一到 contracts：类型层用 `import type` 收敛，运行时层保留副本 + 加对账闸门** | 见下 D14 详述 |
+
+### D14 — sandbox 词汇表的归属
+
+`SandboxProviderFamily` / `SandboxEnvironmentSourceKind` 这类词汇表，要同时被
+**线协议层**（api↔web，需 zod 校验、必须封闭）和 **provider port**
+（第三方实现的扩展点，必须开放、零依赖）使用。审计把这对判为 DIVERGENT，
+理由是「一张 zod schema 表达不了封闭和开放」。**git 证据不支持这个判断。**
+
+#### 证据
+
+```
+source-kind      contracts 与 sandbox-core 两份同一提交诞生（08972b6）
+                 同一提交同步删掉同样两个成员（5a5a618）
+                 从未单独变动过
+
+provider family  sandbox-core/provider.ts 的开放联合      08972b6
+                 contracts/provider-family.ts 的规范源    203436a
+                 203436a 改了 sandbox-core 的 capabilities.ts + 测试，
+                 唯独 provider.ts 一行没碰
+```
+
+203436a 是**专门为消灭这种重复而做的收敛**，提交信息点名「四个内容互不一致的
+枚举，两个漏了 cloud-http，两个连成员顺序都不同」——它数的四个全在 contracts 侧。
+sandbox-core 那份不是没看见，是**够不着**。
+
+一处修正：驳斥者称「从开放联合删成员是语义 no-op，唯一动机就是手工同步镜像」，
+前半句对（`(string & {})` 让任何字符串都可赋值，删成员只影响自动补全），
+**后半句是过度推断**——保持补全准确本身就是正当动机。但结论不变：两份从未
+独立演化，一致性完全靠作者当时记得，**没有任何机制保证**。
+
+#### 约束比预想的软
+
+```
+packages/sandbox-core                     没有任何 package-boundary 测试
+sandbox-environment/package-boundary:28   只断言 dependencies，不看 devDependencies
+                                          禁止列表里也没有 @cap-console/contracts
+```
+
+**纯类型依赖两道闸门都过得去。**
+
+#### 决定：分两层处理
+
+**类型层——收敛。** `sandbox-core/provider.ts` 改为
+
+```ts
+import type { SandboxProviderFamily } from '@cap-console/contracts';
+export type SandboxEnvironmentProviderFamily = SandboxProviderFamily | (string & {});
+```
+
+`import type` 编译期抹掉，不产生运行时依赖。`SandboxEnvironmentSourceKind` 同理。
+
+**运行时层——不收敛，加闸门。** `sandbox-core/provisioning-diagnostics.ts:23` 的
+`SANDBOX_PROVISIONING_DIAGNOSTIC_PROVIDER_FAMILIES` 在 line 436 被 `validateEnum`
+**运行时**使用，`import type` 给不了值。取真值就要真依赖，而 contracts 依赖 zod
+——sandbox-core 的零运行时依赖当场失效。**零依赖是第三方能实现 provider 的前提，
+为一个四成员数组放弃它，代价不对等。**
+
+改为保留副本 + 一道断言「它 == contracts 成员集 + `'unknown'`」的闸门，模板是
+现成的 `provider-contract-parity-check.mjs`。多出的 `'unknown'` 本就该是显式扩展
+（contracts 侧 `z.enum([...SANDBOX_PROVIDER_FAMILIES, 'unknown'])` 已经这么写），
+闸门正好把它钉住。
+
+**不并入的**：`host-harness/config.ts` 的 `'auto' | 'aio' | 'boxlite' | 'control-plane'`
+和 `provider-terminal-story.ts` 的 `'auto' | 'aio' | 'boxlite'` 是**操作员配置取值**，
+不是 provider family 本身（前者有 `control-plane`、没 `cloud-http`）。它们是别的东西。
 
 ### D7 — 总仓只读铁律
 
@@ -196,11 +312,73 @@ cap  （上游总仓 —— 治理 + 验证 + 钉版，不含可编辑代码）
 
 ### Phase 1 — 契约仓化（不动仓库结构）
 
-- **D6：12 个 api-only 模块并回 `apps/api`**，`packages/contracts` 收敛到
-  9,280 行纯共享。
+> **D6 的前提已被实测推翻。** 那个「12 个模块 / 1,472 行」是按**直接 import**
+> 统计的。改按**传递可达**重算（从 web / sandbox / hooks 的导入符号出发，
+> 沿契约包内部依赖闭包）：
+>
+> ```
+> web/sandbox/hooks 可达   36 模块 / 10,104 行   ← 真共享（92%）
+> 仅 api 可达               3 模块 /    648 行   ← 真可搬
+> 谁都不可达                4 模块 /    138 行   ← 死代码
+> ```
+>
+> 差异来自传递共享。典型是 `v1`：web 不 import 它，但 web 消费的
+> `public-v1-operations`（API playground 的操作目录）用 `v1` 的 schema 构造
+> `SchemaPair`。同理 `provider-family` ← `sandbox-environment`、
+> `artifact-checksum` ← `runtime-model`。**「api 独占」量的是直接 import，
+> 不是可分离性。**
+>
+> 真正可搬的三个：`task-model-capability`(265) · `task-admission-capability`(243)
+> · `mcp-token`(140)。
+
+> **范围也随之变了。** Phase 1 原本写的是「搬 12 个模块」，实测后是「搬 3 个」；
+> 但 §2.4b 的审计说明真正的工作根本不在搬运，而在**折叠 13 处重复**——那才是
+> 让「contracts 里的一切都真正共享」这句话成立的东西。
+
+#### 1a. 折叠重复（主体工作）
+
+- **13 个 DUPLICATE 收敛到契约。其中 8 个是一行 import 的事**，且所在文件或其
+  同目录兄弟本来就在 import contracts：`ExecutionMode`、`RuntimeReadiness`(api 侧)、
+  `ApiKeyListItem`、`SmtpConfigRead`、`SaveSmtpConfigRequest`、
+  `TestSmtpConfigRequest`、`TestSmtpConfigResponse`、`ModelDiscoveryErrorCode`。
+- **5 个不是**：`SandboxMode`、`SandboxEnvironmentStatus`、
+  `SandboxEnvironmentParameter`、`SandboxEnvironmentValidationProbe`，加两个
+  DIVERGENT 的 sandbox 词汇表。它们卡在硬边界上，见 D14。
+- **顺序铁律：先折叠，再重跑可达性测量，最后才删死模块。** `runtime.ts` 和
+  `sandbox.ts` 之所以死，正是因为消费者重声明了它；先删等于把重复合法化，
+  同一形状会以第三个名字重新长出来（`AdminRevealCredentials`、`McpTokenScope`
+  已是先例）。折叠后的死模块名单大概率不是现在这 4 个。
+- **5 个 DERIVED 不是缺陷**，但其中 3 个是过期脚手架（`CreateTaskBody` 的交集
+  已被证明是 no-op、`Scope` 私有别名旁边的兄弟文件就是直接 import、
+  `sandboxProviderLabel` 只是同名遮蔽），清掉零成本且能降低下次扫描的噪声。
+  `RuntimeModelPreflightError`（COLLISION）契约侧那对别名是纯死代码，直接删。
+
+#### 1b. 搬运与清理
+
+- **搬 3 个模块 / 648 行回 `apps/api`**：`task-model-capability`、
+  `task-admission-capability`、`mcp-token`。
+- 在 1a 之后重跑传递可达测量，按新结果决定删哪些死模块。
+
+#### 1c. 发布链路
+
 - `packages/contracts` 具备独立发布能力：release-please + `npm publish` 到
   npmjs 公开，scope `@cap-console`（D12，已注册）。
+- 翻 `private: true`、给出第一个版本号。
+- **`zod` 改为 `peerDependency`**：契约是 ESM、api 是 CJS，`require('zod')` 解析到
+  的是**另一个 class realm**（`zod-instance.ts` 已为此存在）。今天两边指向同一份
+  物理 zod 靠的是 pnpm workspace；发布后 `dependencies` 会让消费者装独立副本，
+  **版本错配叠加在 realm 错配之上**。工作区里现已有三份 zod（3.22.3 / 3.25.76 / 4.4.3）。
+- release-please 现在只管根包一个（`packages: {".": …}`）。contracts 要独立版本线
+  就要改多包 manifest，而这**直接冲击 D5「版本号 = 总仓 tag」**——contracts 的版本
+  与平台版本是什么关系，必须在这里定。
 - 消费方暂时仍走 `workspace:*`，但**发布流程先跑通并发出第一个版本**。
+
+#### 1d. 新增一条机械闸门
+
+- **`packages/contracts` 中零 importer 的导出应当使构建失败。** 这条规则字面上
+  就是「contracts 里的一切都真正共享」。审计证明现有闸门（`turbo typecheck lint`、
+  contracts 单测、package-boundary 测试、`provider-contract-parity-check.mjs`）
+  在至少一对重复上全部漏检。
 
 > 关键：这一阶段结束时，`@cap-console/contracts` 已是一个真实的公开 npm 包，
 > 但仓库结构一行未动。可独立回滚。
@@ -215,6 +393,30 @@ cap  （上游总仓 —— 治理 + 验证 + 钉版，不含可编辑代码）
 - web 构建期把契约版本编译进产物；REST 请求头 + WS connect 帧携带；
   api 校验，不兼容则 fail closed。
 - WS 侧尤其重要 —— §2.3 那 1,010 行帧协议是最脆的一环。
+
+#### 「何为 COMPATIBLE」——§2.4b 的审计直接给出五条输入
+
+这是 Phase 1 必须先于 Phase 2 的原因：**没有这份清单，闸门只能先猜一个规则，
+再被现实一处处推翻。**
+
+1. **封闭度规则必须区分方向和位置。** 请求体上词汇表应封闭（api 拒绝未知成员），
+   响应体上必须容忍未知成员。**今天控制台做的恰好相反**——它对响应跑
+   `SandboxEnvironmentResponseSchema.parse`，而该 schema 内含
+   `SandboxEnvironmentStatusSchema` 和 `SandboxEnvironmentProviderFamilySchema`
+   两个封闭 enum。**这使 api 侧任何一次词汇表新增在今天都是破坏性变更。**
+   而同一个仓的 `/runtimes` 那边，web 又刻意用 `id: string` 容忍未知——
+   **两种相反的兼容策略并存，都没写下来。**
+2. **「缺席」必须可表达。** `AdminRevealResponse` 的契约只有成功臂，而 api 真实
+   返回的 `{}` 是生产环境的多数路径。照直 `parse` 的消费者会在**第一次之后的
+   每一次调用**上抛异常，且是在运维唯一的 bootstrap 通道上。
+3. **闸门只管过线的类型。** `PendingApproval` 本地那份带活闭包
+   `reply?: (frame) => void`，永远不可能上线。把它纳入只会产生噪声，
+   训练人忽略告警。
+4. **比信封，不只比条目。** 已发生的漂移是 `z.array(…)` vs `{ runtimes: [...] }`
+   ——逐条目比较会判它们完全一致。
+5. **静态类型闸门在 cast 处失明。** 审计点出至少 7 处抹掉词汇表的 cast
+   （`sandbox-environments.service.ts:398/412/550/552`、`task-response.ts:286/288`
+   的 `as never`）。任何「信 tsc」的兼容性检查在这些点等于没有。
 
 ### Phase 3 — 物理拆分
 
