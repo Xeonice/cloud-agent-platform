@@ -2,5 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nitro",
   "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
-  "buildCommand": "cd ../.. && pnpm turbo build --filter=./apps/web --env-mode=loose"
+  "buildCommand": "cd ../.. && pnpm turbo build --filter=./apps/web --env-mode=loose",
+  "git": {
+    "deploymentEnabled": {
+      "main": false
+    }
+  }
 }

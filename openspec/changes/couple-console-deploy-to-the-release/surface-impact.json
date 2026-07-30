@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "couple-console-deploy-to-the-release",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "No /v1 operation, request or response schema, status code or error body moves, and no file under apps/api/src/v1/ or packages/contracts/src/public-v1-operations.ts is touched. The build-identity check is a console-to-api concern: /v1 is reached by machine credentials (api keys, MCP tokens) that carry no console build, so the check does not apply to it and must not be wired into it — an api-key caller has no version to present and refusing it would break every programmatic client."
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "No MCP tool, argument, result shape, registration or transport behaviour changes, and no file under apps/api/src/mcp/ is touched. Like /v1, the MCP surface is reached by a token rather than by the console, so it carries no build identity and is outside the check."
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "The document projects the operation registry, which this change does not modify. The build-identity field rides the console's own REST calls and the WS connect frame, neither of which the registry describes."
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "The playground builds from the shared PUBLIC_V1_OPERATIONS manifest, untouched, and exercises /v1 with a signed key rather than a console session. Inherited from openapi and publicV1 above."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "console-api-build-identity",
+      "reason": "The console attaches its baked build identity to its REST requests and to the WebSocket connect frame, and the api refuses a request or connection whose identity differs from its own release version, or which presents the build-time sentinel. Additive on both transports — ConnectAuthFrameSchema is a non-strict z.object, so an api built before this ignores the added field rather than rejecting the frame — and rolled out read-first, send-second, refuse-last so no step refuses traffic the deployed console cannot yet satisfy. Deployment wiring changes with it: Vercel's git-driven production deploy is disabled for the default branch (pull-request previews unaffected) and release.yml gains a job publishing the console at the release version, making the release the only path by which a production console ships."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": true
+  }
+}

@@ -17,6 +17,28 @@
 # surfaced as overridable build-args here but DEFAULTS to the pinned values in
 # docker/aio-sandbox.Dockerfile (never `:latest`).
 #
+# THE RELEASE ALSO PUBLISHES THE HOSTED CONSOLE (couple-console-deploy-to-the-release).
+# Vercel's git integration used to publish it on every merge to `main`, so the
+# console was a second version of the product on its own cadence: measured at the
+# time, `main` sat 19 commits past the newest tag with 10 of them touching
+# `apps/web` or `packages/contracts`, including a wire shape that moved. That path
+# is now off (`apps/web/vercel.json` sets `git.deploymentEnabled.main = false`) and
+# `deploy-console` below replaces it. Pull-request previews are unaffected — they
+# deploy from their own branch and make no version claim.
+#
+# REQUIRED REPOSITORY SECRETS for that job. Create them BEFORE the first release
+# after this landed, or that release fails without publishing anything:
+#   gh secret set VERCEL_TOKEN      --repo Xeonice/cloud-agent-platform --body '<token>'
+#   gh secret set VERCEL_ORG_ID     --repo Xeonice/cloud-agent-platform --body '<org id>'
+#   gh secret set VERCEL_PROJECT_ID --repo Xeonice/cloud-agent-platform --body '<cap-web project id>'
+# The token comes from Vercel → Settings → Tokens; the two ids from the cap-web
+# project's settings, or from `.vercel/project.json` after a local `vercel link`.
+#
+# Learn from `release-please.yml`: a workflow that LOOKS correct is not evidence it
+# ran. That one needed a non-`GITHUB_TOKEN` PAT and silently did not fire without
+# it. So after the first release, CONFIRM a production deployment appeared —
+# `vercel ls cap-web` — rather than reading this file and assuming.
+#
 # INERT UNTIL A RELEASE IS CUT (design D3): the only triggers are
 # `release: published` and the manual `workflow_dispatch`. Merely committing or
 # pushing this file builds and pushes NOTHING — a normal push to any branch does
@@ -244,7 +266,14 @@ jobs:
   # `imagetools create` promotes the registry manifest itself instead of pulling,
   # retagging, and pushing one host platform; this preserves BoxLite's amd64/arm64
   # manifest list as well as the single-platform manifests of the other images.
-  promote-latest:
+  # Split from `promote-latest` so the console can be published BETWEEN verifying
+  # the image set and moving `latest` onto it. The two used to be one job, which
+  # put `latest` on the new images before the console existed: a console failure
+  # then left anyone pulling `latest` with new images and the previous console —
+  # the exact split-version state this coupling exists to prevent. Now a console
+  # failure leaves `latest` on the last release, so the coordinated pair stays
+  # coordinated.
+  verify-image-set:
     needs: [resolve-release, build-smoke-push-api, build-push]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -266,6 +295,34 @@ jobs:
           for image in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
             docker buildx imagetools inspect "ghcr.io/xeonice/${image}:${RELEASE_VERSION}"
           done
+
+  promote-latest:
+    # `deploy-console` is in this chain deliberately: `latest` moves only after
+    # every deployed surface of the release exists.
+    needs: [resolve-release, verify-image-set, deploy-console]
+    # A dependency that is SKIPPED skips its dependents by default, and
+    # `deploy-console` is skipped on `workflow_dispatch` (it publishes only for a
+    # real Release). Without this condition, adding the console to the chain would
+    # have silently stopped `latest` from ever moving on a dispatch run — a
+    # regression introduced by the coupling itself. So: promote when the image set
+    # verified AND the console either published or was legitimately not attempted.
+    # A console FAILURE still blocks the promote, which is the whole point.
+    if: |
+      always() &&
+      needs.verify-image-set.result == 'success' &&
+      (needs.deploy-console.result == 'success' || needs.deploy-console.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote the complete image set to latest
         env:
@@ -376,6 +433,96 @@ jobs:
             docker-compose.prod.yml docker-compose.prod.env.example \
             dist/task-model-attestation/* \
             --clobber --repo "${{ github.repository }}"
+
+  # The hosted console, published by the release and by nothing else.
+  #
+  # Vercel's git integration used to publish it on every merge to `main`, which
+  # made the console a SECOND version of the product: `apps/web/vercel.json` now
+  # sets `git.deploymentEnabled.main = false`, and this job is what replaces it.
+  # Pull-request previews are untouched — a preview deploys from its own branch,
+  # which stays enabled by default, and carries no version claim.
+  #
+  # `needs: verify-image-set`, and `promote-latest` in turn needs THIS job. So the
+  # order is build → verify → console → move `latest`. A console that fails to
+  # publish therefore leaves `latest` pointing at the previous release, where the
+  # images and the console still match, instead of at a release whose console
+  # never shipped.
+  #
+  # VITE_BUILD_ID is the same value release.yml already bakes into the cap-web
+  # IMAGE (see the build-args block above). Passing it here is what closes the gap
+  # that made `buildId()` return a real version from the image and the literal
+  # "dev" from the console anyone actually used.
+  #
+  # SECRETS: VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID are created by the
+  # operator. Without them this job fails and, by `needs`, the release reports a
+  # failure rather than quietly shipping images with a stale console.
+  deploy-console:
+    needs: [resolve-release, verify-image-set]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fail early when the deploy credentials are absent
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          # Named individually rather than as one check, because "one of three is
+          # missing" is the failure an operator has to act on and a single
+          # combined message does not say which.
+          missing=0
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "deploy-console: FATAL — repository secret ${name} is unset." >&2
+              missing=1
+            fi
+          done
+          if [[ "${missing}" -eq 1 ]]; then
+            echo "The release publishes the console; without these it cannot, and" >&2
+            echo "shipping the images alone is the split-version state this job exists" >&2
+            echo "to prevent. Create them in the repository settings and re-run." >&2
+            exit 1
+          fi
+
+      - name: Deploy the console at the release version
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          npx --yes vercel@latest pull --yes --environment=production \
+            --token "${{ secrets.VERCEL_TOKEN }}"
+          npx --yes vercel@latest build --prod \
+            --token "${{ secrets.VERCEL_TOKEN }}"
+          npx --yes vercel@latest deploy --prebuilt --prod \
+            --token "${{ secrets.VERCEL_TOKEN }}"
+        working-directory: apps/web
+
+      - name: Prove the deployed console carries the release version
+        run: |
+          set -euo pipefail
+          # The deploy reporting success is not evidence the version reached the
+          # bundle: the whole defect this change fixes was a build that succeeded
+          # while VITE_BUILD_ID silently defaulted. Assert the value is present in
+          # the built output rather than trusting the exit code.
+          expected='${{ needs.resolve-release.outputs.version }}'
+          if ! grep -rq -- "${expected}" .vercel/output 2>/dev/null; then
+            echo "deploy-console: FATAL — the release version ${expected} is not present" >&2
+            echo "in the built console output. VITE_BUILD_ID did not reach the bundle." >&2
+            exit 1
+          fi
+          echo "deploy-console: the built console carries ${expected}"
+        working-directory: apps/web
 
   attach-sandbox-image-assets:
     needs: promote-latest

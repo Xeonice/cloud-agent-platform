@@ -77,3 +77,116 @@ export function resolveVersionResponse(
     buildTime: read(VERSION_ENV_VARS.buildTime),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Console ↔ api build identity (couple-console-deploy-to-the-release)
+// ---------------------------------------------------------------------------
+
+/**
+ * The header a console attaches to every REST call, and the field it adds to the
+ * WebSocket connect frame, naming the release it was built from.
+ *
+ * Why an identity and not a compatibility negotiation: the deployment invariant
+ * is that the console and the api ship from ONE release. Under that invariant
+ * "can these two talk" is not a question with a spectrum — they are the same
+ * build or they are not, and a mismatch is a deployment defect rather than a
+ * configuration to accommodate.
+ *
+ * It exists because the invariant was not holding. The hosted console was
+ * published by a branch-tracking deploy on every merge while the api moved only
+ * at a release, so the two ran different builds for most of their lives, and a
+ * wire shape that changed in between produced an empty runtime list with nothing
+ * anywhere reporting why.
+ */
+export const CONSOLE_BUILD_ID_HEADER = 'x-cap-console-build' as const;
+
+// A `CONSOLE_BUILD_ID_ENV_VAR = 'VITE_BUILD_ID'` constant was written here and
+// removed before it shipped: nothing imported it, because the name is spelled as
+// a literal where it is actually needed — `apps/web/Dockerfile`'s ARG and
+// `vite.config.ts`'s define, neither of which can import from this package. It
+// was a fresh instance of the inline-literal restatement the previous change
+// catalogued, created by the same reflex that produced the originals. The gate
+// caught it in the same session it was written.
+
+/**
+ * The sentinel a console reports when it was built without a version.
+ *
+ * A LOCAL build legitimately has none — there is no release to name — so it keeps
+ * working. A DEPLOYED console presenting this is a deployment that never received
+ * its version, which is indistinguishable from a laptop build and is exactly how
+ * one deployment path stayed unplumbed for its whole life while the other carried
+ * a real version.
+ */
+export const CONSOLE_BUILD_ID_SENTINEL = 'dev' as const;
+
+/** What the api concluded about a presented console identity. */
+export const CONSOLE_BUILD_VERDICTS = [
+  /** Identical to the api's own version. Serve. */
+  'match',
+  /** The console named a different release. Refuse; both versions are known. */
+  'mismatch',
+  /** The console named no release, or the sentinel. Refuse; only the api's is known. */
+  'unidentified',
+  /**
+   * The api itself does not know its version — a source build with no build args.
+   * Nothing can be asserted, so nothing is refused: a gate that fires when it
+   * cannot tell is a gate that gets switched off.
+   */
+  'api-unversioned',
+] as const;
+export type ConsoleBuildVerdict = (typeof CONSOLE_BUILD_VERDICTS)[number];
+
+/**
+ * Compare a presented console identity against the api's own version.
+ *
+ * Pure, and shared by the REST guard, the WebSocket connect path and their tests,
+ * so all three cannot disagree about what a mismatch is — the failure mode this
+ * package exists to prevent.
+ *
+ * `api-unversioned` deliberately does NOT refuse. An api built from source with
+ * no `CAP_VERSION` reports `"unknown"`, and refusing every console against it
+ * would break the ordinary development loop to enforce an invariant that only
+ * means anything between two DEPLOYED artifacts.
+ */
+export function compareConsoleBuild(input: {
+  readonly presented: string | null | undefined;
+  readonly apiVersion: string;
+}): ConsoleBuildVerdict {
+  const apiVersion = input.apiVersion.trim();
+  if (apiVersion.length === 0 || apiVersion === UNKNOWN_VERSION_VALUE) {
+    return 'api-unversioned';
+  }
+  const presented = input.presented?.trim() ?? '';
+  if (presented.length === 0 || presented === CONSOLE_BUILD_ID_SENTINEL) {
+    return 'unidentified';
+  }
+  return presented === apiVersion ? 'match' : 'mismatch';
+}
+
+/**
+ * The operator-facing explanation for a refused verdict.
+ *
+ * Names BOTH sides when both are known, because the first question anyone asks is
+ * which one is behind, and an error that does not answer it sends them to the
+ * logs of whichever service they guessed.
+ */
+export function describeConsoleBuildRefusal(input: {
+  readonly verdict: ConsoleBuildVerdict;
+  readonly presented: string | null | undefined;
+  readonly apiVersion: string;
+}): string | null {
+  if (input.verdict === 'match' || input.verdict === 'api-unversioned') {
+    return null;
+  }
+  if (input.verdict === 'mismatch') {
+    return (
+      `This console was built from ${input.presented} and the api is running ` +
+      `${input.apiVersion}. They ship from one release; upgrade whichever is behind.`
+    );
+  }
+  return (
+    `This console did not report which release it was built from, and the api is ` +
+    `running ${input.apiVersion}. A deployed console is built by the release and ` +
+    `carries its version; one that does not was published outside it.`
+  );
+}

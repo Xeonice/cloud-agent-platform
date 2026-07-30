@@ -304,26 +304,74 @@ test('non-API release images stay version-matched and BoxLite stays multi-arch',
   );
 });
 
-test('latest promotion waits for all four version images and preserves registry manifests', () => {
+// The verify and the promote used to be two steps of one job. They are two jobs
+// now, so that the console can be published BETWEEN them: a console that fails to
+// publish then leaves `latest` on the previous release, where the images and the
+// console still match, instead of on a release whose console never shipped.
+//
+// The property these cases protect is unchanged — every version image is proven
+// to exist before any `latest` moves, and the promotion only ever creates
+// manifests — so it is still asserted, now across the split rather than inside
+// one job. The earlier single-job assertion was pinning the implementation; this
+// pins the property.
+const IMAGE_SET = 'cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox';
+
+test('every version image is proven to exist before any latest moves', () => {
+  const verify = workflowJob('verify-image-set');
+  assert.match(
+    verify,
+    /^    needs: \[resolve-release, build-smoke-push-api, build-push\]$/mu,
+  );
+  assert.match(verify, /^    timeout-minutes: 15$/mu);
+  assert.match(verify, /uses: docker\/setup-buildx-action@v3/u);
+  assert.match(verify, /uses: docker\/login-action@v3/u);
+  assert.equal(verify.match(new RegExp(`for image in ${IMAGE_SET}`, 'gu'))?.length, 1);
+  assert.match(verify, /docker buildx imagetools inspect/u);
+  // The verify job must not promote — that is the whole point of the split.
+  assert.doesNotMatch(verify, /docker buildx imagetools create/u);
+});
+
+test('latest promotion waits for the verified set AND the published console', () => {
   const promotion = workflowJob('promote-latest');
   assert.match(
     promotion,
-    /^    needs: \[resolve-release, build-smoke-push-api, build-push\]$/mu,
+    /^    needs: \[resolve-release, verify-image-set, deploy-console\]$/mu,
   );
   assert.match(promotion, /^    timeout-minutes: 15$/mu);
   assert.match(promotion, /uses: docker\/setup-buildx-action@v3/u);
   assert.match(promotion, /uses: docker\/login-action@v3/u);
 
-  const images = 'cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox';
-  assert.equal(promotion.match(new RegExp(`for image in ${images}`, 'gu'))?.length, 2);
-  const inspect = promotion.indexOf('docker buildx imagetools inspect');
-  const promote = promotion.indexOf('docker buildx imagetools create');
-  assert.ok(inspect >= 0 && promote > inspect);
+  // A SKIPPED console (workflow_dispatch, where the console job does not run) must
+  // still let `latest` move; a FAILED one must not. Without this condition the
+  // coupling would have silently stopped dispatch runs from ever promoting,
+  // because a skipped dependency skips its dependents.
+  assert.match(promotion, /needs\.deploy-console\.result == 'success'/u);
+  assert.match(promotion, /needs\.deploy-console\.result == 'skipped'/u);
+  assert.doesNotMatch(promotion, /needs\.deploy-console\.result == 'failure'/u);
+
+  assert.equal(promotion.match(new RegExp(`for image in ${IMAGE_SET}`, 'gu'))?.length, 1);
   assert.match(
     promotion,
     /docker buildx imagetools create[\s\S]*--tag "ghcr\.io\/xeonice\/\$\{image\}:latest"[\s\S]*"ghcr\.io\/xeonice\/\$\{image\}:\$\{RELEASE_VERSION\}"/u,
   );
   assert.doesNotMatch(promotion, /\bdocker (?:pull|tag|push)\b/u);
+});
+
+test('the release publishes the console, and only for a real Release', () => {
+  const console_ = workflowJob('deploy-console');
+  assert.match(console_, /^    needs: \[resolve-release, verify-image-set\]$/mu);
+  assert.match(console_, /^    if: github\.event_name == 'release'$/mu);
+  // The release version must reach the console build, or the console ships
+  // carrying the sentinel — the exact gap this job exists to close.
+  assert.match(console_, /VITE_BUILD_ID/u);
+  // And the deploy succeeding is not evidence the value arrived: assert it is in
+  // the built output rather than trusting the exit code.
+  assert.match(console_, /\.vercel\/output/u);
+  // All three secrets are checked by name, so "one of three is missing" names
+  // which one.
+  for (const secret of ['VERCEL_TOKEN', 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID']) {
+    assert.match(console_, new RegExp(secret, 'u'));
+  }
 });
 
 test('deployable Release assets wait for the complete-set latest promotion gate', () => {
