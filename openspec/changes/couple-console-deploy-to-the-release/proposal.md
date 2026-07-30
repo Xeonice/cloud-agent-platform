@@ -43,7 +43,7 @@ has **zero callers**.
   `VITE_BUILD_ID`. Preview deployments on pull requests are untouched — they are
   not production and never were.
 - **The console tells the api which build it is**, on the REST path and on the
-  WebSocket connect frame, and the api compares it against its own version.
+  WebSocket handshake, and the api compares it against its own version.
 - **BREAKING (deployment, not wire)**: a mismatch fails closed. Under the
   invariant this change exists to establish — the two sides move together or not
   at all — a mismatch is a deployment defect, not a supported configuration, and
@@ -77,11 +77,11 @@ deploy), `.github/workflows/release.yml` (one job publishing the console),
 plus the org/project ids — which the operator creates; this change writes only the
 workflow that consumes it.
 
-**Code, narrowly.** The console attaches its build id to REST requests and the WS
-connect frame; the api compares and rejects a mismatch. `ConnectAuthFrameSchema`
-is a non-strict `z.object`, so an older api ignores the added field rather than
-rejecting the frame — the compatibility direction that matters while this is
-rolling out.
+**Code, narrowly.** The console attaches its build id to REST requests and to the
+WebSocket handshake URL — the same channel it already uses for the token, because
+it does not send a connect frame at all — and the api compares and rejects a
+mismatch. An api that does not read the added header or parameter ignores both,
+which is the compatibility direction that matters while this rolls out.
 
 **Verification.** The claim is that a production console can no longer ship
 outside a release. That is proved by observing a merge to `main` produce no

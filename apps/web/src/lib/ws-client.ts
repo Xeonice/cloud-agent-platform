@@ -16,6 +16,7 @@
  * control frames are dispatched by `type`.
  */
 import {
+  CONSOLE_BUILD_ID_QUERY_PARAM,
   WsFrameSchema,
   FRAME_CHANNEL,
   type ControlFrame,
@@ -33,7 +34,7 @@ import {
   TERMINAL_PROTOCOL_VERSION,
   createCurrentTerminalAttachFrame,
 } from "@cap-console/contracts";
-import { wsUrl, operatorToken } from "./config";
+import { wsUrl, operatorToken, buildId } from "./config";
 
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
@@ -135,6 +136,11 @@ export class TerminalSocket {
     const url = new URL(`${base}/terminal`);
     url.searchParams.set("taskId", this.taskId);
     if (token) url.searchParams.set("token", token);
+    // Which release this console was built from, on the same channel as the
+    // token: the handshake URL. The api compares it against its own and refuses a
+    // mismatch — the two ship from ONE release. An api that does not read this
+    // parameter ignores it, so the console is safe to ship first.
+    url.searchParams.set(CONSOLE_BUILD_ID_QUERY_PARAM, buildId());
 
     // Carry the token in a subprotocol as well; the orchestrator accepts either.
     const protocols = token ? [`bearer.${token}`] : undefined;

@@ -100,6 +100,17 @@ export function resolveVersionResponse(
  */
 export const CONSOLE_BUILD_ID_HEADER = 'x-cap-console-build' as const;
 
+/**
+ * The WebSocket handshake query parameter carrying the same identity.
+ *
+ * A query parameter rather than a field on the connect frame, because the console
+ * does not send `ConnectAuthFrame` at all — it presents its credentials on the
+ * handshake URL and in a subprotocol, exactly as it does for the token. An api
+ * that does not read this parameter ignores it, which is what makes the console
+ * safe to ship before the api learns to compare.
+ */
+export const CONSOLE_BUILD_ID_QUERY_PARAM = 'consoleBuild' as const;
+
 // A `CONSOLE_BUILD_ID_ENV_VAR = 'VITE_BUILD_ID'` constant was written here and
 // removed before it shipped: nothing imported it, because the name is spelled as
 // a literal where it is actually needed — `apps/web/Dockerfile`'s ARG and

@@ -35,8 +35,8 @@ the images alone. Half a release is the state this requirement exists to prevent
 ### Requirement: The console SHALL present its build identity and the api SHALL refuse a mismatch
 
 The console SHALL send its baked build identity to the api on both transports it
-uses — the REST path and the WebSocket connect frame — and the api SHALL compare
-that identity against its own release version.
+uses — the REST path and the WebSocket handshake — and the api SHALL compare that
+identity against its own release version.
 
 A mismatch SHALL be refused rather than served. Under the deployment invariant this
 capability establishes, the two sides move together or not at all, so a mismatch is
@@ -70,7 +70,8 @@ yet read it ignores the field rather than rejecting the message.
 
 - **WHEN** a console that sends the identity talks to an api built before the api
   read it
-- **THEN** the api ignores the added field rather than rejecting the message
+- **THEN** the api ignores the added header and the added handshake parameter
+  rather than rejecting the request or the connection
 
 ## MODIFIED Requirements
 

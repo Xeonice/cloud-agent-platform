@@ -383,40 +383,48 @@ cap  （上游总仓 —— 治理 + 验证 + 钉版，不含可编辑代码）
 > 关键：这一阶段结束时，`@cap-console/contracts` 已是一个真实的公开 npm 包，
 > 但仓库结构一行未动。可独立回滚。
 
-### Phase 2 — 版本偏移闸门（必须在物理拆分之前）
+### Phase 2 — 一次发版协调所有已部署面（原「版本偏移闸门」，已改写）
 
-拆分瞬间，「线上 api 与线上 web 契约一致」这个**结构保证**就消失了。
-闸门必须先于拆分落地并验证，否则会有一段无保护的窗口。
+**原文说：拆分瞬间，「线上 api 与线上 web 契约一致」这个结构保证就消失了。测量之后
+这句话不成立。** 那个保证不来自单仓，来自**协调发布**——一个 tag、一个 commit、四个
+镜像，`docker-compose.prod.yml` 用同一个 `${CAP_VERSION}` 钉住 api 与 web。拆仓不会
+拿走它：D5 的总仓 tag 继续协调，同栈自托管依然无法偏移。
 
-- 复用 `task-admission-v2` / `task-model-capability` 那套 deployment-capability
-  attestation（已在生产验证）。
-- web 构建期把契约版本编译进产物；REST 请求头 + WS connect 帧携带；
-  api 校验，不兼容则 fail closed。
-- WS 侧尤其重要 —— §2.3 那 1,010 行帧协议是最脆的一环。
+**真正拿走它的是第二条部署通道。** Vercel 的 git 集成让 `cap-console.douglasdong.com`
+在每次合并 `main` 时上线，绕过 release.yml、绕过 tag、绕过 `CAP_VERSION`。实测（`83bb319`）：
+最新 tag `v0.46.1`，`main` 领先 19 个提交，其中 10 个动过 `apps/web` 或 `packages/contracts`，
+包含一次线上形状变更。**所以偏移不是拆分带来的未来风险，是当时就在跑的现状。**
 
-#### 「何为 COMPATIBLE」——§2.4b 的审计直接给出五条输入
+于是这一阶段做的不是"建一个兼容性协商闸门"，而是两件更小的事，见 change
+`couple-console-deploy-to-the-release`：
 
-这是 Phase 1 必须先于 Phase 2 的原因：**没有这份清单，闸门只能先猜一个规则，
-再被现实一处处推翻。**
+1. **关掉旁路**（`apps/web/vercel.json` 的 `git.deploymentEnabled.main = false`），
+   由 `release.yml` 的 `deploy-console` job 在镜像集验证之后发布 console。
+   顺序是 build → verify → console → 移 `latest`，所以 console 发布失败时 `latest`
+   停在上一个发版，那里两边仍然匹配。
+2. **断言不变量**：console 把它的构建版本带在 REST 头与 WS 握手参数上，api 与自己的
+   `CAP_VERSION` 比较，不等即拒。默认开启，`CAP_CONSOLE_BUILD_ENFORCED=0` 是恢复用的
+   逃生口而不是开关。
 
-1. **封闭度规则必须区分方向和位置。** 请求体上词汇表应封闭（api 拒绝未知成员），
-   响应体上必须容忍未知成员。**今天控制台做的恰好相反**——它对响应跑
-   `SandboxEnvironmentResponseSchema.parse`，而该 schema 内含
-   `SandboxEnvironmentStatusSchema` 和 `SandboxEnvironmentProviderFamilySchema`
-   两个封闭 enum。**这使 api 侧任何一次词汇表新增在今天都是破坏性变更。**
-   而同一个仓的 `/runtimes` 那边，web 又刻意用 `id: string` 容忍未知——
-   **两种相反的兼容策略并存，都没写下来。**
-2. **「缺席」必须可表达。** `AdminRevealResponse` 的契约只有成功臂，而 api 真实
-   返回的 `{}` 是生产环境的多数路径。照直 `parse` 的消费者会在**第一次之后的
-   每一次调用**上抛异常，且是在运维唯一的 bootstrap 通道上。
-3. **闸门只管过线的类型。** `PendingApproval` 本地那份带活闭包
-   `reply?: (frame) => void`，永远不可能上线。把它纳入只会产生噪声，
-   训练人忽略告警。
-4. **比信封，不只比条目。** 已发生的漂移是 `z.array(…)` vs `{ runtimes: [...] }`
-   ——逐条目比较会判它们完全一致。
-5. **静态类型闸门在 cast 处失明。** 审计点出至少 7 处抹掉词汇表的 cast
-   （`sandbox-environments.service.ts:398/412/550/552`、`task-response.ts:286/288`
-   的 `as never`）。任何「信 tsc」的兼容性检查在这些点等于没有。
+#### 「何为 COMPATIBLE」那五条输入 —— 已被取代，不是被实现
+
+审计当年给的五条，是为"两侧可能不兼容、需要判定"这个框架服务的。既然不变量是
+**两侧是同一次构建**，这个判定就不存在了——比的是身份，一个值，没有谱系。
+
+各自的下落：
+
+- **② 「缺席」必须可表达**（`AdminRevealResponse` 只有成功臂）—— **是缺陷，已修**
+  （`83bb319`：契约补 union + strict 空臂，并加了出站 parse）。
+- **④ 比信封不只比条目**（`z.array` vs `{ runtimes: [...] }`）—— **是缺陷，已修**
+  （`81a115d` 收敛 `/runtimes`；`83bb319` 收敛 mcp-token 列表信封）。
+- **① 封闭度分方向和位置** —— 规则本身随判定一起取消，但它点出的**代码问题仍在**：
+  `apps/web/src/lib/api/real.ts:1322` 对响应跑 `ListSandboxEnvironmentsResponseSchema.parse`
+  这个封闭 parse。`/runtimes` 那一侧已经是派生式加宽并写进了 `monorepo-foundation` 规格。
+- **③ 闸门只管过线的类型**（`PendingApproval` 的活闭包）—— 不再需要，闸门不看类型。
+- **⑤ 静态类型闸门在 cast 处失明** —— 规则不再需要，**代码问题仍在**：生产文件里约 11 处
+  `as never`，集中在 `task-response.ts` 与 `sandbox-environments.service.ts`。
+
+①⑤ 剩下的部分是**代码质量**，不再是闸门输入。
 
 ### Phase 3 — 物理拆分
 

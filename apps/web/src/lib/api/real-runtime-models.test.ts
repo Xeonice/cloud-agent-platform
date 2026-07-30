@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../config", () => ({
+  // The console reports which release it was built from on every call; a mock
+  // that omits it makes the module look like it lost an export.
+  buildId: () => "test-build",
   apiBaseUrl: () => "http://api.test",
   operatorToken: () => undefined,
 }));
@@ -66,7 +69,7 @@ describe("queryRuntimeModels", () => {
       expect.objectContaining({
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
       }),
     );

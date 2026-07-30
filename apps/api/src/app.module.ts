@@ -40,6 +40,7 @@ import { SandboxEnvironmentsModule } from './sandbox-environments/sandbox-enviro
 import { ScheduledTasksModule } from './scheduled-tasks/scheduled-tasks.module';
 import { RuntimeModelsModule } from './runtime-models/runtime-models.module';
 import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnostics/task-provisioning-diagnostics.module';
+import { ConsoleBuildGuard } from './auth/console-build.guard';
 
 /**
  * Root application module.
@@ -214,6 +215,15 @@ import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnosti
     // `onModuleInit`) so it enforces ONLY the per-principal per-request cap —
     // leaving the stricter `create` tier to `CreateThrottleGuard` and the anonymous
     // `auth` tier to `AuthThrottleGuard` below.
+    // couple-console-deploy-to-the-release: refuses a console that is not this
+    // api's build. Provided AFTER `AuthModule` is imported, so it runs after the
+    // auth guard and can read the principal that guard attached — it scopes
+    // itself to `session` principals, leaving api-key and MCP callers (which have
+    // no console build to present) untouched.
+    {
+      provide: APP_GUARD,
+      useClass: ConsoleBuildGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: PrincipalThrottlerGuard,

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../config", () => ({
+  // The console reports which release it was built from on every call; a mock
+  // that omits it makes the module look like it lost an export.
+  buildId: () => "test-build",
   apiBaseUrl: () => "http://api.test",
   operatorToken: () => undefined,
 }));
@@ -63,7 +66,7 @@ describe("dispatchSchedule", () => {
       expect.objectContaining({
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
         body: JSON.stringify({ expectedPeriodKey: PERIOD_KEY }),
       }),
     );
@@ -77,7 +80,11 @@ describe("dispatchSchedule", () => {
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init?.method).toBe("POST");
     expect(init?.body).toBeUndefined();
-    expect(init?.headers).toEqual({});
+    // What this case is actually about: no body means no Content-Type. It used to
+    // assert the header set was EMPTY, which pinned the absence of every header
+    // rather than the one that matters — so adding the console's build identity to
+    // every call broke it while changing nothing it was written to protect.
+    expect(init?.headers).not.toHaveProperty("Content-Type");
   });
 });
 

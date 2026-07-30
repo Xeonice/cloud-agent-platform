@@ -29,8 +29,12 @@ Constraints:
   (`vercel.json`) or a dashboard setting, not a workflow edit.
 - **`buildId()` has zero callers** (`apps/web/src/lib/config.ts:249`), which is why
   the Vercel path returning `"dev"` has never been visible.
-- **`ConnectAuthFrameSchema` is a non-strict `z.object`** — an added field is
-  ignored by an older api rather than rejected. That decides the rollout order.
+- **The console does not send `ConnectAuthFrame` at all.** It presents its
+  credentials on the handshake URL (`ws-client.ts:133-141`: a `token` query
+  parameter plus a `bearer.<token>` subprotocol) and the api reads them from the
+  URL (`terminal.gateway.ts:1045`). This was recorded here as
+  "`ConnectAuthFrameSchema` is non-strict, which decides the rollout order" —
+  wrong, and see D5 for what replaced it.
 - **`scripts/boot-smoke.sh` does not exercise this**; it probes the api alone.
 - **The operator has decided** that the release drives the console deploy (option
   B of three), and that the currently-stale host is not urgent because the stack
@@ -140,8 +144,15 @@ Step 3 is a separate flip, and it is a task in this change rather than a follow-
 because leaving it undone leaves the assertion decorative — the failure mode this
 programme has now hit three times.
 
-`ConnectAuthFrameSchema` being non-strict is what makes step 2 safe on the WS path:
-an api at step 1 ignores the added field rather than rejecting the frame.
+**Correction, found in implementation.** This design asserted that
+`ConnectAuthFrameSchema` being a non-strict `z.object` is what makes step 2 safe on
+the WS path. That reasoning is void: **the console never sends that frame.**
+`ws-client.ts:133-141` presents its credentials the way the handshake does — a
+`token` query parameter and a `bearer.<token>` subprotocol — and the api reads them
+from the URL at `terminal.gateway.ts:1045`. So the identity rides a query parameter
+on the same channel, and the safety property is simpler than the one claimed: an
+api that does not read an unknown query parameter ignores it, with no schema
+involved at all.
 
 ## Risks / Trade-offs
 

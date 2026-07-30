@@ -33,6 +33,9 @@ vi.mock("./store", () => ({
 
 // Stub config so apiBaseUrl() does not blow up in node env.
 vi.mock("./config", () => ({
+  // The console reports which release it was built from on every call; a mock
+  // that omits it makes the module look like it lost an export.
+  buildId: () => "test-build",
   apiBaseUrl: () => "http://localhost:3000",
 }));
 

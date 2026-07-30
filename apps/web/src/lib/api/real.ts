@@ -114,6 +114,7 @@ import {
   type LocalRepoImportAvailability,
   type TaskRepoCopyNotReadyError,
   type Scope,
+  CONSOLE_BUILD_ID_HEADER,
   type McpTokenListItem,
   type McpTokenListResponse,
   type SmtpConfigRead,
@@ -143,7 +144,7 @@ import {
   type ApiKeyRevokeResponse,
 } from "@cap-console/contracts";
 import type { AgentRuntimeId } from "@cap-console/contracts";
-import { apiBaseUrl, operatorToken } from "../config";
+import { apiBaseUrl, buildId, operatorToken } from "../config";
 import { getIncomingCookieHeader } from "../server-cookie";
 
 // ---------------------------------------------------------------------------
@@ -284,6 +285,16 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const token = operatorToken();
   // D12: attach the operator bearer token to every REST call (legacy path).
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  // Which release this console was built from. The api compares it against its
+  // own and refuses a mismatch, because the two ship from ONE release — see
+  // `couple-console-deploy-to-the-release`. Attached HERE rather than per-call so
+  // no request can be added later that forgets it.
+  //
+  // This is `buildId()`'s first caller. It has existed, plumbed end to end on the
+  // image path and not at all on the Vercel one, since the release pipeline was
+  // built — returning a real version from the image and the literal "dev" from
+  // the console anyone actually used, with nothing to notice the difference.
+  headers[CONSOLE_BUILD_ID_HEADER] = buildId();
   return headers;
 }
 

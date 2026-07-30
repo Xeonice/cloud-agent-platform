@@ -357,6 +357,45 @@ test('latest promotion waits for the verified set AND the published console', ()
   assert.doesNotMatch(promotion, /\bdocker (?:pull|tag|push)\b/u);
 });
 
+test('the cap-web IMAGE is built with the release version too', () => {
+  // Both deployment paths must carry the version, and only one of them had a test.
+  // If this build-arg line is ever dropped, the published cap-web image ships the
+  // sentinel silently — which is exactly how the Vercel path went unplumbed for
+  // its whole life while the image path looked fine.
+  const build = workflowJob('build-push');
+  assert.match(
+    build,
+    /VITE_BUILD_ID=\$\{\{ needs\.resolve-release\.outputs\.version \}\}/u,
+  );
+});
+
+test('the sentinel default is the one the contract refuses on', () => {
+  // Three files spell the fallback and the api refuses on it; a drift between any
+  // of them turns a refusal into a pass. Checked as text because the Dockerfile
+  // and the vite define cannot import from the contracts package — the reason a
+  // constant for it was written and deleted rather than shipped.
+  const dockerfile = readFileSync(
+    path.join(REPO_ROOT, 'apps/web/Dockerfile'),
+    'utf8',
+  );
+  const viteConfig = readFileSync(
+    path.join(REPO_ROOT, 'apps/web/vite.config.ts'),
+    'utf8',
+  );
+  const config = readFileSync(
+    path.join(REPO_ROOT, 'apps/web/src/lib/config.ts'),
+    'utf8',
+  );
+  const contracts = readFileSync(
+    path.join(REPO_ROOT, 'packages/contracts/src/version.ts'),
+    'utf8',
+  );
+  assert.match(dockerfile, /^ARG VITE_BUILD_ID=dev$/mu);
+  assert.match(viteConfig, /process\.env\.VITE_BUILD_ID \?\? "dev"/u);
+  assert.match(config, /readEnv\("VITE_BUILD_ID"\) \?\? "dev"/u);
+  assert.match(contracts, /CONSOLE_BUILD_ID_SENTINEL = 'dev'/u);
+});
+
 test('the release publishes the console, and only for a real Release', () => {
   const console_ = workflowJob('deploy-console');
   assert.match(console_, /^    needs: \[resolve-release, verify-image-set\]$/mu);
