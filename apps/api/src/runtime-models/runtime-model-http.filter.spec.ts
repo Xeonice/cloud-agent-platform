@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ArgumentsHost } from '@nestjs/common';
-import { RuntimeModelErrorSchema } from '@cap/contracts';
+import { RuntimeModelErrorSchema } from '@cap-console/contracts';
 import { RuntimeModelPreflightError } from './runtime-model-preflight.error';
 import { RuntimeModelHttpExceptionFilter } from './runtime-model-http.filter';
 

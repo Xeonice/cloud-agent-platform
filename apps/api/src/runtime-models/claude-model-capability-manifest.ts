@@ -1,5 +1,17 @@
 import { z } from 'zod';
-import { Sha256ChecksumSchema, TaskModelSelectorSchema } from '@cap/contracts';
+import {
+  Sha256ChecksumSchema,
+  TaskModelSelectorSchema,
+  type SandboxProviderFamily,
+} from '@cap-console/contracts';
+
+/**
+ * The provider seams a Claude capability manifest may attest. An explicit
+ * SUBSET of the shared provider-family declaration — see the reason recorded on
+ * `ProviderSeamSchema` in `claude-model-capability-evidence.ts`.
+ */
+const CLAUDE_MANIFEST_PROVIDER_SEAMS = ['aio', 'boxlite'] as const satisfies
+  readonly SandboxProviderFamily[];
 
 export const CLAUDE_MODEL_MANIFEST_ENV =
   'CAP_CLAUDE_MODEL_CAPABILITY_MANIFEST_JSON';
@@ -34,10 +46,15 @@ export const ClaudeModelCapabilityManifestSchema = z
                     id: TaskModelSelectorSchema,
                     displayName: z.string().trim().min(1).max(256),
                     provenance: ClaudeSelectorProvenanceSchema,
+                    // Same deliberate subset as ProviderSeamSchema in
+                    // claude-model-capability-evidence.ts — see the reason
+                    // recorded there. `satisfies` ties it to the shared
+                    // provider-family declaration so a rename cannot silently
+                    // desynchronize the two.
                     providerSeams: z
-                      .array(z.enum(['aio', 'boxlite']))
+                      .array(z.enum(CLAUDE_MANIFEST_PROVIDER_SEAMS))
                       .min(1)
-                      .max(2),
+                      .max(CLAUDE_MANIFEST_PROVIDER_SEAMS.length),
                   })
                   .strict(),
               )

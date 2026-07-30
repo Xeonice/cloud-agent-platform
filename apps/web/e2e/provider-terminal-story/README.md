@@ -5,8 +5,8 @@ production route graph.
 
 ## Commands
 
-- UI only: `pnpm --filter @cap/web provider-terminal-story:dev`
-- Verification: `pnpm --filter @cap/web test:provider-terminal-story`
+- UI only: `pnpm --filter @cap-console/web provider-terminal-story:dev`
+- Verification: `pnpm --filter @cap-console/web test:provider-terminal-story`
 
 The verification suite always checks disabled/readiness UI states with mocked API
 responses. Live provider checks are opt-in:
@@ -18,7 +18,7 @@ CAP_PROVIDER_TERMINAL_STORY_PROVIDER=boxlite \
 VITE_API_BASE_URL=http://127.0.0.1:8080 \
 VITE_WS_URL=ws://127.0.0.1:8080 \
 VITE_AUTH_TOKEN=<operator-token> \
-pnpm --filter @cap/web test:provider-terminal-story
+pnpm --filter @cap-console/web test:provider-terminal-story
 ```
 
 An independent canary that already registered a real task/owner in CAP can mount
@@ -27,7 +27,7 @@ that exact session without using the story lifecycle REST API:
 ```bash
 VITE_WS_URL=ws://127.0.0.1:8080 \
 VITE_AUTH_TOKEN=<operator-token> \
-pnpm --filter @cap/web provider-terminal-story:dev
+pnpm --filter @cap-console/web provider-terminal-story:dev
 ```
 
 Open `/?external=1&sessionId=terminal-story-<id>` (optionally add

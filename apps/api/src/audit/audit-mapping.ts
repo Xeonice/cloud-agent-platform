@@ -1,4 +1,4 @@
-import type { AuditEvent, AuditLevel, AuditQuery, TaskStatus } from '@cap/contracts';
+import type { AuditEvent, AuditLevel, AuditQuery, TaskStatus } from '@cap-console/contracts';
 
 /**
  * Pure, side-effect-free audit mapping + query-filter logic (be-audit-approvals
@@ -303,7 +303,7 @@ export function kindForStatus(status: TaskStatus): AuditEventKind | null {
  * Default cap on returned events, re-exported from contracts so the pure filter
  * and the service share one constant.
  */
-export { AUDIT_QUERY_DEFAULT_LIMIT } from '@cap/contracts';
+export { AUDIT_QUERY_DEFAULT_LIMIT } from '@cap-console/contracts';
 
 /**
  * A status lookup for the events being filtered: maps a `taskId` to that task's

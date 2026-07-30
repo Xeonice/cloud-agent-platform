@@ -28,7 +28,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpCircle, Loader2, X } from "lucide-react";
 
-import type { AuthSession, UpdateStatus } from "@cap/contracts";
+import type { AuthSession, UpdateStatus } from "@cap-console/contracts";
 import { authSessionQuery, updateStatusQuery } from "@/lib/api/queries";
 import { isCapable } from "@/lib/api/capabilities";
 import { selfUpdateMutation } from "@/lib/api/mutations";

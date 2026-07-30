@@ -5,7 +5,7 @@ import {
   TaskRepoCopyNotReadyErrorSchema,
   taskRepoCopyNotReadyMessage,
   type TaskRepoCopyBlockingStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * add-repo-content-store (D6) — task creation gates on repo-copy readiness.

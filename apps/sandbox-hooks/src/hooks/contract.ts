@@ -1,5 +1,5 @@
 /**
- * Hook-layer contract shapes — single source of truth is `@cap/contracts`.
+ * Hook-layer contract shapes — single source of truth is `@cap-console/contracts`.
  *
  * All approval/event schemas are imported directly from the authoritative
  * contracts package and re-exported so the rest of the runner codebase has a
@@ -15,7 +15,7 @@ import {
   PostToolUseReportFrameSchema,
   FileEditSchema,
   FileEditSourceSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 export {
   DecisionBehaviorSchema,
@@ -35,14 +35,14 @@ export type {
   PostToolUseReportFrame,
   FileEdit,
   FileEditSource,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * Parse and validate a decision, rejecting any `behavior` outside `allow`/`deny`.
  * Returns the parsed decision, or `null` when the input is malformed so the
  * caller can refrain from emitting anything to Codex.
  */
-export function parseDecision(input: unknown): import('@cap/contracts').Decision | null {
+export function parseDecision(input: unknown): import('@cap-console/contracts').Decision | null {
   const result = DecisionSchema.safeParse(input);
   return result.success ? result.data : null;
 }

@@ -7,8 +7,8 @@ import { GithubReposClient } from './github-repos.client';
 import { LocalRepoImportService } from './local-import.service';
 import { RepoCopyController } from './repo-copy.controller';
 import { RepoCopyService } from './repo-copy.service';
-import { ForgeModule } from '../forge/forge.module';
-import { RepoStoreModule } from '../repo-store/repo-store.module';
+import { ForgeModule } from '@/forge/forge.module';
+import { RepoStoreModule } from '@/repo-store/repo-store.module';
 
 /**
  * Feature module bundling the repos REST controllers and their services. Relies

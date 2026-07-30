@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { useQuery } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
-import { RuntimeModelCatalogQuerySchema } from "@cap/contracts";
+import { RuntimeModelCatalogQuerySchema } from "@cap-console/contracts";
 import {
   ENVIRONMENT_DEFAULT,
   ENVIRONMENT_SERVER_DEFAULT,

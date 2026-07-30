@@ -11,7 +11,7 @@
  * Exhaustive over the contract `TaskStatus` union so a future status added to the
  * contract fails the build here. Pure + deterministic — SSR-safe.
  */
-import type { TaskStatus } from "@cap/contracts";
+import type { TaskStatus } from "@cap-console/contracts";
 
 import type { StatusPillVariant } from "@/components/status-pill";
 

@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { ServiceUnavailableException } from '@nestjs/common';
 
 import { McpTokensService } from './mcp-tokens.service';
-import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
+import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 // The account primary key is the per-account scope key for BOTH a GitHub account
 // (githubId present) and a LOCAL account (githubId null) — the service only ever

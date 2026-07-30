@@ -11,7 +11,7 @@ import {
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningStage,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
@@ -20,26 +20,26 @@ import {
   type SandboxConnection,
   type SandboxProvisionContext,
   type SelectedSandboxRun,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
-import { AuditService } from '../audit/audit.service';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
+import { AuditService } from '@/audit/audit.service';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   GuardrailsService,
   type GuardrailsConfig,
   type ITerminalGateway,
-} from '../guardrails/guardrails.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { FencedTaskAdmissionProcessor } from '../task-admission/fenced-task-admission.processor';
+} from '@/guardrails/guardrails.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
   TaskAdmissionScheduler,
   type TaskAdmissionTimer,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionLeaseLostError,
@@ -55,8 +55,8 @@ import {
   type TaskAdmissionSettleRequest,
   type TaskAdmissionTerminalFailure,
   type TaskAdmissionTerminalRecovery,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
 import type {
   AppendedTaskProvisioningDiagnosticEvent,
   BeginTaskProvisioningDiagnosticAttempt,
@@ -66,12 +66,12 @@ import type {
   TaskProvisioningDiagnosticAttemptContext,
   TaskProvisioningDiagnosticRecorderPort,
   TaskProvisioningDiagnosticRecorderResult,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import {
   deriveTaskDiagnosticCoverage,
   hasCompleteEventInvariants,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';

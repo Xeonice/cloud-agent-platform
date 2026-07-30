@@ -6,13 +6,13 @@ import {
   isTaskProvisioningProgressEmissionOpen,
   type TaskProvisioningSummary,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   triageParkedAdmissionMarkers,
-} from '../task-admission/fenced-task-admission.processor';
-import type { TaskAdmissionCancellationPort } from '../task-admission/task-admission.types';
-import type { PrismaService } from '../prisma/prisma.service';
-import { IllegalTaskTransitionError } from './task-lifecycle';
+} from '@/task-admission/fenced-task-admission.processor';
+import type { TaskAdmissionCancellationPort } from '@/admission-coordination/task-admission.types';
+import type { PrismaService } from '@/prisma/prisma.service';
+import { IllegalTaskTransitionError } from '@/task-lifecycle/task-lifecycle';
 import {
   taskProvisioningSummary,
   taskResponseFromRecord,

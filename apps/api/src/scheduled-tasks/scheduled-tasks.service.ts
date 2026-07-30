@@ -25,14 +25,14 @@ import {
   type ScheduleRunResponse,
   type ScheduleTaskTemplate,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
-import { PrismaService } from '../prisma/prisma.service';
-import { TasksService } from '../tasks/tasks.service';
-import { taskFailureFromRecord } from '../tasks/task-failure';
-import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { PrismaService } from '@/prisma/prisma.service';
+import { TasksService } from '@/tasks/tasks.service';
+import { taskFailureFromRecord } from '@/task-failure/task-failure';
+import type { PreparedTaskCreate } from '@/tasks/prepared-task-create';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 
 const ACTIVE_TASK_STATUSES = [
   'pending',

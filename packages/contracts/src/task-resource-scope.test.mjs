@@ -6,7 +6,7 @@
  * carries the container figure + null background; `not-running` still parses; and
  * the aggregate `/metrics` block (container samples) is unaffected.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node task-resource-scope.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node task-resource-scope.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

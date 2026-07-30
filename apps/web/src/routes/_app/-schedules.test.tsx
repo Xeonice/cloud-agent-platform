@@ -5,7 +5,7 @@ import {
   ScheduleResponseSchema,
   type ScheduleResponse,
   type ScheduleRunResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 vi.mock("@tanstack/react-router", async () => {
   const ReactModule = await import("react");

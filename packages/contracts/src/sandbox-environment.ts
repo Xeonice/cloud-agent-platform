@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { Sha256ChecksumSchema } from './artifact-checksum.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
+import { SANDBOX_PROVIDER_FAMILIES } from './provider-family.js';
 
 export const SandboxEnvironmentStatusSchema = z.enum([
   'draft',
@@ -14,11 +15,9 @@ export type SandboxEnvironmentStatus = z.infer<
   typeof SandboxEnvironmentStatusSchema
 >;
 
-export const SandboxEnvironmentProviderFamilySchema = z.enum([
-  'aio',
-  'boxlite',
-  'cloud-http',
-]);
+export const SandboxEnvironmentProviderFamilySchema = z.enum(
+  SANDBOX_PROVIDER_FAMILIES,
+);
 export type SandboxEnvironmentProviderFamily = z.infer<
   typeof SandboxEnvironmentProviderFamilySchema
 >;

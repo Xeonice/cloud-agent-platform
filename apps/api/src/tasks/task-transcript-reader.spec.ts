@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
 import {
   readTaskTranscript,
   type AuditTimelineReader,
@@ -87,6 +87,23 @@ const audit: AuditTimelineReader = {
   ],
 };
 
+/**
+ * A registry that resolves the format from the id, exactly as the real one does
+ * by reading each runtime's declared `transcriptFormat`. Absent falls back to
+ * codex, matching `AgentRuntimeRegistry`'s documented default.
+ */
+const runtimes = {
+  resolve(runtime: 'codex' | 'claude-code' | null | undefined) {
+    const id = runtime ?? 'codex';
+    return {
+      id,
+      executionModes: new Set(['interactive-pty'] as const),
+      transcriptFormat:
+        id === 'claude-code' ? ('claude-jsonl' as const) : ('codex-rollout' as const),
+    };
+  },
+} as never;
+
 test('active tasks use the live rollout and never freeze a stale durable copy', async () => {
   const { sandbox, calls: sandboxCalls } = sandboxWith(LIVE_ROLLOUT);
   const { store, calls: storeCalls } = transcriptStore(STALE_DURABLE);
@@ -100,6 +117,7 @@ test('active tasks use the live rollout and never freeze a stale durable copy', 
       sandbox,
       transcripts: store,
       audit,
+      runtimes,
     },
     TASK_ID,
   );
@@ -132,6 +150,7 @@ test('terminal tasks are durable-first and do not touch a retained sandbox on a 
       sandbox,
       transcripts: store,
       audit,
+      runtimes,
     },
     TASK_ID,
   );
@@ -159,6 +178,7 @@ test('terminal fallback backfills once and preserves the interrupted flag', asyn
       sandbox,
       transcripts: store,
       audit,
+      runtimes,
     },
     TASK_ID,
   );

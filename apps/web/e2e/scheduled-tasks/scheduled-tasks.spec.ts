@@ -136,6 +136,10 @@ interface TickResponseWire {
 
 const API_URL = requiredUrl("E2E_API_URL");
 const CONTROL_URL = requiredUrl("E2E_CONTROL_URL");
+// The console origin the harness starts the api with (`WEB_ORIGIN`). Every
+// state-changing call below carries it, because that is what the browser this
+// suite stands in for would send — see the Origin note on `apiJson`.
+const WEB_URL = requiredUrl("E2E_WEB_URL");
 const ADMIN_EMAIL = requiredValue("E2E_ADMIN_EMAIL");
 const ADMIN_PASSWORD = requiredValue("E2E_ADMIN_PASSWORD");
 const ADMIN_NEW_PASSWORD = requiredValue("E2E_ADMIN_NEW_PASSWORD");
@@ -1058,9 +1062,17 @@ async function apiJson<T>(
   path: string,
   options: { readonly method?: string; readonly data?: JsonObject } = {},
 ): Promise<T> {
+  // Playwright's APIRequestContext sends no Origin header of its own, while a
+  // browser always sends one on an unsafe method. Since the request-boundary
+  // hardening landed, a state-changing call authenticated by session cookie is
+  // refused without a trusted origin — correctly, because treating an absent
+  // Origin as trusted would reopen the hole to any client that omits it. So this
+  // suite, which stands in for the console, sends what the console would: the
+  // origin the harness configured the api's WEB_ORIGIN with.
   const response = await request.fetch(endpoint(baseUrl, path), {
     method: options.method ?? "GET",
     data: options.data,
+    headers: { Origin: WEB_URL },
   });
   const body = await response.text();
   if (!response.ok()) {

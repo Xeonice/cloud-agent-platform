@@ -4,12 +4,12 @@ import {
   CODEX_PROMPT_FILE_PATH,
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
-} from '../terminal/codex-launch';
+} from './codex-launch';
 import {
   assertNativeCodexInteractiveLaunchArgv,
   createSandboxRuntimePrivateFile,
   DEFAULT_CODEX_INTERACTIVE_LAUNCH_ARGV,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import type {
   AgentRuntime,
   AuthMaterial,

@@ -30,6 +30,65 @@ permissions:
   contents: read
 
 jobs:
+  # Which parts of the tree a change touches. Its own job so the results are
+  # available to `needs:`, and dependency-free (a git diff, not a marketplace
+  # action) so nothing new enters the supply chain for a path check.
+  #
+  # NOT used to gate `public-surface-parity` or `typecheck + lint + test`: both
+  # are REQUIRED status checks on `main`, and a required check that is skipped
+  # rather than reported blocks a merge permanently. That is the same class of
+  # silent failure as an unconditioned job wasting minutes, in the opposite
+  # direction and worse, so those two continue to run for every change.
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `backend` is true when a change can reach the api, its Prisma schema, any
+      # workspace package it builds on, or the dependency graph itself. It is
+      # deliberately broad: a false negative silently skips a gate, while a false
+      # positive only costs the minutes the job would have taken anyway.
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
+            echo "no usable base ref; treating as backend-affecting" >&2
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "${BASE_SHA}" HEAD)"
+          echo "changed files:" >&2
+          echo "${CHANGED}" >&2
+          # Fails OPEN by construction: `backend` starts true and is lowered only
+          # on grep's exit code 1, which means a definite no-match. An error
+          # (exit >1) leaves it true, so a broken filter runs the gates rather
+          # than silently skipping them.
+          #
+          # A here-string, not a pipe. The first version of this piped into
+          # `grep -q`; CI logged `echo: write error: Broken pipe` on that line and
+          # the filter reported no backend changes for a branch that rewrites the
+          # api throughout. The exact mechanism was not reproducible locally even
+          # at the same input size, which is itself the reason the logic above no
+          # longer depends on getting it right.
+          BACKEND=true
+          set +e
+          grep -qE '^(apps/api/|packages/|scripts/|\.github/workflows/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json)' <<<"${CHANGED}"
+          MATCH_STATUS=$?
+          set -e
+          if [[ "${MATCH_STATUS}" -eq 1 ]]; then
+            BACKEND=false
+          fi
+          echo "grep exit ${MATCH_STATUS} -> backend=${BACKEND}" >&2
+          echo "backend=${BACKEND}" >> "$GITHUB_OUTPUT"
+
   # Stable merge-gating context for the shared Public V1/MCP contract. Branch
   # protection must require the exact context `public-surface-parity` after this
   # job has reported once; hooks and CI intentionally call the same root command.
@@ -65,6 +124,10 @@ jobs:
 
   task-model-n-minus-one-compat:
     name: task model N-1 compatibility
+    # Subject is api sources plus the Prisma client; unreachable from a docs- or console-only change.
+    # Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -85,12 +148,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate current Prisma client
-        run: pnpm --filter @cap/api prisma:generate
+        run: pnpm --filter @cap-console/api prisma:generate
 
       - name: Exercise pinned N-1 REST and MCP writers
         env:
           TASK_MODEL_N_MINUS_ONE_EVIDENCE: ${{ runner.temp }}/task-model-n-minus-one/evidence.json
-        run: pnpm --filter @cap/api test:compat:task-model-n-minus-one
+        run: pnpm --filter @cap-console/api test:compat:task-model-n-minus-one
 
       - name: Upload sanitized N-1 evidence
         if: always()
@@ -103,6 +166,10 @@ jobs:
 
   task-admission-migration-compatibility:
     name: task admission migration compatibility
+    # Subject is api sources plus a live database migration; unreachable from a docs- or console-only change.
+    # Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -141,12 +208,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma client
-        run: pnpm --filter @cap/api prisma:generate
+        run: pnpm --filter @cap-console/api prisma:generate
 
       - name: Task admission fresh, upgrade, and rollback compatibility
         env:
           CAP_TASK_ADMISSION_MIGRATION_TEST: "1"
-        run: pnpm --filter @cap/api test:migration:task-admission
+        run: pnpm --filter @cap-console/api test:migration:task-admission
 
   typecheck-lint:
     name: typecheck + lint + test
@@ -168,9 +235,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `turbo build` first: it generates the codegen prerequisites that `turbo
-      # typecheck` needs but does NOT itself depend on — the @cap/web route tree
-      # (TanStack Start vite plugin), the @cap/api Prisma client (its build script),
-      # and the @cap/contracts / @cap/ui dist types. Two separate invocations
+      # typecheck` needs but does NOT itself depend on — the @cap-console/web route tree
+      # (TanStack Start vite plugin), the @cap-console/api Prisma client (its build script),
+      # and the @cap-console/contracts / @cap-console/ui dist types. Two separate invocations
       # guarantee every build (hence every generated input) is done before any
       # typecheck runs.
       - name: Build + terminal response-profile source conformance
@@ -179,40 +246,108 @@ jobs:
       - name: Typecheck + lint (strict)
         run: pnpm turbo typecheck lint
 
-      # Run the @cap/api unit suite (node:test over the compiled dist spec files).
-      # Invoked directly via pnpm (NOT `turbo test`): the package's `pretest` already
-      # runs `turbo run build --filter=@cap/api`, so a `turbo test` task would nest
-      # turbo inside turbo and trip turbo 2.x's recursive-invocation guard. The build
-      # above makes the pretest build a cache hit. This is the lane the runtime-
-      # selection regression spec (and the rest of the api specs) gate in.
-      - name: Test (api unit suite)
-        run: pnpm --filter @cap/api test
+      # Every test file must be reachable by some runner. This gate compares the
+      # test files on disk against what the packages' configured patterns would
+      # execute and fails on the difference — the mechanism that stops the
+      # hand-written mounting allowlist from growing back (40 files in apps/api
+      # alone had accumulated behind it). It also self-tests, so the gate itself
+      # is provably able to fail.
+      - name: Test discovery gate
+        run: pnpm test:discovery
 
-      # Shared contracts contain production-schema boundary and cross-surface
-      # parity fixtures. Run them explicitly; API/Web suites do not discover
-      # package-local `.test.mjs` files.
-      - name: Test (shared contracts)
-        run: pnpm --filter @cap/contracts test
+      # The agent-runtime spec forbids branching on WHICH agent is running in code
+      # shared across runtimes, and asks for a grep that finds zero matches. Nobody
+      # ran that grep, so the rule depended on review from the day it was written
+      # and had drifted into 16 violations — including the two areas the
+      # requirement names by hand. This runs it. Like the discovery gate, it
+      # self-tests, so it is provably able to fail.
+      - name: Agent-identity branch gate
+        run: pnpm test:agent-identity
 
-      # Vitest is a separate package script rather than a turbo task. Keep it in
-      # the required lane so console behavior cannot pass locally but skip CI.
-      - name: Test (web unit suite)
-        run: pnpm --filter @cap/web test
+      # The provider axis: `sandbox-provider-port` requires one capability
+      # vocabulary and that a provider not advertise a capability its
+      # conformance does not exercise. Most of that is now a type problem (total
+      # mappings, one provider-family declaration). This gate covers the two
+      # parts a type cannot: no new duplicate capability spelling, and no
+      # provider suite that builds conformance outside the participation ledger.
+      - name: Provider contract parity gate
+        run: pnpm test:provider-parity
+
+      # The layout contract `monorepo-foundation` now states: package-internal
+      # imports go through the alias (814 `../` traversals made every directory
+      # unmovable), and directories do not depend on each other outside DI
+      # composition (14 pairs did). The composition exemption is about the
+      # IMPORTING file — a cycle with any ordinary-source import fails.
+      - name: API module layout gate
+        run: pnpm test:module-layout
+
+      # App suites through the task graph. Previously three hand-named `pnpm
+      # --filter` steps, which is the same allowlist failure mode one level up —
+      # a new app owning tests would simply not run here. The directory filter
+      # picks up any app that declares a `test` script.
+      #
+      # The former comment here warned that `turbo test` would nest turbo inside
+      # turbo (each package's `pretest` runs `turbo run build`) and trip the 2.x
+      # recursive-invocation guard. Re-tested on the current toolchain: the
+      # nested invocation completes normally and the outer build above makes it a
+      # cache hit. `pretest` is kept because it is what makes a direct
+      # `pnpm --filter <pkg> test` build first — turbo's graph only applies when
+      # the suite is entered through turbo.
+      #
+      # `--continue` so one failing app still reports the others; turbo prefixes
+      # every line with its package, so attribution survives.
+      - name: Test (app suites)
+        run: pnpm turbo test --filter='./apps/*' --continue
 
       # These release/install contract suites live at the repository root rather
       # than inside a workspace package. Keep them in the required lane: the
       # Release-asset packager and its quick-deploy consumer must change together.
-      - name: Test (release and install contracts)
+      # Repository-level test files — release/install contracts and the terminal
+      # canaries — live outside every workspace package. This step used to NAME
+      # eight of them, which is the hand-maintained allowlist `test-suite-discovery`
+      # forbids inside a package script, merely one level up: sixteen further test
+      # files sat beside them running nowhere, two of which had been broken since
+      # 68c0907 with nobody to notice. `test:scripts` discovers them by pattern.
+      - name: Test (repository-level scripts)
         run: |
           bash -n scripts/release.sh scripts/quick-deploy.sh scripts/scheduled-tasks-live-e2e.sh
-          node scripts/release-image-assets.test.mjs
-          node scripts/generate-task-model-attestation.test.mjs
-          node scripts/release-tail.test.mjs
-          node scripts/quick-deploy-preflight.test.mjs
-          node scripts/docker-compose.deploy-config.test.mjs
-          node --test scripts/scheduled-tasks-live-e2e.test.mjs
+          pnpm test:scripts
 
-  # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
+  # Workspace package suites. Split from the app lane so a sandbox failure is
+  # attributable on sight and cannot mask an api regression — and because these
+  # had NEVER gated a merge before: the whole sandbox family, including the
+  # provider conformance suites that are the only cross-check binding a
+  # provider's declared capabilities to its actual method surface, was reachable
+  # only through a root script that no workflow invoked.
+  #
+  # Directory filter rather than a package list: a new package that declares a
+  # `test` script joins this lane automatically, which is the failure mode this
+  # whole change exists to remove.
+  package-suites:
+    name: package suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `--continue` so one failing package still reports the rest; turbo
+      # prefixes each line with its package name, so attribution survives.
+      - name: Test (workspace packages)
+        run: pnpm turbo test --filter='./packages/*' --continue
+
+  # Boots the BUILT @cap-console/api orchestrator against a throwaway Postgres and probes
   # the unauthenticated `/health` liveness endpoint, failing the pipeline on any
   # bootstrap / DI error. A SEPARATE job (runs independently of typecheck+lint) so
   # this guard is unaffected by — and not blocked behind — the lint gate.
@@ -236,6 +371,10 @@ jobs:
   # (api-key-machine-identity Track 5), the failure class this gate guards.
   boot-smoke:
     name: boot-smoke
+    # Subject is boots the built api against a database; unreachable from a docs- or console-only change.
+    # Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
 
     # Throwaway Postgres the orchestrator's Prisma layer connects to at boot. A
@@ -281,15 +420,15 @@ jobs:
       # Build the api (and its workspace deps): produces apps/api/dist/main.js and
       # generates the Prisma client the boot needs. This is the SAME built artifact
       # the container CMD runs, so a DI break surfaces here exactly as in prod.
-      - name: Build (@cap/api + deps)
-        run: pnpm turbo build --filter=@cap/api
+      - name: Build (@cap-console/api + deps)
+        run: pnpm turbo build --filter=@cap-console/api
 
       # Prove predecessor rows survive the additive model-selection migration,
       # then reset the throwaway schema for the ordinary boot smoke below.
       - name: Task model migration compatibility
         env:
           CAP_TASK_MODEL_MIGRATION_TEST: "1"
-        run: pnpm --filter @cap/api test:migration:model
+        run: pnpm --filter @cap-console/api test:migration:model
 
       # Migrate the throwaway DB, boot the built app, probe /health. The helper
       # exits non-zero (and dumps the app log) on any migration / bootstrap / DI /
@@ -336,7 +475,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        run: pnpm --filter @cap/web exec playwright install --with-deps chromium
+        run: pnpm --filter @cap-console/web exec playwright install --with-deps chromium
 
       - name: Scheduled tasks live E2E
         timeout-minutes: 10

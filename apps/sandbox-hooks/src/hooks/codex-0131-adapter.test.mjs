@@ -14,7 +14,7 @@
  *
  * This test is dependency-free (Node built-ins only) so it runs without an
  * installed toolchain — the same convention as `http-approval-roundtrip.test.mjs`
- * (the real `permission-request.hook.ts` imports `@cap/contracts`/`zod` and so
+ * (the real `permission-request.hook.ts` imports `@cap-console/contracts`/`zod` and so
  * cannot be imported here without the transpiled build). The translation +
  * decision-emission logic below is kept in LOCK-STEP with that source.
  */

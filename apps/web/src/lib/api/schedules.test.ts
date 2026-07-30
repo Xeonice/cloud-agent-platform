@@ -5,7 +5,7 @@ import type {
   ScheduleResponse,
   ScheduleRunResponse,
   UpdateScheduleRequest,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 vi.mock("./real", () => ({
   ApiError: class ApiError extends Error {

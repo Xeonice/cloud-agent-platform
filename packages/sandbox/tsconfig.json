@@ -1,5 +1,5 @@
 {
-  "extends": "@cap/tsconfig/library.json",
+  "extends": "@cap-console/tsconfig/library.json",
   "compilerOptions": {
     "declaration": true,
     "declarationMap": true,

@@ -17,7 +17,7 @@
  * run in-process: the orchestrator must be ON cap-net (inside the compose api
  * container) to resolve the sandbox by name. Those assertions live in the
  * black-box compose suite `aio-e2e.mjs`, run via `scripts/aio-e2e.sh`
- * (pnpm --filter @cap/api test:e2e:aio).
+ * (pnpm --filter @cap-console/api test:e2e:aio).
  *
  * Prereqs: docker Postgres on :5433 with migrations applied. The `test:e2e`
  * script builds the api first.

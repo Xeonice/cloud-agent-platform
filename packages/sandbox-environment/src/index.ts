@@ -3,8 +3,8 @@ import type {
   SandboxEnvironmentSourceKind,
   SandboxResourceSnapshot,
   SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox-core';
-import { snapshotSandboxResources } from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
+import { snapshotSandboxResources } from '@cap-console/sandbox-core';
 
 export type SandboxEnvironmentStatus =
   | 'draft'

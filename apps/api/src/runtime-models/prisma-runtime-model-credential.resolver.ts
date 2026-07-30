@@ -1,8 +1,8 @@
 import { createHmac, randomBytes } from 'node:crypto';
-import { TaskModelSelectorSchema, type Runtime } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
-import { decryptStored } from '../settings/secret-storage';
+import { TaskModelSelectorSchema, type Runtime } from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
+import { assertSafeProviderUrl } from '@/settings/assert-safe-provider-url';
+import { decryptStored } from '@/crypto/secret-storage';
 import type { RuntimeModelCredentialResolver } from './runtime-model-catalog.port';
 import type {
   RuntimeModelCredentialResolution,
@@ -38,9 +38,17 @@ export class PrismaRuntimeModelCredentialResolver
     if (!ownerUserId.trim()) {
       return this.unready(ownerUserId, runtime, 'missing', undefined, 'owner');
     }
-    return runtime === 'codex'
-      ? this.resolveCodex(ownerUserId)
-      : this.resolveClaude(ownerUserId);
+    // A TOTAL mapping, not a binary branch. Each runtime names the credential
+    // store that could actually hold its secret, so adding an id is a COMPILE
+    // error here rather than a silent read against another runtime's table.
+    const byRuntime: Record<
+      Runtime,
+      (ownerUserId: string) => Promise<RuntimeModelCredentialResolution>
+    > = {
+      codex: (owner) => this.resolveCodex(owner),
+      'claude-code': (owner) => this.resolveClaude(owner),
+    };
+    return byRuntime[runtime](ownerUserId);
   }
 
   private async resolveCodex(

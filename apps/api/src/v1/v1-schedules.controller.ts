@@ -13,16 +13,16 @@ import {
   type V1ListScheduleRunsResponse,
   type V1ListSchedulesResponse,
   type V1ScheduleListQuery,
-} from '@cap/contracts';
-import { type AuthenticatedRequest } from '../auth/auth.guard';
+} from '@cap-console/contracts';
+import { type AuthenticatedRequest } from '@/auth/auth.guard';
 import { resolveLimit } from './keyset-pagination';
-import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
+import { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';
 import {
   PublicV1Controller,
   PublicV1Input,
   PublicV1Operation,
   requirePublicV1OwnerId,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 
 @PublicV1Controller('v1/schedules')
 export class V1SchedulesController {

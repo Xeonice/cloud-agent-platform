@@ -21,7 +21,7 @@ import {
   type TaskProvisioningDiagnosticsLocalRoleReport,
   type TaskProvisioningDiagnosticsRequiredCapability,
   type TaskProvisioningDiagnosticsRole,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import type { TaskProvisioningDiagnosticsCapabilityGatePort } from './task-provisioning-diagnostics-deployment-gate.port';
 

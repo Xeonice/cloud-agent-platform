@@ -27,15 +27,28 @@
  *     here (no auth-exemption), exercised end-to-end by the guard's own tests.
  *
  * Compiled WITHOUT emitDecoratorMetadata so the type-only `TasksService` import
- * elides (no need to drag in the whole service tree); `@cap/contracts` and
+ * elides (no need to drag in the whole service tree); `@cap-console/contracts` and
  * `@nestjs/common` resolve from node_modules; the value-imported port +
  * rollout-parser are compiled alongside.
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const runtimeRegistry = {
+  // Resolves the format from the id exactly as the real registry does, by
+  // reading each runtime's declared `transcriptFormat`; absent falls back to
+  // codex, matching AgentRuntimeRegistry's documented default.
+  resolve: (runtime) => ({
+    id: runtime ?? 'codex',
+    executionModes: new Set(['interactive-pty']),
+    transcriptFormat: runtime === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
+  }),
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const apiRoot = resolve(__dirname, '..', '..'); // apps/api
@@ -52,22 +65,12 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.session-history-test-'));
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      controllerSrc,
+  compileSingleSource({
+    sources: [controllerSrc,
       join(__dirname, '..', 'sandbox', 'rollout-parser.ts'),
-      join(__dirname, '..', 'sandbox', 'sandbox-provider.port.ts'),
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--experimentalDecorators', // legacy decorators (no emitDecoratorMetadata)
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+      join(__dirname, '..', 'sandbox', 'sandbox-provider.port.ts')].flat(),
+    outDir,
+  });
   const hit = findFile(outDir, 'session-history.controller.js');
   if (hit) return hit;
   throw new Error('compiled session-history.controller.js not found under ' + outDir);
@@ -182,7 +185,7 @@ async function main() {
   for (const status of ['completed', 'cancelled', 'failed']) {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts } = makeTranscripts();
-    const ctrl = new SessionHistoryController(makeTasks(status), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks(status), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', `${status} + rollout → status 'available'`);
     assert(res.meta?.taskId === TASK_ID, `${status}: meta.taskId is the requested id`);
@@ -200,7 +203,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: null /* container empty on purpose */ });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', 'durable hit → status available (parsed from the archive)');
     assert(Array.isArray(res.turns) && res.turns.length >= 1, 'durable hit: the archive parses into turns');
@@ -213,7 +216,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(), runtimeRegistry);
 
     const first = await ctrl.get(TASK_ID);
     assert(first.status === 'available', 'fallback: durable miss → container read → available');
@@ -235,7 +238,7 @@ async function main() {
       capabilities: ['terminal.websocket'],
     });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'expired', 'missing retained-read capability + no durable archive → expired (no retained source)');
     assert(tCalls.readDurable === 1, 'missing retained-read: durable store is still consulted first');
@@ -250,7 +253,7 @@ async function main() {
     // durable is SET on purpose — if the live branch wrongly consulted it, the test
     // would catch the read (readDurable === 0 below).
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('running', 'headless-exec'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('running', 'headless-exec'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', 'running headless → available parsed from the LIVE sandbox rollout');
     assert(Array.isArray(res.turns) && res.turns.length >= 1, 'running headless: the live rollout parses into turns');
@@ -263,7 +266,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: null });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('awaiting_input', 'headless-exec'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('awaiting_input', 'headless-exec'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'empty' && res.reason === 'no-rollout', 'running headless + no rollout yet → empty/no-rollout (starting, not failed)');
     assert(calls.readRollout === 1, 'running headless (no rollout): the live read was attempted');
@@ -274,7 +277,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('running', 'interactive-pty'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('running', 'interactive-pty'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', 'running interactive → available parsed from the LIVE sandbox rollout');
     assert(tCalls.readDurable === 0, 'running interactive: durable-first is SKIPPED (live read wins — no stale archive)');
@@ -286,7 +289,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('agent_failed_to_start'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('agent_failed_to_start'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'empty' && res.reason === 'agent-failed-to-start', 'agent_failed_to_start → empty/agent-failed-to-start');
     assert(calls.readRollout === 0 && calls.sandboxExists === 0, 'agent_failed_to_start: NO container is read (nothing ever existed)');
@@ -297,7 +300,7 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: null, exists: false });
     const { transcripts } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'expired', 'no durable AND no rollout AND sandbox reaped → expired (aged-out record)');
   }
@@ -306,7 +309,7 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: null, exists: true });
     const { transcripts } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('failed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('failed'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'empty' && res.reason === 'no-rollout', 'no durable + no rollout + sandbox still present → empty/no-rollout');
   }
@@ -316,7 +319,7 @@ async function main() {
     const err = Object.assign(new Error('Task not found'), { status: 404 });
     const { provider } = makeProvider({ rollout: ROLLOUT });
     const { transcripts } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks(err), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks(err), provider, transcripts, makeAudit(), runtimeRegistry);
     let threw = false;
     try { await ctrl.get('nope'); } catch (e) { threw = e === err; }
     assert(threw, 'an unknown task propagates the 404 (no fabricated transcript)');
@@ -326,7 +329,7 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: ROLLOUT });
     const { transcripts } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     const serialized = JSON.stringify(res).toLowerCase();
     assert(
@@ -350,7 +353,7 @@ async function main() {
     ];
     const { provider } = makeProvider({ rollout: null });
     const { transcripts } = makeTranscripts({ durable: TS_ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(events));
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(events), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
 
     const kinds = res.turns.map((t) => t.kind);
@@ -371,7 +374,7 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: null });
     const { transcripts } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit([], { throws: true }));
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit([], { throws: true }), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available' && res.turns.every((t) => t.kind !== 'system'), 'an audit read failure degrades to the rollout-only turns (no throw)');
   }
@@ -381,7 +384,7 @@ async function main() {
     // A pre-change archive: turns have no `at`, meta has no totals. Still valid.
     const { provider } = makeProvider({ rollout: null });
     const { transcripts } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(), runtimeRegistry);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', 'an old archive (no per-turn at / no totals) still parses to available');
     assert(res.turns.every((t) => t.at === undefined), 'old-archive turns simply carry no `at` (additive-optional, no error)');

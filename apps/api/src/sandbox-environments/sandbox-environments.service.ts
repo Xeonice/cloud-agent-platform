@@ -21,7 +21,7 @@ import {
   type SandboxEnvironmentResources,
   type SandboxEnvironmentSource,
   type SandboxEnvironmentValidation,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   assertEnvironmentSelectable,
   normalizeResolvedEnvironment,
@@ -37,10 +37,10 @@ import {
   type SandboxEnvironmentSelection,
   type ConfiguredProviderProvisioningPolicy,
   type SandboxProvisioningPolicySnapshot,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { decryptStored, encryptToStored } from '../settings/secret-storage';
+import { PrismaService } from '@/prisma/prisma.service';
+import { decryptStored, encryptToStored } from '@/crypto/secret-storage';
 import {
   DefaultSandboxEnvironmentValidationRunner,
   SANDBOX_ENVIRONMENT_VALIDATION_RUNNER,

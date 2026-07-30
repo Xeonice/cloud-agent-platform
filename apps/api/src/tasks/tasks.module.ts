@@ -1,4 +1,6 @@
 import { forwardRef, Module } from '@nestjs/common';
+
+import { TASK_OPERATIONS } from '@/task-operations/task-operations.port';
 import { TasksController } from './tasks.controller';
 import { SessionCastController } from './session-cast.controller';
 import {
@@ -6,7 +8,7 @@ import {
   TRANSCRIPT_STORE,
   AUDIT_TIMELINE_READER,
 } from './session-history.controller';
-import { AuditService } from '../audit/audit.service';
+import { AuditService } from '@/audit/audit.service';
 import { TasksService } from './tasks.service';
 import {
   GUARDRAILS_SERVICE_TOKEN,
@@ -17,17 +19,17 @@ import {
 // fail-closed gate inject the two tasks-layer tokens below; bind them to the
 // `@Global()` SandboxModule's already-exported runtime registry + claude auth
 // source so the gates actually fire (they were @Optional and unbound = dead).
-import { RUNTIME_REGISTRY, CLAUDE_AUTH_SOURCE } from '../sandbox/sandbox.module';
-import { GuardrailsModule } from '../guardrails/guardrails.module';
-import { GuardrailsService } from '../guardrails/guardrails.service';
+import { RUNTIME_REGISTRY, CLAUDE_AUTH_SOURCE } from '@/sandbox/sandbox.module';
+import { GuardrailsModule } from '@/guardrails/guardrails.module';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
 import { SessionTranscriptService } from './session-transcript.service';
-import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
-import { ForgeModule } from '../forge/forge.module';
+import { SandboxEnvironmentsModule } from '@/sandbox-environments/sandbox-environments.module';
+import { ForgeModule } from '@/forge/forge.module';
 import {
   EnvironmentTaskAdmissionGate,
   TASK_ADMISSION_GATE_TOKEN,
-} from './task-admission-gate';
-import { TaskAdmissionModule } from '../task-admission/task-admission.module';
+} from '@/task-admission/task-admission-gate';
+import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
 
 /**
  * Feature module bundling the tasks REST controller, the tasks service, and the
@@ -63,6 +65,10 @@ import { TaskAdmissionModule } from '../task-admission/task-admission.module';
   controllers: [TasksController, SessionHistoryController, SessionCastController],
   providers: [
     TasksService,
+    // Guardrails resolves the task operations it drives by TOKEN, so it never
+    // has to import this service — that import was half of the
+    // tasks<->guardrails source cycle.
+    { provide: TASK_OPERATIONS, useExisting: TasksService },
     EnvironmentTaskAdmissionGate,
     {
       provide: TASK_ADMISSION_GATE_TOKEN,
@@ -108,6 +114,6 @@ import { TaskAdmissionModule } from '../task-admission/task-admission.module';
   ],
   // Export the concrete service so GuardrailsModule (I.2) can resolve it from
   // the already-imported TasksModule via ModuleRef for the capture chokepoints.
-  exports: [TasksService, SessionTranscriptService],
+  exports: [TasksService, TASK_OPERATIONS, SessionTranscriptService],
 })
 export class TasksModule {}

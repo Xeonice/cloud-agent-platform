@@ -2,7 +2,7 @@ import type {
   ReadyRuntimeModelCredential,
   RuntimeModelAdapterResult,
 } from './runtime-model-catalog.types';
-import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
+import type { RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
 
 export const RUNTIME_MODEL_TASKLESS_PROBE = Symbol(
   'RuntimeModelTasklessProbeLifecycle',

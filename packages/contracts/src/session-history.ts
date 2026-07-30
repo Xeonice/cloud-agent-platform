@@ -1,5 +1,5 @@
 /**
- * @cap/contracts — read-only session-history replay model
+ * @cap-console/contracts — read-only session-history replay model
  * (session-sandbox-retention).
  *
  * The shape returned by `GET /tasks/:id/session-history`: a structured,

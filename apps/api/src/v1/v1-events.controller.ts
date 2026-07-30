@@ -8,16 +8,16 @@ import {
   V1TaskEventSchema,
   type AuditEvent,
   type V1TaskEvent,
-} from '@cap/contracts';
-import { AuditService } from '../audit/audit.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+} from '@cap-console/contracts';
+import { AuditService } from '@/audit/audit.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import {
   PublicV1Controller,
   PublicV1Input,
   PublicV1Operation,
   requirePublicV1Principal,
-} from '../public-surface/public-v1-operation';
-import { TasksService } from '../tasks/tasks.service';
+} from '@/public-surface/public-v1-operation';
+import { TasksService } from '@/tasks/tasks.service';
 
 /**
  * `/v1` SSE lifecycle-observation surface (public-v1-api, Track sse-observation,

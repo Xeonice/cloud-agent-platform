@@ -11,10 +11,25 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import {
+  AdmissionTransitionIndeterminateError,
+  TASK_OPERATIONS,
+  type AdmissionTransitionResult,
+  type TaskOperationsPort,
+} from '@/task-operations/task-operations.port';
+
+// Re-exported: these are the admission contract guardrails drives, and they now
+// live with the port so guardrails does not have to name this service.
+export {
+  AdmissionTransitionIndeterminateError,
+  TASK_OPERATIONS,
+  type AdmissionTransitionResult,
+};
 import type {
   ExecutionMode,
   RuntimeOutputFailure,
-} from '../agent-runtime/agent-runtime.port';
+  TranscriptFormat,
+} from '@/agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
   TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
@@ -28,25 +43,25 @@ import {
   type Runtime,
   type TaskResponse,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   IllegalTaskTransitionError,
   assertTransition,
   isTerminal,
-} from './task-lifecycle';
+} from '@/task-lifecycle/task-lifecycle';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
   type ProvisioningAuditFailure,
-} from '../audit/audit-recorder.port';
+} from '@/audit/audit-recorder.port';
 import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
   type SandboxProviderCapability,
   type SelectedSandboxRun,
-} from '../sandbox/sandbox-provider.port';
+} from '@/sandbox/sandbox-provider.port';
 import {
   selectReadoptionSandboxProvider,
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
@@ -55,43 +70,47 @@ import {
   type SandboxEnvironmentProviderFamily,
   type SandboxEnvironmentSelection,
   type SandboxResourceSnapshot,
-} from '@cap/sandbox';
-import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+} from '@cap-console/sandbox';
+import { SandboxRunOwnerService } from '@/sandbox/sandbox-run-owner.service';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
   TaskFailureWrite,
   ProvisioningTaskFailureCode,
   RuntimeTaskFailureCode,
-} from './task-failure';
-import { taskFailureFromRecord } from './task-failure';
+} from '@/task-failure/task-failure';
+import { taskFailureFromRecord } from '@/task-failure/task-failure';
 import {
   TASK_RESPONSE_INCLUDE,
   taskResponseFromRecord,
 } from './task-response';
-import { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import type { PreparedTaskCreate } from './prepared-task-create';
 import { assertRepoCopyReadyForTaskCreate } from './task-repo-copy-gate';
-import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
+import { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
 import {
   TASK_ADMISSION_CANCELLATION_TOKEN,
   type TaskAdmissionCancellationPort,
-} from '../task-admission/task-admission.types';
+} from '@/admission-coordination/task-admission.types';
+import {
+  isDegradedAdmission,
+  resolveAdmissionMode,
+} from '@/task-admission/admission-mode-policy';
 import {
   TASK_ADMISSION_GATE_TOKEN,
   TASK_ADMISSION_WAKE_TOKEN,
   type TaskAdmissionGatePort,
   type TaskAdmissionWakePort,
-} from './task-admission-gate';
+} from '@/task-admission/task-admission-gate';
 import {
   TaskBranchResolutionError,
   TaskBranchResolver,
-} from '../forge/task-branch-resolver';
+} from '@/forge/task-branch-resolver';
 import {
   taskCreatedAuditData,
   taskCreatedAuditDedupeKey,
-} from '../audit/task-created-audit';
-import { isValidMaxConcurrentTasks } from '../settings/settings-logic';
+} from '@/audit/task-created-audit';
+import { isValidMaxConcurrentTasks } from '@/settings/settings-logic';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -148,10 +167,6 @@ export interface IGuardrailsService {
 /** DI token used when injecting the guardrails service into the tasks service. */
 export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
 
-export type AdmissionTransitionResult =
-  | 'transitioned'
-  | 'already-transitioned'
-  | 'superseded';
 
 export interface DurableAdmissionCapacityRequest {
   readonly taskId: string;
@@ -182,7 +197,7 @@ export interface DurableAdmissionFailureRequest {
     'pending' | 'queued' | 'running' | 'awaiting_input'
   >;
   readonly expectedLifecycleVersion: number;
-  readonly stage: import('@cap/contracts').TaskProvisioningStage;
+  readonly stage: import('@cap-console/contracts').TaskProvisioningStage;
   readonly causeCode: ProvisioningTaskFailureCode;
 }
 
@@ -202,17 +217,6 @@ export type TaskAcceptanceClient = Pick<
  * did not receive its acknowledgement. Callers must retry resolution with the
  * same transition token and must not release their local reservation meanwhile.
  */
-export class AdmissionTransitionIndeterminateError extends Error {
-  constructor(
-    readonly taskId: string,
-    readonly next: Extract<TaskStatus, 'queued' | 'running'>,
-    readonly transitionToken: string,
-    readonly cause?: unknown,
-  ) {
-    super(`Admission transition outcome is indeterminate: ${taskId} -> ${next}`);
-    this.name = 'AdmissionTransitionIndeterminateError';
-  }
-}
 
 class DurableAdmissionAtomicSettlementError extends Error {
   constructor() {
@@ -372,6 +376,14 @@ export interface IAgentRuntimeRegistry {
     /** Execution modes the resolved runtime supports (add-headless-execution-track). */
     executionModes: ReadonlySet<ExecutionMode>;
     classifyOutputFailure?(output: string): RuntimeOutputFailure | null;
+    /**
+     * The transcript format this runtime writes. Read through the registry so the
+     * durable read path resolves the format from the SAME declaration the runtime
+     * makes, rather than re-deriving it from the runtime's identity — which was a
+     * second source of the same fact, and needed a consistency test to catch the
+     * two drifting apart.
+     */
+    transcriptFormat: TranscriptFormat;
   };
 }
 
@@ -439,6 +451,7 @@ export class RuntimeNotConfiguredException extends ServiceUnavailableException {
 @Injectable()
 export class TasksService
   implements
+    TaskOperationsPort,
     OnApplicationBootstrap,
     BeforeApplicationShutdown,
     OnApplicationShutdown
@@ -1100,10 +1113,22 @@ export class TasksService
   ): Promise<PreparedTaskCreate> {
     const normalizedBody = createTaskBodySchema.parse(body);
     // Read the rollout gate exactly once for this acceptance. Every later
-    // decision, including the transaction write, consumes the frozen mode.
-    const admissionMode = (this.taskAdmissionGate?.isEnabled() ?? false)
-      ? 'durable-v2'
-      : 'legacy';
+    // decision, including the transaction write, consumes the frozen decision.
+    // The policy is total over the gate's outcomes, so a new closed reason
+    // cannot reach here without someone having stated its consequence.
+    const admissionDecision = resolveAdmissionMode(
+      this.taskAdmissionGate?.evaluate(),
+    );
+    const admissionMode = admissionDecision.mode;
+    if (isDegradedAdmission(admissionDecision)) {
+      // Say which capability was unproven and why, at the point the consequence
+      // is taken. Attribution only — the deployment-capability endpoint stays
+      // the authority on the gate's current state, and no persisted schema
+      // gains a field for this.
+      this.logger.warn(
+        `admission degraded to ${admissionMode}: ${admissionDecision.capability} unproven (${admissionDecision.outcome})`,
+      );
+    }
     if (normalizedBody.model !== undefined && !acceptedExplicitModel) {
       // The deployment cutover fence must run before repo/runtime/readiness,
       // environment resolution, credential work, or a taskless catalog probe.
@@ -2537,7 +2562,7 @@ export class TasksService
 
   private async requireProvisioningFailureAudit(
     taskId: string,
-    stage: import('@cap/contracts').TaskProvisioningStage,
+    stage: import('@cap-console/contracts').TaskProvisioningStage,
     attempt: number,
     failure: ProvisioningAuditFailure,
   ): Promise<void> {

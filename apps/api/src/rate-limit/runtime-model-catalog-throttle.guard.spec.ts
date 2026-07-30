@@ -11,8 +11,8 @@ import {
 import { APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule, seconds } from '@nestjs/throttler';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import { PublicV1Operation } from '../public-surface/public-v1-operation';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import { PublicV1Operation } from '@/public-surface/public-v1-operation';
 import { RuntimeModelCatalogThrottleGuard } from './runtime-model-catalog-throttle.guard';
 import { RUNTIME_MODEL_CATALOG_THROTTLE_NAME } from './throttler.options';
 

@@ -3,7 +3,7 @@ import {
   SandboxMetadataSchema,
   type Runtime,
   type RuntimeExecutionEnvironmentSnapshot,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { sha256Revision } from './runtime-model-catalog.util';
 
 export function buildRuntimeExecutionEnvironmentSnapshot(

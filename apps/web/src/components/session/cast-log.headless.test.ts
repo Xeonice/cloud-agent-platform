@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { Terminal } from "@xterm/headless";
-import { parseCast, type AsciicastEvent } from "@cap/contracts";
+import { parseCast, type AsciicastEvent } from "@cap-console/contracts";
 import { buildCastOps } from "./cast-log";
 
 const ESC = "\x1b";

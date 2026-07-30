@@ -333,7 +333,7 @@ matches your DNS.
 | `CAP_PUBLIC_API_BASE_URL` | `web` runtime | Optional runtime HTTP base URL for the compose node-server image |
 | `CAP_PUBLIC_WS_URL`     | `web` runtime | Optional runtime WebSocket URL for the compose node-server image |
 | `CAP_PUBLIC_API_PORT`   | `web` runtime | Same-host fallback api port when explicit base URLs are unset |
-| `WEB_ORIGIN`            | `apps/api/.env`  | Comma-separated web origin(s) the api CORS-allowlists + redirects to after login |
+| `WEB_ORIGIN`            | `apps/api/.env`  | Comma-separated web origin(s) the api CORS-allowlists, redirects to after login, **and trusts for cookie-authenticated writes** (see below) |
 | `SESSION_COOKIE_DOMAIN` | `apps/api/.env`  | The cookie `Domain` attribute (see below) — **the most common mistake** |
 
 > **`VITE_*` are build-time overrides.** Use them for web-only/Vercel deploys or
@@ -359,6 +359,52 @@ WEB_ORIGIN_AUTO_SAME_HOST_PORT=3000
 localhost tunnel access working; `WEB_ORIGIN_AUTO_SAME_HOST` lets the api also
 echo `http://<same-host>:3000` when you open the console through a LAN/Tailscale
 IP. Host-only `SameSite=Lax` cookies are used for this same-host HTTP topology.
+
+### `WEB_ORIGIN` now gates writes, not just response sharing
+
+A state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`) that authenticates with
+the **session cookie** is admitted only when it declares an origin this
+deployment trusts. Trust comes from three places, so an ordinary install needs no
+new configuration:
+
+- the request's **own origin** — a same-origin deployment is always trusted, and
+  an unset `WEB_ORIGIN` *means* same-origin;
+- the auto same-host origin, when `WEB_ORIGIN_AUTO_SAME_HOST` is on;
+- the `WEB_ORIGIN` allow-list itself.
+
+This closes a cross-site request forgery hole: in a **cross-origin** deployment
+(console on one domain, api on another) the session cookie is `SameSite=None`, so
+a browser will attach it to a request made by any other page. CORS does not stop
+that — it governs whether a response may be *read*, not whether a request is
+*sent*, and a state change needs no readable response.
+
+What this means operationally:
+
+- **Cross-origin installs must set `WEB_ORIGIN` to the console origin.** If it is
+  unset or wrong, writes from the console are refused with
+  `error: "untrusted_request_origin"` (reads are unaffected). Same-host installs
+  are unaffected either way.
+- **The WebSocket handshake is checked too.** A terminal socket opened from an
+  untrusted origin is refused at the upgrade with `403`, and the refused origin is
+  logged. Browsers do not apply the same-origin policy to WebSockets, so this is a
+  separate check from CORS.
+- **Programmatic callers are unaffected.** An API key or MCP token travels in the
+  `Authorization` header, which a browser cannot attach to a forged cross-site
+  request, so those callers are exempt and need no origin. A script that drives
+  the API with a *copied session cookie* and no `Origin` header will now be
+  refused — give it an API key instead.
+
+### Administration requires an interactive session
+
+Account administration, SMTP configuration and sandbox-environment management
+admit only an **interactive session**. An API key or MCP token is refused even
+when the account that minted it is an admin, and whatever scopes it was granted —
+its owner's privileges are not its own.
+
+If you drive any of those endpoints from a script using a machine credential, it
+will now return `403 admin_required`. Use an admin session for those operations;
+machine credentials remain the right tool for the task and repo surfaces they
+were scoped for.
 
 ### Topology A — cross-subdomain (recommended)
 

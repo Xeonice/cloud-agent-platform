@@ -20,7 +20,7 @@
  * xterm write-flush callback (a high/low watermark). This file decides WHAT bytes
  * (pure, framework-free, unit-testable); the component decides the PACING.
  */
-import type { AsciicastEvent } from "@cap/contracts";
+import type { AsciicastEvent } from "@cap-console/contracts";
 
 /** Matches the alternate-screen switch: `ESC [ ? (1049|1047|47) (h|l)`. */
 // eslint-disable-next-line no-control-regex

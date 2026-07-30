@@ -2,8 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   GitBranchNameSchema,
   type TaskFailureCode,
-} from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
 import { ForgeTargetResolver } from './forge-target-resolver';
 import {
   RemoteRefsProbePort,

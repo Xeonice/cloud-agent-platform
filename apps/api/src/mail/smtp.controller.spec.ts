@@ -31,18 +31,18 @@ import type {
   SaveSmtpConfigRequest,
   SmtpConfigRead,
   TestSmtpConfigRequest,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { SmtpController } from './smtp.controller';
 import { SmtpConfigService } from './smtp-config.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   encryptToStored,
   decryptStored,
   CODEX_CRED_ENC_KEY_ENV,
-} from '../settings/secret-storage';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+} from '@/crypto/secret-storage';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 // A 32-byte (base64) at-rest key so the fake service really encrypts/decrypts.
 const TEST_ENC_KEY = Buffer.alloc(32, 7).toString('base64');
@@ -254,6 +254,11 @@ function sessionPrincipal(userId: string): OperatorPrincipal {
       name: 'Admin',
       avatarUrl: '',
       allowed: true,
+      // `role` is REQUIRED on a real SessionUser and `resolveSession` reads it
+      // fresh from the DB on every request, so the admin gate may rely on it.
+      // Derived from the id here to match how each case seeds its account row.
+      role: userId.startsWith('admin') ? 'admin' : 'member',
+      mustChangePassword: false,
     },
   } as unknown as OperatorPrincipal;
 }

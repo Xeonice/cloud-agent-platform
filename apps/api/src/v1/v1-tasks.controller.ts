@@ -9,11 +9,11 @@ import {
   type V1ListQuery,
   type V1ListTasksResponse,
   type TaskResponse,
-} from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { TasksService } from '../tasks/tasks.service';
-import { type OperatorPrincipal } from '../auth/operator-principal';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+} from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
+import { TasksService } from '@/tasks/tasks.service';
+import { type OperatorPrincipal } from '@/principal/operator-principal';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { IdempotencyService } from './idempotency.service';
 import { listTaskPage } from './public-list-pages';
 import {
@@ -21,7 +21,7 @@ import {
   PublicV1Input,
   PublicV1Operation,
   requirePublicV1Principal,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 
 /**
  * Stricter per-principal create cap on `POST /v1/tasks` (D7 / task 3.5).

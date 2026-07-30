@@ -1,11 +1,11 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-import type { TaskStatus } from "@cap/contracts";
+import type { TaskStatus } from "@cap-console/contracts";
 import { cn } from "../lib/cn.js";
 
 /**
  * shadcn/ui-style `<Badge>` used by the fleet dashboard and session page to
- * render a task's status. Exported from `@cap/ui` and consumed by `apps/web`.
+ * render a task's status. Exported from `@cap-console/ui` and consumed by `apps/web`.
  */
 export const badgeVariants = cva(
   "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none",
@@ -48,7 +48,7 @@ export function Badge({ className, variant, ...props }: BadgeProps) {
 /**
  * Maps a contracts {@link TaskStatus} to a badge variant so the dashboard and
  * session page render status consistently. The status enum is the single
- * source of truth (`@cap/contracts`); this only chooses a visual variant.
+ * source of truth (`@cap-console/contracts`); this only chooses a visual variant.
  */
 export function statusBadgeVariant(status: TaskStatus): BadgeVariant {
   switch (status) {

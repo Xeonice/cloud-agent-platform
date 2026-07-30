@@ -280,9 +280,11 @@ test('6.2 attribution resolves the account id DIRECTLY (no githubId reverse look
       },
     },
     auditEvent: {
-      create: async ({ data }) => {
-        storedUserId = data.userId;
-        return data;
+      // recordTaskCreated writes through an idempotent upsert keyed on the
+      // task.created dedupe key; the attributed FK rides on the create branch.
+      upsert: async ({ create }) => {
+        storedUserId = create.userId;
+        return create;
       },
     },
   });

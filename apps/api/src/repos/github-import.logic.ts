@@ -18,7 +18,7 @@
  *     available-only repo and identifies the prior default to clear (4.5).
  */
 
-import type { GithubListErrorCode } from '@cap/contracts';
+import type { GithubListErrorCode } from '@cap-console/contracts';
 
 // ---------------------------------------------------------------------------
 // 4.2 — GitHub listing error classification

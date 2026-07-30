@@ -5,7 +5,7 @@
  * suite (the route's RENDER + `taskId` wiring is covered end-to-end by the
  * Playwright visual gate; this module owns the logic).
  */
-import type { SessionTurn } from "@cap/contracts";
+import type { SessionTurn } from "@cap-console/contracts";
 
 /** Transcript type-filter values (UI: 全部 / 我的输入 / 工具 / 回答). */
 export type TranscriptFilter = "all" | "user" | "tool" | "answer";

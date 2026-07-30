@@ -19,11 +19,11 @@ import { Test } from '@nestjs/testing';
 import {
   TaskProvisioningDiagnosticsResponseSchema,
   type TaskProvisioningDiagnosticsQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
-import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard';
-import type { AuthSessionService } from '../auth/auth-session.service';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { AuthGuard, type AuthenticatedRequest } from '@/auth/auth.guard';
+import type { AuthSessionService } from '@/auth/auth-session.service';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import { TaskProvisioningDiagnosticsConsoleController } from './task-provisioning-diagnostics-console.controller';
 import { TaskProvisioningDiagnosticsConsoleQueryService } from './task-provisioning-diagnostics-console-query.service';
 import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnostics.module';

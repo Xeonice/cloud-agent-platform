@@ -11,7 +11,7 @@ import {
   type TaskAdmissionV2GateResult,
   type TaskAdmissionV2LocalRoleReport,
   type TaskAdmissionV2Role,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 export const TASK_ADMISSION_V2_ENABLED_ENV =
   'CAP_TASK_ADMISSION_V2_ENABLED';

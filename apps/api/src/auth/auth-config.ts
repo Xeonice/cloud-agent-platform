@@ -8,7 +8,6 @@
  * separately through forge PAT credentials.
  */
 
-import { isSmtpConfigured, type DbSmtpConfigResolver } from '../mail/mail.service';
 
 /** Env var names, centralised so the controller/service/tests agree on spelling. */
 export const ENV = {
@@ -46,21 +45,6 @@ export function readSessionSecret(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 /**
- * Whether the legacy shared-`AUTH_TOKEN` operator path is enabled. Defaults to
- * `false` (the migration retires shared-token operator login); only an explicit
- * truthy string (`"true"`/`"1"`/`"yes"`, case-insensitive) turns it back on.
- * Task 2.8 consumes this; included here so the env contract lives in one place.
- */
-export function isLegacyTokenEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[ENV.AUTH_TOKEN_LEGACY_ENABLED];
-  if (typeof raw !== 'string') {
-    return false;
-  }
-  const v = raw.trim().toLowerCase();
-  return v === 'true' || v === '1' || v === 'yes';
-}
-
-/**
  * Whether the email+password login method is enabled (add-private-account-identity,
  * task 2.8 / D11). DEFAULTS to `true` — the default admin is always seeded with a
  * password identity, so password login is the baseline self-host method. Only an
@@ -78,29 +62,6 @@ export function isPasswordAuthEnabled(env: NodeJS.ProcessEnv = process.env): boo
   }
   const v = raw.trim().toLowerCase();
   return !(v === 'false' || v === '0' || v === 'no');
-}
-
-/**
- * Whether the email-OTP login method is available — i.e. SMTP is configured via
- * EITHER source (add-smtp-config-ui, D7 `otpAuthEnabled = DB config OR env`).
- * Without a mail transport the OTP method cannot send a code, so it is neither
- * advertised to the frontend nor served. The OTP endpoints additionally fail
- * closed at request time when SMTP is unset, so this flag is the display/advertise
- * gate, not the sole security gate.
- *
- * ASYNC + either-source (D4/D7): it delegates to the SAME full-config check the
- * mailer uses (a console-saved DB config first, falling back to all five `SMTP_*`
- * env vars + a valid port), so the advertised availability can never over-advertise
- * relative to what the OTP send path will actually accept. Saving SMTP in the
- * console flips this true (after the session re-resolves) without an env change.
- * `resolveDb` is injected (defaults to env-only) so the gate stays unit-testable
- * without a DB.
- */
-export async function isOtpAuthEnabled(
-  resolveDb?: DbSmtpConfigResolver,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<boolean> {
-  return isSmtpConfigured(resolveDb, env);
 }
 
 /**
@@ -224,3 +185,8 @@ function nonEmpty(value: string | undefined): string | null {
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
 }
+
+// Legacy bearer-token support moved to `@/principal/legacy-token` — the
+// principal primitives needed it, and reaching back into auth's config module
+// for it is what chained them to this file. Re-exported for existing consumers.
+export { isLegacyTokenEnabled } from '@/principal/legacy-token';

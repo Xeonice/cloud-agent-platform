@@ -34,7 +34,23 @@ function dockerAvailable() {
 function render(composeFile, env = {}) {
   const json = execFileSync(
     'docker',
-    ['compose', '-f', composeFile, '--env-file', '/dev/null', 'config', '--format', 'json'],
+    // `-p` is required, not cosmetic: `--env-file /dev/null` clears
+    // COMPOSE_PROJECT_NAME, so docker falls back to deriving the project name
+    // from the working directory and refuses a non-ASCII one with
+    // "project name must not be empty". Any contributor whose checkout path is
+    // non-ASCII hits that; the rendered config does not depend on the name.
+    [
+      'compose',
+      '-p',
+      'cap-compose-host-bind-test',
+      '-f',
+      composeFile,
+      '--env-file',
+      '/dev/null',
+      'config',
+      '--format',
+      'json',
+    ],
     {
       cwd: repoRoot,
       stdio: 'pipe',

@@ -4,7 +4,7 @@ import {
   SandboxEnvironmentResourcesSchema,
   SandboxMetadataSchema,
   Sha256ChecksumSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type {
   AcquireSandboxRunOwnerArgs,
   AcquireSandboxRunOwnerResult,
@@ -35,16 +35,16 @@ import type {
   SettleLegacySandboxRunCleanupResult,
   SettleSandboxCleanupAttemptResult,
   ValidateLegacySandboxRunCreateFenceArgs,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   SANDBOX_CLEANUP_ATTEMPT_MAX,
   sandboxCleanupAttemptPlaceholder,
   validateSandboxCleanupAttemptEvidence,
   validateSandboxCleanupAttemptId,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { Prisma } from '@prisma/client';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 const ACTIVE_SANDBOX_RUN_STATUSES: readonly SandboxRunOwnerStatus[] = [
   'provisioning',

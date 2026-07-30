@@ -20,10 +20,10 @@ import {
   type SandboxSelectedRunPort,
   type SandboxProvisionContext,
   type SelectedSandboxRun,
-} from '@cap/sandbox';
-import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
+} from '@cap-console/sandbox';
+import type { RuntimeId } from '@/agent-runtime/agent-runtime.port';
 import type { TranscriptSource } from './transcript-source';
-import type { CloneSpec } from './provision-lookup.port';
+import type { CloneSpec } from '@/provision-lookup/provision-lookup.port';
 
 /**
  * SandboxProvider port (sandbox-provider-port, design D).
@@ -41,7 +41,7 @@ import type { CloneSpec } from './provision-lookup.port';
  * is the container (`seccomp=unconfined` + network isolation), not the reported
  * mode. See `getSandboxMode()` below.
  *
- * NOTE: the sandbox execution mode vocabulary is owned by `@cap/sandbox` so
+ * NOTE: the sandbox execution mode vocabulary is owned by `@cap-console/sandbox` so
  * local and cloud provider adapters share one scheduler-facing contract.
  *
  * Informational execution sandbox mode values reported by a `SandboxProvider`:
@@ -59,7 +59,7 @@ export type {
 
 /**
  * Typed workspace origin vocabulary (repo-content-store D5). The union and its
- * guards are owned by `@cap/sandbox-core`; re-exported here so API-side callers
+ * guards are owned by `@cap-console/sandbox-core`; re-exported here so API-side callers
  * keep using the local sandbox port import path.
  */
 export {
@@ -91,7 +91,7 @@ export const SANDBOX_MODES: readonly SandboxMode[] = [
 /**
  * Port abstraction over the per-task execution sandbox.
  *
- * The core provider contract lives in `@cap/sandbox`; this API-side alias binds
+ * The core provider contract lives in `@cap-console/sandbox`; this API-side alias binds
  * it to the API's concrete `CloneSpec`, `RuntimeId`, and `TranscriptSource`
  * types while preserving the existing Nest DI token and local import path.
  */

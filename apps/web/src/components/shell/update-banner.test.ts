@@ -13,7 +13,7 @@
  * per-version match) would fail here — it is not a tautology.
  */
 import { describe, it, expect } from "vitest";
-import type { AuthSession, UpdateStatus } from "@cap/contracts";
+import type { AuthSession, UpdateStatus } from "@cap-console/contracts";
 
 import {
   isAdminSession,

@@ -2,7 +2,7 @@ import {
   SANDBOX_PROVIDER_CAPABILITIES,
   type SandboxProviderCapability,
   type SandboxProviderLocation,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export const DEFAULT_CLOUD_HTTP_CAPABILITIES: readonly SandboxProviderCapability[] = [
   'terminal.websocket',

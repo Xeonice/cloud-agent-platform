@@ -5,8 +5,8 @@ import type {
   ContainerResourceSample,
   SampledResources,
   SampledResourceStatus,
-} from '@cap/contracts';
-import { createAioHttpCommandExecutor } from '@cap/sandbox';
+} from '@cap-console/contracts';
+import { createAioHttpCommandExecutor } from '@cap-console/sandbox';
 
 /**
  * Background CPU/memory sampler for `cap-aio-<taskId>` sandbox containers

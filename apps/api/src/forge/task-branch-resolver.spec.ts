@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { PrismaService } from '../prisma/prisma.service';
-import { encryptToStored } from '../settings/secret-storage';
+import type { PrismaService } from '@/prisma/prisma.service';
+import { encryptToStored } from '@/crypto/secret-storage';
 import type { DefaultForgeRegistry, ForgeLocation } from './forge-registry';
 import { ForgeTargetResolver } from './forge-target-resolver';
 import type { ForgeTarget } from './forge.port';

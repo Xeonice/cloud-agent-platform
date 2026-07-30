@@ -29,8 +29,8 @@ import { Controller, Get } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 
 import { OpenApiController } from './openapi.controller';
-import { AuthGuard } from '../auth/auth.guard';
-import { AuthSessionService } from '../auth/auth-session.service';
+import { AuthGuard } from '@/auth/auth.guard';
+import { AuthSessionService } from '@/auth/auth-session.service';
 
 /** Records how many times the guard's session resolver was reached. */
 let resolveSessionCalls = 0;

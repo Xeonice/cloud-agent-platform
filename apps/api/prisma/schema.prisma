@@ -2,7 +2,7 @@
 //
 // Track: repo-and-task-management.
 // The `TaskStatus` enum mirrors the single-source-of-truth task-status enum in
-// `@cap/contracts` (packages/contracts). Prisma cannot import the zod enum
+// `@cap-console/contracts` (packages/contracts). Prisma cannot import the zod enum
 // directly, so the values are kept byte-for-byte identical to the contracts
 // `TaskStatus` literals; the lifecycle state machine validates the values it
 // reads/writes against the contracts schema at runtime.
@@ -38,7 +38,7 @@ enum TaskStatus {
 /// `role` gates ONLY the admin panel (account-administration); it carries NO
 /// execution privilege — every `allowed` account is host-root regardless of
 /// role (the UI must never imply per-role sandboxing). MUST stay in sync with
-/// the `@cap/contracts` `RoleSchema` values. Defaults to `member`.
+/// the `@cap-console/contracts` `RoleSchema` values. Defaults to `member`.
 enum Role {
   admin
   member
@@ -49,7 +49,7 @@ enum Role {
 /// Import metadata remains nullable for legacy rows. `defaultBranch` is
 /// forge-neutral and stores a verified picker/API or symbolic-HEAD value;
 /// description/branchCount/updatedAt/githubId remain GitHub provenance fields.
-/// Names mirror the `@cap/contracts` `RepoSchema`.
+/// Names mirror the `@cap-console/contracts` `RepoSchema`.
 model Repo {
   id        String   @id @default(uuid())
   /// Human-friendly display name.
@@ -173,7 +173,7 @@ model Task {
   /// (`claude-code` | `codex`). Additive and NULLABLE: existing rows backfill to
   /// NULL and an omitted-on-create value reads back as the default `codex` (the
   /// service applies the default; the column itself stores null when unset).
-  /// Persisted as text and kept in sync with the `@cap/contracts` `RuntimeSchema`
+  /// Persisted as text and kept in sync with the `@cap-console/contracts` `RuntimeSchema`
   /// values (add-claude-code-runtime).
   runtime String? @map("runtime")
 
@@ -625,7 +625,7 @@ model TaskProvisioningDiagnosticCompaction {
 /// An authenticated GitHub operator identity (multi-user-oauth spec).
 ///
 /// Keyed on the immutable GitHub numeric `id` (`githubId`), NOT the mutable
-/// `login`, mirroring `@cap/contracts` `SessionUserSchema`. Contracts models
+/// `login`, mirroring `@cap-console/contracts` `SessionUserSchema`. Contracts models
 /// `githubId` as `z.number().int()`, so it is stored as `Int` here. `login`,
 /// `name`, and `avatarUrl` are mutable profile fields refreshed on each login.
 /// `allowed` is the load-bearing fail-closed allowlist gate: only an
@@ -923,7 +923,7 @@ model ApiKey {
 /// whom the action occurred; it is NULLABLE for system-originated events with no
 /// attributed user.
 ///
-/// Shape mirrors `@cap/contracts` `AuditEventSchema`. The contracts `userId`
+/// Shape mirrors `@cap-console/contracts` `AuditEventSchema`. The contracts `userId`
 /// wire field is the GitHub numeric account id (`githubId`); at this storage
 /// layer the column is an FK to `users.id` (the user-record key), and the
 /// service maps between the two.
@@ -982,7 +982,7 @@ model AuditEvent {
 /// from the OAuth identity at read time. `defaultRepoId` references an imported
 /// `Repo` by id and is NULLABLE; it is validated in the service layer (the
 /// account must have imported that repo) rather than enforced as a DB FK.
-/// Mirrors `@cap/contracts` `AccountSettingsSchema` (writable fields only).
+/// Mirrors `@cap-console/contracts` `AccountSettingsSchema` (writable fields only).
 model AccountSettings {
   id     String @id @default(uuid())
   /// FK to the owning user; UNIQUE so there is at most one settings row per
@@ -1105,7 +1105,7 @@ model SmtpConfig {
 /// identity. Secret discipline: only `apiKeyCiphertext` (ENCRYPTED at rest — the
 /// ciphertext only, NEVER plaintext) is persisted for the key, alongside
 /// `apiKeyLast4`, a masked suffix kept solely for display. The plaintext key is
-/// never stored or returned. Mirrors the persisted side of `@cap/contracts`
+/// never stored or returned. Mirrors the persisted side of `@cap-console/contracts`
 /// `CodexCredentialSchema` / `SaveCodexCredentialRequestSchema`.
 model CodexCredential {
   id     String @id @default(uuid())

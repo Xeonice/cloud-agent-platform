@@ -5,9 +5,9 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import type {
   CreateSandboxEnvironmentRequest,
   UpdateSandboxEnvironmentParametersRequest,
-} from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@cap-console/contracts';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { PrismaService } from '@/prisma/prisma.service';
 import { SandboxEnvironmentsController } from './sandbox-environments.controller';
 import type { SandboxEnvironmentsService } from './sandbox-environments.service';
 

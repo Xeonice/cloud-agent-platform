@@ -1,7 +1,7 @@
 /**
  * `TerminalFallback` — the no-xterm DOM line-view (task 18.3).
  *
- * Rendered when the @cap/ui `<Terminal>` is unavailable on the client (its
+ * Rendered when the @cap-console/ui `<Terminal>` is unavailable on the client (its
  * dynamic xterm import threw, OR `onReady` never fired within a short
  * client-side timeout). It reproduces the prototype's `.terminal-body`
  * line-view (`.terminal-line` with dim/ok/warn tints) plus the SAME command

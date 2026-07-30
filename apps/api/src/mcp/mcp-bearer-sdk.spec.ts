@@ -16,7 +16,7 @@ import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { PUBLIC_V1_OPERATIONS } from '@cap/contracts';
+import { PUBLIC_V1_OPERATIONS } from '@cap-console/contracts';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 
@@ -74,6 +74,7 @@ test('two real Streamable HTTP clients can initialize and list tools concurrentl
     {} as never,
     {} as never,
     prisma as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,

@@ -1,7 +1,7 @@
 import type {
   TerminalResponseClass,
   TerminalResponseProfileDescriptor,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import type { ITerminalAddon, Terminal as XTerm } from "@xterm/xterm";
 
 /** The response-affecting window reports negotiated by the live terminal. */

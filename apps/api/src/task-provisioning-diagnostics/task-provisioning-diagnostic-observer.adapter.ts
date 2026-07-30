@@ -2,7 +2,7 @@ import {
   SANDBOX_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
   createSandboxProvisioningDiagnosticEmitter,
   type SandboxProvisioningDiagnosticEmitter,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   TASK_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
   TaskProvisioningDiagnosticAdmissionModeSchema,
@@ -25,13 +25,13 @@ import {
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningDiagnosticProviderFamily,
   type TaskProvisioningDiagnosticStage,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { z } from 'zod';
 
 import {
   runWithTaskProvisioningAttemptLog,
   runWithTaskProvisioningOperationLog,
-} from '../observability/log-context';
+} from '@/observability/log-context';
 import type {
   BeginTaskProvisioningDiagnosticAttempt,
   ResumeTaskProvisioningDiagnosticAttempt,

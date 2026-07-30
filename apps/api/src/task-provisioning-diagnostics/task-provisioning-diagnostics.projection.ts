@@ -10,7 +10,7 @@ import {
   type TaskProvisioningDiagnosticCoverage,
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningState,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { z } from 'zod';
 
 export interface DiagnosticAttemptRecord {

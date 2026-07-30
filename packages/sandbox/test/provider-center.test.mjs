@@ -558,11 +558,19 @@ await test('selected-run and operation selectors expose helper ports', () => {
       .compatibility,
     'declared',
   );
-  assert.equal(
-    mod.selectReadoptionSandboxProvider(
-      provider('readoption-docs', ['lifecycle.readoption']),
-    ).compatibility,
-    'declared',
+  // The deprecated `lifecycle.readoption` spelling is normalized at the BoxLite
+  // config parse boundary and does not exist internally. A provider constructed
+  // in-process under the old spelling has bypassed that boundary, so it must NOT
+  // read as declared — accepting it would restore the alias this change removed,
+  // one comparison site at a time. No live provider takes this path: AIO and
+  // cloud-http hardcode the canonical spelling and BoxLite's comes from the
+  // normalized env.
+  assert.throws(
+    () =>
+      mod.selectReadoptionSandboxProvider(
+        provider('readoption-docs', ['lifecycle.readoption']),
+      ),
+    /missing required capabilities: lifecycle\.readopt/,
   );
   assert.equal(
     mod.selectRetainedTranscriptSandboxProvider(

@@ -3,13 +3,35 @@ import { z } from 'zod';
 import {
   Sha256ChecksumSchema,
   TaskModelSelectorSchema,
-} from '@cap/contracts';
+  type SandboxProviderFamily,
+} from '@cap-console/contracts';
 import {
   ClaudeModelCapabilityManifestSchema,
   type ClaudeModelCapabilityManifest,
 } from './claude-model-capability-manifest';
 
-const ProviderSeamSchema = z.enum(['aio', 'boxlite']);
+/**
+ * The provider seams a Claude reference E2E must cover — an explicit SUBSET of
+ * {@link SANDBOX_PROVIDER_FAMILIES}, deliberately excluding `cloud-http`.
+ *
+ * This is a required-COVERAGE set, not a list of providers that exist: the
+ * reference-E2E config is rejected unless it supplies a representative
+ * environment for every seam named here. Adding `cloud-http` would therefore
+ * impose a new operational requirement, not describe reality — and it would
+ * impose an impossible one, since cloud-http declares only
+ * `terminal.websocket` / `transcript.retained-read` / `lifecycle.readopt` and so
+ * can neither materialize a workspace nor execute a command.
+ *
+ * The exclusion is deliberate rather than drift: cloud-http shipped in
+ * 62d5ac1 (2026-06-25), nearly three weeks before this enum was written in
+ * a27356f (2026-07-14), and the array bound below caps the seam count at two.
+ * Stated here so a future reader deriving this from the shared list knows they
+ * would be changing behaviour, not removing duplication.
+ */
+const CLAUDE_REFERENCE_PROVIDER_SEAMS = ['aio', 'boxlite'] as const satisfies
+  readonly SandboxProviderFamily[];
+
+const ProviderSeamSchema = z.enum(CLAUDE_REFERENCE_PROVIDER_SEAMS);
 const SafeEvidenceTextSchema = z.string().trim().min(1).max(512);
 const PrimarySourceUrlSchema = z
   .string()

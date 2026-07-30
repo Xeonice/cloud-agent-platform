@@ -1,9 +1,11 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
+import { AGENT_RUNTIME_IDS, type AgentRuntimeId } from '@cap-console/contracts';
+
 import {
   CLAUDE_AUTH_SOURCE,
   type ClaudeAuthSource,
-} from '../sandbox/claude-auth-source.port';
+} from '@/sandbox/claude-auth-source.port';
 
 /**
  * Per-runtime readiness fact surfaced by `GET /runtimes` (add-claude-code-runtime
@@ -12,13 +14,15 @@ import {
  * dialog can OFFER or DISABLE the runtime before a task is created, WITHOUT ever
  * leaking the token value or any suffix of it.
  *
- * Mirrors the Track-1 contract shape (`packages/contracts`); declared here as a
- * local fallback so this service compiles in isolation even before the contract
- * type is wired through.
+ * Mirrors the contract shape (`packages/contracts`). The id used to be a local
+ * literal union, added as a fallback "even before the contract type is wired
+ * through"; the contract landed and this stayed, so it was a fifth independent
+ * statement of which runtimes exist — and a silent one, because a narrower union
+ * assigns cleanly to a wider one and nothing failed when the two disagreed.
  */
 export interface RuntimeReadiness {
-  /** The runtime id (`codex` | `claude-code`). */
-  readonly id: 'codex' | 'claude-code';
+  /** The runtime id, from the one declaration. */
+  readonly id: AgentRuntimeId;
   /** Whether the runtime is configured/ready to run. Never carries a secret. */
   readonly ready: boolean;
 }
@@ -55,13 +59,33 @@ export class RuntimesService {
     private readonly claudeAuthSource?: ClaudeAuthSource,
   ) {}
 
+  /**
+   * How each declared runtime decides it is ready.
+   *
+   * A total `Record` rather than a hand-written response list. The list version
+   * was the quietest defect this endpoint could have: a newly declared and
+   * registered runtime would be accepted by the API and resolved by the registry,
+   * and then simply not appear here — so the console, which builds its selector
+   * from this response, would never offer it, with nothing failing anywhere.
+   */
+  private readonly readinessPolicy: Readonly<
+    Record<AgentRuntimeId, (ownerUserId: string | null) => Promise<boolean>>
+  > = {
+    // codex is the DEFAULT runtime and launches with or without a credential
+    // (auth is resolved per task at provision time), so the selector must never
+    // disable it; a missing codex credential is a launch concern, not a gate.
+    codex: async () => true,
+    'claude-code': (ownerUserId) => this.isClaudeConfigured(ownerUserId),
+  };
+
   async getReadiness(ownerUserId: string | null): Promise<RuntimesReadinessResponse> {
-    const claudeReady = await this.isClaudeConfigured(ownerUserId);
     return {
-      runtimes: [
-        { id: 'codex', ready: true },
-        { id: 'claude-code', ready: claudeReady },
-      ],
+      runtimes: await Promise.all(
+        AGENT_RUNTIME_IDS.map(async (id) => ({
+          id,
+          ready: await this.readinessPolicy[id](ownerUserId),
+        })),
+      ),
     };
   }
 

@@ -25,7 +25,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard';
 import {
@@ -33,8 +33,8 @@ import {
   MCP_RESOURCE_URI,
   type McpAuthInfo,
 } from './auth-session.service';
-import { McpTokensController } from '../mcp-tokens/mcp-tokens.controller';
-import { V1SchedulesController } from '../v1/v1-schedules.controller';
+import { McpTokensController } from '@/mcp-tokens/mcp-tokens.controller';
+import { V1SchedulesController } from '@/v1/v1-schedules.controller';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -105,7 +105,10 @@ function ctx(opts: { path?: string; cookie?: string; authorization?: string } = 
   const headers: Record<string, string> = {};
   if (opts.cookie !== undefined) headers.cookie = opts.cookie;
   if (opts.authorization !== undefined) headers.authorization = opts.authorization;
-  const request = { path: opts.path ?? '/tasks', url: opts.path ?? '/tasks', headers };
+  // A real Express request always carries a method; these cases exercise the
+  // guard's credential routing, not writes, so GET keeps them out of the
+  // cross-site-forgery lane.
+  const request = { method: 'GET', path: opts.path ?? '/tasks', url: opts.path ?? '/tasks', headers };
   return {
     request: request as unknown as AuthenticatedRequest,
     switchToHttp: () => ({ getRequest: () => request }),

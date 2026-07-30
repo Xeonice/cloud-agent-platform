@@ -5,13 +5,13 @@ import test from 'node:test';
 import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 
 import type { AuthenticatedRequest } from './auth.guard';
-import { hasScope, type OperatorPrincipal } from './operator-principal';
+import { hasScope, type OperatorPrincipal } from '@/principal/operator-principal';
 import {
   PublicV1Operation,
   PublicV1OperationGuard,
   publicV1OperationById,
   type PublicV1Handler,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 
 const OWNER = {
   id: 'diagnostics-owner',

@@ -15,7 +15,7 @@ import type {
   CodexCredential,
   CodexCredentialMode,
   CodexCredentialState,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import type { StatusPillVariant } from "@/components/status-pill";
 
 /** The status-card mode pill text per state (verbatim prototype copy). */

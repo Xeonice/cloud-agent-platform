@@ -4,11 +4,11 @@ import type {
   SandboxCommandExecutor,
   SandboxConnection,
   SelectedSandboxRun,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   createAioHttpCommandExecutor as createProviderAioHttpCommandExecutor,
   type AioFetch,
-} from '@cap/sandbox-provider-aio';
+} from '@cap-console/sandbox-provider-aio';
 
 interface ProviderCommandExecutorFactory {
   createCommandExecutor?(sandboxId: string): SandboxCommandExecutor;

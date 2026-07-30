@@ -15,12 +15,12 @@ import {
   type SandboxTerminalStoryReadiness,
   type SandboxProviderCapability,
   type SelectedSandboxRun,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@/sandbox/sandbox-provider.port';
+import { PrismaService } from '@/prisma/prisma.service';
 import { TerminalGateway } from './terminal.gateway';
 import type {
   ProviderTerminalStoryGatewayResourceState,

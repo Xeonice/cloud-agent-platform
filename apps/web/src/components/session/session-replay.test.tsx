@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import type { SessionHistory, SessionTurn } from "@cap/contracts";
+import type { SessionHistory, SessionTurn } from "@cap-console/contracts";
 import { SessionReplay } from "./session-replay";
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {

@@ -4,7 +4,7 @@ import {
   type SandboxProvisioningDiagnosticAttemptContext,
   type SandboxProvisioningDiagnosticFact,
   type SandboxProvisioningDiagnosticStage,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 /**
  * Task-scoped log context (structured-logging D3a).

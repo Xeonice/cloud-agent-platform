@@ -19,14 +19,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
-import { API_KEY_PREFIX } from '@cap/contracts';
+import { API_KEY_PREFIX } from '@cap-console/contracts';
 
 import { ApiKeysService } from './api-keys.service';
 import { ApiKeysController } from './api-keys.controller';
-import { PrismaService } from '../prisma/prisma.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
+import { PrismaService } from '@/prisma/prisma.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 // ---------------------------------------------------------------------------
 // Fixtures + fakes

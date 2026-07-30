@@ -10,7 +10,7 @@
  * `time` = cumulative seconds since start, `data` = valid-UTF-8 JSON string.
  */
 
-import type { AsciicastEventCode } from '@cap/contracts';
+import type { AsciicastEventCode } from '@cap-console/contracts';
 
 /**
  * The first line of a `session.cast`: the asciicast v2 header carrying the

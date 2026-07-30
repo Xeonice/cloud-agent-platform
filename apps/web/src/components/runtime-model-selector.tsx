@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   type Runtime,
   type RuntimeModelCatalogQuery,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { runtimeModelsQuery } from "@/lib/api/queries";
 import { runtimeModelErrorFromApiError } from "@/lib/api/real";
 import {

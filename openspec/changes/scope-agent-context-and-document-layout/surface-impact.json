@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "scope-agent-context-and-document-layout",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "The change adds four directory-scoped agent instruction files, one documentation guide, a cross-link, three CI job conditions and a gate that asserts them. No package source is touched, so no /v1 operation, request or response schema, status code or error body can differ; the public-surface parity suite is unaffected."
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "No MCP tool, argument, result shape, registration or transport behaviour is reachable from documentation files or workflow job conditions."
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "The OpenAPI document projects registry operations from contracts; contracts is not modified, so the generated document is byte-identical."
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "The playground reads the same operation registry, which is unchanged."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "agent-scoping-docs-and-ci-job-conditions",
+      "reason": "Four CLAUDE.md files, docs/product-layout.md, a cross-link in docs/repo-layout.md, path conditions on three non-required CI jobs, and scripts/ci-job-conditions.test.mjs which fails if a required status check ever acquires a condition. Developer-facing only."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "docs",
+    "requiresWireCompatibilityFixture": false
+  }
+}

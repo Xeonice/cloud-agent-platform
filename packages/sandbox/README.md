@@ -1,4 +1,4 @@
-# @cap/sandbox
+# @cap-console/sandbox
 
 Sandbox scheduling and lifecycle core for CAP.
 
@@ -15,7 +15,7 @@ This package follows the same architectural direction as Sandbank:
 
 ## Package Boundary
 
-`@cap/sandbox` is the API-facing sandbox provider center. It owns the
+`@cap-console/sandbox` is the API-facing sandbox provider center. It owns the
 provider-neutral implementation that the API should consume directly:
 
 - provider registry and capability selection;
@@ -27,30 +27,31 @@ provider-neutral implementation that the API should consume directly:
 
 The core and provider packages are:
 
-- `@cap/sandbox-core`: capability vocabulary, provider ports, execution modes,
+- `@cap-console/sandbox-core`: capability vocabulary, provider ports, execution modes,
   connection/result shapes, descriptor helpers, and shared clone spec types.
-- `@cap/sandbox`: provider center, lifecycle helpers, and workspace helpers.
-- `@cap/sandbox-cloud-http`: cloud HTTP provider adapter.
-- `@cap/sandbox-provider-aio`: AIO/Docker provider controller for container
+- `@cap-console/sandbox`: provider center, lifecycle helpers, and workspace helpers.
+- `@cap-console/sandbox-cloud-http`: cloud HTTP provider adapter.
+- `@cap-console/sandbox-provider-aio`: AIO/Docker provider controller for container
   lifecycle, readiness, shell exec, retained transcript reads, and readoption.
-- `@cap/sandbox-provider-boxlite`: optional BoxLite provider client, config,
+- `@cap-console/sandbox-provider-boxlite`: optional BoxLite provider client, config,
   command/archive adapters, runtime preflight, and conformance fakes.
 
 All sandbox packages remain framework-free except provider adapters at the edge.
 They must not import Nest, Prisma, or app-specific runtime/auth ports. The API
 assembles those dependencies and passes them into adapters.
 
-The older helper packages (`@cap/sandbox-scheduler`,
-`@cap/sandbox-lifecycle`, `@cap/sandbox-workspace-git`, and
-`@cap/sandbox-aio-local`) are excluded from the current workspace package graph.
-Their runtime code moved under `@cap/sandbox` or `@cap/sandbox-provider-aio`.
-`@cap/sandbox-conformance` remains only as a dev-only testkit for provider
-package tests; it is not exported by `@cap/sandbox` or used at runtime.
+Scheduler, lifecycle, workspace-git and AIO-local helper code lives under
+`@cap-console/sandbox` and `@cap-console/sandbox-provider-aio`. The separate helper packages
+that once held it were removed once superseded — they had been excluded from the
+workspace graph rather than deleted, which left directories that no build could
+compile still reading as live code.
+`@cap-console/sandbox-conformance` remains only as a dev-only testkit for provider
+package tests; it is not exported by `@cap-console/sandbox` or used at runtime.
 
 The API keeps Nest wiring plus runtime/auth lookup, task prompt, and skill
 policy as provider hooks passed through `apps/api/src/sandbox/sandbox.module.ts`.
-Reusable AIO/Docker mechanics live in `@cap/sandbox-provider-aio`; BoxLite lives
-in `@cap/sandbox-provider-boxlite`. Providers implement the same
+Reusable AIO/Docker mechanics live in `@cap-console/sandbox-provider-aio`; BoxLite lives
+in `@cap-console/sandbox-provider-boxlite`. Providers implement the same
 candidate/capability contract and are scheduled by the same registry/router.
 
 Provider-center code registers adapters with:
@@ -62,8 +63,8 @@ Both helpers return schedulable provider descriptors with declared capabilities,
 priority, and location metadata.
 
 The local AIO adapter config and Docker lifecycle live in
-`@cap/sandbox-provider-aio`. The cloud adapter package is
-`@cap/sandbox-cloud-http`, which talks to a CAP-compatible managed sandbox
+`@cap-console/sandbox-provider-aio`. The cloud adapter package is
+`@cap-console/sandbox-cloud-http`, which talks to a CAP-compatible managed sandbox
 control plane over HTTP.
 
 BoxLite is a second optional provider package. It is registered by the sandbox

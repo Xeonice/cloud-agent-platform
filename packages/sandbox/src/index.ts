@@ -1,5 +1,5 @@
-export * from '@cap/sandbox-core';
-export * from '@cap/sandbox-environment';
+export * from '@cap-console/sandbox-core';
+export * from '@cap-console/sandbox-environment';
 export * from './provider-center/index.js';
 export * from './host-harness/index.js';
 export * from './terminal/backpressure.js';
@@ -14,6 +14,6 @@ export * from './terminal/viewer-attachment.js';
 export * from './lifecycle/settle-plan.js';
 export * from './workspace/git.js';
 export * from './workspace/repo-archive.js';
-export * from '@cap/sandbox-cloud-http';
-export * from '@cap/sandbox-provider-aio';
-export * from '@cap/sandbox-provider-boxlite';
+export * from '@cap-console/sandbox-cloud-http';
+export * from '@cap-console/sandbox-provider-aio';
+export * from '@cap-console/sandbox-provider-boxlite';

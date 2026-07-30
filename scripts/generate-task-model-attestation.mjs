@@ -138,7 +138,7 @@ async function loadContractsModule() {
   } catch (error) {
     throw new Error(
       'could not load the contracts attestation schema from packages/contracts/dist — ' +
-        'build it first (pnpm --filter @cap/contracts build): ' +
+        'build it first (pnpm --filter @cap-console/contracts build): ' +
         `${error instanceof Error ? error.message : String(error)}`,
     );
   }

@@ -36,6 +36,18 @@ function fakeConfig(overrides = {}) {
   return result.config;
 }
 
+// enforce-provider-contract-parity, Track 4 — the families this file owes are
+// computed from BoxLite's declared capabilities (the normalized config set),
+// not from which suites it happens to build. Note the fixture still declares
+// the DEPRECATED `lifecycle.readoption` spelling: that is deliberate coverage
+// of the parse-boundary normalization, and the ledger sees the canonical name.
+const participation = conformance.createConformanceParticipationLedger({
+  providerLabel: 'BoxLite',
+  declaredCapabilities: fakeConfig().capabilities,
+  onGap: (capability, why) =>
+    console.log(`  GAP   BoxLite declares ${capability}: ${why}`),
+});
+
 function appendBehaviorTrace(trace, taskId, providerId, event) {
   trace.push({
     sequence: trace.length + 1,
@@ -734,6 +746,7 @@ await test('fake BoxLite provider satisfies provider conformance for declared fe
     config: fakeConfig(),
     client: new boxlite.FakeBoxLiteClient(),
   });
+  participation.ran('provider');
   const scenarios = conformance.createSandboxProviderConformanceScenarios(
     {
       provider,
@@ -757,6 +770,7 @@ await test('fake BoxLite provider satisfies provider conformance for declared fe
 
 await test('BoxLite behavior conformance drives real provider-owned executor, workspace, and readoption seams', async () => {
   const fixture = createBoxLiteBehaviorFixture();
+  participation.ran('behavior');
   const scenarios = conformance.createSandboxProviderBehaviorConformanceScenarios(
     {
       provider: fixture.provider,
@@ -814,6 +828,7 @@ await test('BoxLite behavior conformance drives real provider-owned executor, wo
 
 await test('BoxLite native executor satisfies split command-output conformance without fallback execution', async () => {
   const observations = new Map();
+  participation.ran('command-output');
   const scenarios = conformance.createSandboxCommandOutputConformanceScenarios(
     {
       exercise: (input) =>
@@ -1188,6 +1203,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
 }
 
 const diagnosticCapabilityProvider = createNativeDiagnosticFixture().provider;
+participation.ran('diagnostic');
 const diagnosticScenarios =
   conformance.createSandboxProviderDiagnosticConformanceScenarios(
     {
@@ -1226,6 +1242,8 @@ await test('live BoxLite integration is guarded by BOXLITE_LIVE_TEST', async () 
     await provider.teardownSandbox(taskId);
   }
 });
+
+participation.assertComplete();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

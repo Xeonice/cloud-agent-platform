@@ -3,4 +3,4 @@ export {
   SESSION_LOG_FILENAME,
   readSessionLogTail,
   stripAnsi,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';

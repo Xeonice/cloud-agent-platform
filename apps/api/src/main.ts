@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 import { NestFactory } from '@nestjs/core';
-import { WsAdapter } from '@nestjs/platform-ws';
+import { OriginCheckedWsAdapter } from './auth/origin-checked-ws-adapter';
 import { Logger } from 'nestjs-pino';
 import type { Request, RequestHandler, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
@@ -11,7 +11,7 @@ import {
   authTokenConfigSchema,
   RESERVED_CREDENTIAL_PREFIXES,
   contractsZod,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { AppModule } from './app.module';
 import { AuthSessionService } from './auth/auth-session.service';
 import {
@@ -25,14 +25,14 @@ import {
 } from './forge/git-runtime-preflight';
 
 // public-v1-api (Integration 4.1): the ONCE-per-process `extendZodWithOpenApi`
-// init, owned here (outside `@cap/contracts`) so the `.openapi(...)` augmentation
+// init, owned here (outside `@cap-console/contracts`) so the `.openapi(...)` augmentation
 // is installed before ANY schema is registered into the OpenAPI document. It is
 // idempotent (the registry also calls it defensively so it can generate in
 // isolation), but this is the canonical single call at the bootstrap seam.
 //
-// CRITICAL: it must extend the EXACT zod instance the `@cap/contracts` schemas are
+// CRITICAL: it must extend the EXACT zod instance the `@cap-console/contracts` schemas are
 // built on — re-exported as `contractsZod` — NOT the api's own `import/require('zod')`.
-// `@cap/contracts` is ESM (resolves zod's `index.js`) while the api is CJS (resolves
+// `@cap-console/contracts` is ESM (resolves zod's `index.js`) while the api is CJS (resolves
 // the SEPARATE `index.cjs` class realm); extending the CJS realm would leave every
 // ESM-built contract schema without `.openapi`, and OpenAPI generation would throw
 // `schema.openapi is not a function`. Extending `contractsZod` patches the right realm.
@@ -129,7 +129,10 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   // Realtime terminal: serve the custom dual-channel frame protocol over `ws`.
-  app.useWebSocketAdapter(new WsAdapter(app));
+  // The allow-list below is introduced as "CORS / WS-origin" — this is the WS
+  // half, which had never been wired. The adapter refuses a handshake from an
+  // untrusted origin before any connection exists.
+  app.useWebSocketAdapter(new OriginCheckedWsAdapter(app));
 
   // 10.1b — CORS / WS-origin allow-listing. The Vercel web target is a different
   // origin from the Fly/compose api, so the api must explicitly allow it. The

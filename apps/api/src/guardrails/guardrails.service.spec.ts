@@ -5,24 +5,24 @@ import {
   type TaskFailureCode,
   type TaskProvisioningDiagnosticEvent,
   type TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { ModuleRef } from '@nestjs/core';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   AdmissionTransitionIndeterminateError,
   type AdmissionTransitionResult,
-} from '../tasks/tasks.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+} from '@/tasks/tasks.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import {
   SandboxProvisioningStageError,
   SandboxRuntimeModelSetupError,
   type AgentTerminalLaunchOutcome,
   type SandboxProvisionContext,
-} from '@cap/sandbox';
-import { TaskBranchResolutionError } from '../forge/task-branch-resolver';
-import type { TaskProvisioningDiagnosticRecorderPort } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@cap-console/sandbox';
+import { TaskBranchResolutionError } from '@/forge/task-branch-resolver';
+import type { TaskProvisioningDiagnosticRecorderPort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import { GuardrailsService, type GuardrailsConfig } from './guardrails.service';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
@@ -214,11 +214,11 @@ function diagnosticSettlementHarness(options: {
   const primaryInputs: unknown[] = [];
   const cleanupInputs: unknown[] = [];
   let persistedPrimaryState: Exclude<
-    import('@cap/contracts').TaskProvisioningDiagnosticAttemptState,
+    import('@cap-console/contracts').TaskProvisioningDiagnosticAttemptState,
     'active'
   > | undefined;
   let persistedCleanup:
-    | import('@cap/contracts').TaskProvisioningDiagnosticCleanupSummary
+    | import('@cap-console/contracts').TaskProvisioningDiagnosticCleanupSummary
     | undefined;
   const failure = {
     ok: false as const,

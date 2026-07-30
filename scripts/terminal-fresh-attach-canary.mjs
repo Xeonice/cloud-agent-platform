@@ -31,7 +31,16 @@ import { fileURLToPath } from 'node:url';
 const requireFromApi = createRequire(
   new URL('../apps/api/package.json', import.meta.url),
 );
-const { Terminal } = requireFromApi('@xterm/headless');
+// `@xterm/headless` is declared by apps/web, NOT by apps/api. Commit 68c0907
+// dropped it from apps/api's dependencies in the same change that started
+// resolving it from there, so this line has thrown `Cannot find module` ever
+// since — unnoticed because nothing ran these canaries. Resolve it from the
+// package that actually declares it, following the same convention as the
+// `ws` lookup above.
+const requireFromWeb = createRequire(
+  new URL('../apps/web/package.json', import.meta.url),
+);
+const { Terminal } = requireFromWeb('@xterm/headless');
 const WebSocket = requireFromApi('ws');
 
 const DEFAULT_COLS = 80;
@@ -1974,7 +1983,7 @@ async function loadSandboxProductTerminalModule() {
     return await sandboxProductModulePromise;
   } catch (error) {
     throw new Error(
-      'AIO product viewer dist is unavailable or incompatible; run pnpm --filter @cap/sandbox build',
+      'AIO product viewer dist is unavailable or incompatible; run pnpm --filter @cap-console/sandbox build',
       { cause: error },
     );
   }

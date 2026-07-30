@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { hashPassword } from '../auth/argon2';
+import { hashPassword } from '@/auth/argon2';
 import {
   AdminRevealHolder,
   AdminSeedService,

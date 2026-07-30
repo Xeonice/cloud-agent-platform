@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+
+import { TASK_OPERATIONS } from '@/task-operations/task-operations.port';
 import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
 import {
@@ -6,7 +8,7 @@ import {
   TaskProvisioningDiagnosticAttemptSchema,
   TaskProvisioningDiagnosticEventSchema,
   type TaskProvisioningDiagnosticCleanupSummary,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
@@ -17,24 +19,24 @@ import {
   type SandboxProvisionContext,
   type SandboxRunCleanupAuthorization,
   type SettleSandboxCleanupAttemptResult,
-} from '@cap/sandbox';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
+} from '@cap-console/sandbox';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   GuardrailsService,
   type GuardrailsConfig,
-} from '../guardrails/guardrails.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { FencedTaskAdmissionProcessor } from '../task-admission/fenced-task-admission.processor';
+} from '@/guardrails/guardrails.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
   TaskAdmissionScheduler,
   type TaskAdmissionTimer,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionStore,
@@ -45,10 +47,10 @@ import {
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
   type TaskAdmissionSettlement,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
-import type { TaskProvisioningDiagnosticRecorderPort } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
+import type { TaskProvisioningDiagnosticRecorderPort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import { TasksService } from './tasks.service';
 
 const TASK_ID = '8cdb5ef4-d021-4a62-81da-45285c8ea190';
@@ -572,6 +574,8 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   const moduleRef = {
     get(token: unknown) {
       if (token === TasksService) return waitingTaskLifecycle;
+        // guardrails resolves the task operations by PORT token now
+        if (token === TASK_OPERATIONS) return waitingTaskLifecycle;
       throw new Error('optional story dependency is not bound');
     },
   } as unknown as ModuleRef;

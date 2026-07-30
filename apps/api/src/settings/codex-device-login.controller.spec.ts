@@ -16,9 +16,9 @@ import {
   type CodexDeviceLoginStartResponse,
   type CodexDeviceLoginStatus,
   type SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
 import { SettingsController } from './settings.controller';

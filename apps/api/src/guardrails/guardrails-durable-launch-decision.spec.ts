@@ -7,7 +7,7 @@ import {
   type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningDiagnosticProviderFamily,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   SandboxCleanupCoordinationPendingError,
   SandboxCleanupPendingError,
@@ -17,21 +17,21 @@ import {
   type SandboxDetachedWorkspaceTransferJob,
   type SandboxProvisionContext,
   type SandboxRunCleanupAuthorityProjection,
-} from '@cap/sandbox';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { getTaskLogContext } from '../observability/log-context';
-import { TaskBranchResolutionError } from '../forge/task-branch-resolver';
-import type { TaskProvisioningDiagnosticRecorderPort } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@cap-console/sandbox';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { getTaskLogContext } from '@/observability/log-context';
+import { TaskBranchResolutionError } from '@/forge/task-branch-resolver';
+import type { TaskProvisioningDiagnosticRecorderPort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionLeaseLostError,
   TaskAdmissionProcessingError,
   type TaskAdmissionProcessorContext,
-} from '../task-admission/task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 import {
   GuardrailsService,
   type GuardrailsConfig,

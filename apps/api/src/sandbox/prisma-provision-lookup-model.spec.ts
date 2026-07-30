@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { SandboxRuntimeModelSetupError } from '@cap/sandbox';
-import type { PrismaService } from '../prisma/prisma.service';
-import { buildRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
+import { SandboxRuntimeModelSetupError } from '@cap-console/sandbox';
+import type { PrismaService } from '@/prisma/prisma.service';
+import { buildRuntimeExecutionEnvironmentSnapshot } from '@/runtime-models/runtime-model-snapshot';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
 
 const OWNER = '00000000-0000-4000-a000-000000000101';

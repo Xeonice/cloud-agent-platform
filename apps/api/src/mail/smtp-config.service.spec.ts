@@ -19,8 +19,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SMTP_CONFIG_ROW_ID, SmtpConfigService } from './smtp-config.service';
-import { EncryptionKeyUnavailableError } from '../settings/settings-crypto';
-import type { PrismaService } from '../prisma/prisma.service';
+import { EncryptionKeyUnavailableError } from '@/crypto/settings-crypto';
+import type { PrismaService } from '@/prisma/prisma.service';
 
 // A real 32-byte hex key so encrypt/decrypt actually round-trips.
 const KEY = '0'.repeat(64);

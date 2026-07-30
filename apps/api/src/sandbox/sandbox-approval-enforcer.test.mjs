@@ -22,6 +22,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -43,21 +45,11 @@ function assert(cond, label) {
 const outDir = mkdtempSync(join(apiRoot, '.aio-enforcer-test-'));
 
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      enforcerSrc,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--experimentalDecorators',
-      '--emitDecoratorMetadata',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [enforcerSrc].flat(),
+    outDir,
+    compilerOptions: { emitDecoratorMetadata: true },
+  });
   const flat = join(outDir, 'sandbox-approval-enforcer.js');
   if (existsSync(flat)) return flat;
   const hit = findFile(outDir, 'sandbox-approval-enforcer.js');

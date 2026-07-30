@@ -2,7 +2,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { ClaudeCredential, CodexCredential } from "@cap/contracts";
+import type { ClaudeCredential, CodexCredential } from "@cap-console/contracts";
 import {
   parseCredentialIssue,
   parseCredentialRuntime,

@@ -4,7 +4,7 @@ import {
   type CodexDeviceLoginSessionId,
   type CodexDeviceLoginStartResponse,
   type CodexDeviceLoginStatus,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
   const response = await fetch(path, {

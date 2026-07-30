@@ -1,4 +1,4 @@
-import type { TerminalTransportCleanupSettlement } from '@cap/sandbox-core';
+import type { TerminalTransportCleanupSettlement } from '@cap-console/sandbox-core';
 
 type IndeterminateCleanupCause = Extract<
   TerminalTransportCleanupSettlement,

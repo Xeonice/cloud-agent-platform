@@ -2,7 +2,7 @@ import {
   createSandboxRuntimePrivateFile,
   type SandboxCommandExecutor,
   type SandboxRuntimePrivateFile,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export const SANDBOX_IMAGE_ENV_DIR = '/home/gem/.cap';
 export const SANDBOX_IMAGE_ENV_PATH = `${SANDBOX_IMAGE_ENV_DIR}/image-env`;

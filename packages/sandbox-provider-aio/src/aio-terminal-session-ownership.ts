@@ -5,7 +5,7 @@ import {
   randomBytes,
 } from 'node:crypto';
 import WebSocket from 'ws';
-import type { SandboxOwnershipFence } from '@cap/sandbox-core';
+import type { SandboxOwnershipFence } from '@cap-console/sandbox-core';
 import {
   AIO_SHELL_SESSION_CLEANUP_MAX_BUDGET_MS,
   deleteAioShellSessionExact,

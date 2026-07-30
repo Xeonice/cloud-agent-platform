@@ -1,7 +1,7 @@
 import {
   TaskProvisioningDiagnosticEventSchema,
   type TaskProvisioningDiagnosticEvent,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 export const TASK_PROVISIONING_DIAGNOSTIC_LOG_EVENT =
   'task_provisioning_diagnostic_event' as const;

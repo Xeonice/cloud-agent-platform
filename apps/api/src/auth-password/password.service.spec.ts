@@ -16,8 +16,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hashPassword } from '../auth/argon2';
-import { hashSessionToken } from '../auth/session-token';
+import { hashPassword } from '@/auth/argon2';
+import { hashSessionToken } from '@/auth/session-token';
 import { PasswordAuthService } from './password.service';
 
 const EMAIL = 'admin@local';

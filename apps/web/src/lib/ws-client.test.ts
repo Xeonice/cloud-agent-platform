@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   TERMINAL_PROTOCOL_VERSION,
   XTERM_5_5_0_RESPONSE_PROFILE_ID,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 vi.mock("./config", () => ({
   wsUrl: () => "wss://terminal.example.test",

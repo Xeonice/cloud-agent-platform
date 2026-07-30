@@ -10,7 +10,7 @@
  *   - `isNewer` is strict, fail-safe (unparseable / `"unknown"` → not newer), and
  *     never throws — so a garbage tag can never fabricate an update prompt.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node update-status.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node update-status.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

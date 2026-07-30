@@ -16,7 +16,7 @@
  * standing in for Nest's request pipeline, so it proves the orchestrator wiring
  * (controller -> gateway.requestApproval / reportPostToolUse) end to end.
  *
- * Run AFTER `pnpm --filter @cap/api build` (it imports the compiled output).
+ * Run AFTER `pnpm --filter @cap-console/api build` (it imports the compiled output).
  */
 
 import http from 'node:http';

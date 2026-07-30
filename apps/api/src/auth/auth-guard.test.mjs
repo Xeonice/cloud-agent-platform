@@ -20,7 +20,7 @@
  *      principal) so an unauthenticated operator can reach login; an unknown
  *      protected path is NOT exempt.
  *
- * Requires `pnpm --filter @cap/api build` before running.
+ * Requires `pnpm --filter @cap-console/api build` before running.
  */
 
 import { createRequire } from 'node:module';
@@ -61,7 +61,10 @@ function ctx({ path: reqPath = '/tasks', cookie, authorization } = {}) {
   const headers = {};
   if (cookie !== undefined) headers.cookie = cookie;
   if (authorization !== undefined) headers.authorization = authorization;
-  const request = { path: reqPath, url: reqPath, headers };
+  // A real Express request always carries a method. These cases exercise the
+  // guard's credential routing, not writes, so GET keeps them out of the
+  // cross-site-forgery lane (an absent method is treated as unsafe, fail-closed).
+  const request = { method: 'GET', path: reqPath, url: reqPath, headers };
   return {
     request,
     switchToHttp: () => ({ getRequest: () => request }),

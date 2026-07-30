@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, CircleAlert } from "lucide-react";
 
-import type { TaskResponse } from "@cap/contracts";
+import type { TaskResponse } from "@cap-console/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils";

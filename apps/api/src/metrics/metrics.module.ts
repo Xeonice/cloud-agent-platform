@@ -1,7 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common';
-import { GuardrailsModule } from '../guardrails/guardrails.module';
-import { GuardrailsService } from '../guardrails/guardrails.service';
-import { TaskProvisioningDiagnosticsModule } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.module';
+import { GuardrailsModule } from '@/guardrails/guardrails.module';
+import { GuardrailsService } from '@/guardrails/guardrails.service';
+import { TaskProvisioningDiagnosticsModule } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import { MetricsController } from './metrics.controller';
 import { MetricsService } from './metrics.service';
 import { TerminalDiagnosticsMetricsModule } from './terminal-diagnostics-metrics.module';

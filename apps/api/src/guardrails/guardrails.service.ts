@@ -8,29 +8,26 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type {
-  TaskProvisioningDiagnosticCommandKind,
   TaskProvisioningDiagnosticCleanupSummary,
-  TaskProvisioningDiagnosticOperation,
-  TaskProvisioningDiagnosticProviderFamily,
-  TaskProvisioningDiagnosticStage,
   TaskProvisioningStage,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
-  TasksService,
   AdmissionTransitionIndeterminateError,
+  TASK_OPERATIONS,
   type AdmissionTransitionResult,
-} from '../tasks/tasks.service';
+  type TaskOperationsPort,
+} from '@/task-operations/task-operations.port';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { PrismaService } from '../prisma/prisma.service';
-import { SessionCredentialsService } from '../creds/session-credentials.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
   type SandboxProvider,
   type SelectedSandboxRun,
-} from '../sandbox/sandbox-provider.port';
+} from '@/sandbox/sandbox-provider.port';
 import {
   buildSandboxProvisionPlan,
   createExactHostGitCredential,
@@ -50,8 +47,6 @@ import {
   type SandboxDetachedWorkspaceTransferJob,
   type SandboxWorkspaceTransferDetachment,
   type SandboxPhysicalCleanupResult,
-  type SandboxProvisioningDiagnosticEmitter,
-  type SandboxProvisioningDiagnosticFact,
   type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
   type SandboxRunCleanupAuthorityProjection,
@@ -59,7 +54,7 @@ import {
   type SandboxWorkspaceProgressEvent,
   type SandboxWorkspaceProgressReporter,
   type WorkspaceSource,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionLeaseLostError,
@@ -70,64 +65,66 @@ import {
   type TaskAdmissionProcessResult,
   type TaskAdmissionTerminalFailure,
   type TaskAdmissionTerminalRecovery,
-} from '../task-admission/task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 import {
   createThrottledTransferProgressWriter,
   type ThrottledTransferProgressWriter,
-} from '../task-admission/transfer-progress-throttle';
-import { triageParkedAdmissionMarkers } from '../task-admission/parked-admission-triage';
-import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+} from './transfer-progress-throttle';
+import { triageParkedAdmissionMarkers } from '@/admission-coordination/parked-admission-triage';
+import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
   type ProvisioningAuditFailure,
-} from '../audit/audit-recorder.port';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
+} from '@/audit/audit-recorder.port';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   TaskBranchResolutionError,
   TaskBranchResolver,
   isTaskBranchResolutionError,
-} from '../forge/task-branch-resolver';
-import { isWorkspaceSourceResolutionError } from '../sandbox/workspace-source-resolver';
+} from '@/forge/task-branch-resolver';
+import { isWorkspaceSourceResolutionError } from '@/sandbox/workspace-source-resolver';
+import type { InlineAdmissionPort } from '@/inline-admission/inline-admission.entry';
+import { InlineAdmissionPipeline } from '@/inline-admission/inline-admission.pipeline';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
 import { CircuitBreaker, type FailureKind } from './circuit-breaker';
-import type { SemaphoreProjectionSource } from '../metrics/metrics-projection';
+import type { SemaphoreProjectionSource } from '@/runner-metrics/metrics-projection';
 import {
   RunnerMinutesLedger,
   type RunningInterval,
-} from '../metrics/runner-minutes';
+} from '@/runner-metrics/runner-minutes';
 import {
   runWithTaskLog,
   runWithTaskProvisioningAttemptLog,
-} from '../observability/log-context';
-import type { RuntimeOutputFailure } from '../agent-runtime/agent-runtime.port';
+} from '@/observability/log-context';
+import type { RuntimeOutputFailure } from '@/agent-runtime/agent-runtime.port';
 import {
   isProvisioningTaskFailureCode,
   isRuntimeTaskFailureCode,
   taskFailureFromRecord,
   type ProvisioningTaskFailureCode,
   type RuntimeTaskFailureCode,
-} from '../tasks/task-failure';
+} from '@/task-failure/task-failure';
 import {
   classifyRuntimeModelRejectionEvidence,
   type RuntimeModelRejectionEvidence,
-} from '../agent-runtime/runtime-model-rejection-evidence';
-import { isValidMaxConcurrentTasks } from '../settings/settings-logic';
+} from '@/agent-runtime/runtime-model-rejection-evidence';
+import { isValidMaxConcurrentTasks } from '@/task-concurrency/limit';
 import {
   TASK_PROVISIONING_DIAGNOSTIC_RECORDER,
   type TaskProvisioningDiagnosticRecorderPort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
 import {
   TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
   type TaskProvisioningDiagnosticsWriteGatePort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import {
   classifyTaskProvisioningDiagnosticPrimaryFailure,
   taskProvisioningDiagnosticCauseFromFailureCode,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
 import {
   tryBeginTaskProvisioningDiagnosticObserver,
   tryResumeTaskProvisioningDiagnosticObserver,
@@ -137,7 +134,7 @@ import {
   type ResumeTaskProvisioningDiagnosticObserverInput,
   type TaskProvisioningDiagnosticSettlementController,
   type TaskProvisioningDiagnosticPrimarySettlementInput,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter';
 
 const EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS = 2_000;
 const TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS = 2_000;
@@ -164,16 +161,7 @@ interface DurableTerminalTaskSnapshot {
   readonly failureCode: string | null;
 }
 
-interface LegacyProvisioningDiagnosticPosition {
-  readonly stage: TaskProvisioningDiagnosticStage;
-  readonly operation: TaskProvisioningDiagnosticOperation;
-  readonly commandKind?: TaskProvisioningDiagnosticCommandKind | null;
-}
 
-interface LegacyProvisioningFailureCandidate {
-  readonly settlement: TaskProvisioningDiagnosticPrimarySettlementInput;
-  readonly providerBoundaryCrossed: boolean;
-}
 
 type RecoveredFailedAdmission =
   | { readonly kind: 'provisioning'; readonly causeCode: ProvisioningTaskFailureCode }
@@ -370,14 +358,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(GuardrailsService.name);
 
   /**
-   * `TasksService` is resolved lazily in {@link onModuleInit} (not injected in the
+   * The task operations are resolved lazily in {@link onModuleInit} (not injected in the
    * constructor) to BREAK the Tasks<->Guardrails construction cycle: TasksService
    * @Optional-injects GuardrailsService (GUARDRAILS_SERVICE_TOKEN), and a
    * constructor-time dependency back on TasksService made NestFactory.create()
    * deadlock — the app silently exited 0 mid-bootstrap (no listen). Resolving it
    * after all providers are instantiated gives both sides the real instance.
    */
-  private tasks!: TasksService;
+  private tasks!: TaskOperationsPort;
 
   /**
    * The terminal gateway, resolved lazily in {@link onModuleInit} (not injected
@@ -444,42 +432,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     Promise<TaskAdmissionTerminalRecovery>
   >();
   /**
-   * Legacy admission has no durable cleanup owner to recover after restart.
-   * Retain only its current process-local diagnostic controller so natural
-   * terminal settlement can append bounded cleanup evidence to the same
-   * attempt. This map is evidence plumbing, never cleanup authority.
+   * The synchronous, in-request admission pipeline taken when the deployment
+   * cannot prove `task-admission-v2`.
+   *
+   * It is constructed here rather than injected so that every context which
+   * builds a `GuardrailsService` — including the focused unit tests, which pass
+   * this constructor's optional arguments positionally — gets the same wiring
+   * without being edited. Deleting the pipeline directory leaves exactly the
+   * calls to this field as compile errors, which is the point.
    */
-  private readonly legacyDiagnosticAttempts = new Map<
-    string,
-    BegunTaskProvisioningDiagnosticObserver
-  >();
-  /** Last successfully accepted provider fact for terminal-winner settlement. */
-  private readonly legacyDiagnosticPositions = new Map<
-    string,
-    LegacyProvisioningDiagnosticPosition
-  >();
-  /**
-   * Provider failures are staged here before attempting the Task terminal CAS,
-   * but are not persisted or logged until that CAS has confirmed `failed`.
-   */
-  private readonly legacyProvisioningFailureCandidates = new Map<
-    string,
-    LegacyProvisioningFailureCandidate
-  >();
-  /** The provider promise was invoked; terminal cleanup must be observed. */
-  private readonly legacyProviderBoundariesCrossed = new Set<string>();
-  /** Provider boundary was never crossed; the primary already owns not_required. */
-  private readonly legacyCleanupNotRequired = new Set<string>();
-  /**
-   * Legacy admission has no durable lease signal, so each in-flight provider
-   * call owns one process-local cancellation source. The Task terminal fence
-   * aborts it synchronously; provider boundary guards still re-read the
-   * persisted running transition for cross-replica cancellation.
-   */
-  private readonly legacyProvisioningAbortControllers = new Map<
-    string,
-    AbortController
-  >();
+  private readonly inlineAdmission: InlineAdmissionPort;
   /** Coalesces duplicate startup readoption and keeps terminal fences live. */
   private readonly readoptionsInFlight = new Map<
     string,
@@ -584,6 +546,50 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     @Inject(TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE)
     private readonly provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,
   ) {
+
+    // The inline pipeline's whole coupling to this orchestrator, written out
+    // once. Nothing reaches back in except through this adapter, so the cost of
+    // keeping the pipeline is countable and the cost of removing it is this
+    // literal plus the directory.
+    this.inlineAdmission = new InlineAdmissionPipeline(
+      {
+        logger: () => this.logger,
+        clearAdmissionRuntime: (taskId) => this.clearAdmissionRuntime(taskId),
+        waitForRunningAdmission: (taskId, token, signal) =>
+          this.waitForRunningAdmission(taskId, token, signal),
+        settleProvisioningDiagnostics: (attempt, input) =>
+          this.settleProvisioningDiagnostics(attempt, input),
+        settleCleanupDiagnostics: (settlement, evidence) =>
+          this.settleCleanupDiagnostics(settlement, evidence),
+        tryResumeProvisioningDiagnostics: (input) =>
+          this.tryResumeProvisioningDiagnostics(input),
+        forceFail: (taskId, cause) => this.forceFail(taskId, cause),
+        failProvisioning: (taskId, error) => this.failProvisioning(taskId, error),
+        terminalTaskStatus: (taskId) => this.terminalTaskStatus(taskId),
+        isTerminallyFenced: (taskId) => this.terminalTasks.has(taskId),
+        terminalStatusOf: (taskId) => this.terminalTaskStatuses.get(taskId),
+        resolveProvisionPlan: (taskId) => this.resolveProvisionPlan(taskId),
+        resolveWorkspaceSource: (taskId, plan, capabilities) =>
+          this.resolveWorkspaceSource(taskId, plan, capabilities),
+        resolveSelectedRun: (taskId) => this.resolveSelectedRun(taskId),
+        buildWorkspaceProgressChain: (options) =>
+          this.buildWorkspaceProgressChain(options),
+        registerConnection: (taskId, connection) => {
+          this.connections.set(taskId, connection);
+        },
+        hasTerminalGateway: () => this.gateway !== undefined,
+        openTerminalSession: (connection, selectedRun) => {
+          const gateway = this.gateway;
+          if (!gateway) throw new Error('Terminal gateway is not resolved');
+          return gateway.openSession(connection, selectedRun);
+        },
+      },
+      this.sandbox,
+      this.prisma,
+      this.provisioningDiagnosticRecorder,
+      this.provisioningDiagnosticWriteGate,
+    );
+
     // admit-queued: when a slot frees, drive `queued -> running` for the admitted
     // task (FIFO) — the cross-track lifecycle call site for 12.1.
     this.semaphore = new ConcurrencySemaphore({
@@ -626,7 +632,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * Resolve `TasksService` and the terminal gateway after all providers are
+   * Resolve the task-operations port and the terminal gateway after all providers are
    * instantiated, breaking the construction cycles (see the `tasks`/`gateway`
    * field docs). `strict: false` lets the lookup cross module boundaries to the
    * TasksModule / TerminalModule providers.
@@ -637,7 +643,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * opening a session (4.2).
    */
   onModuleInit(): void {
-    this.tasks = this.moduleRef.get(TasksService, { strict: false });
+    this.tasks = this.moduleRef.get<TaskOperationsPort>(TASK_OPERATIONS, {
+      strict: false,
+    });
     try {
       this.gateway = this.moduleRef.get<ITerminalGateway>(TERMINAL_GATEWAY_TOKEN, {
         strict: false,
@@ -2025,7 +2033,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   fenceTerminal(taskId: string, status?: TaskStatus): void {
     this.terminalTasks.add(taskId);
     if (status !== undefined) this.terminalTaskStatuses.set(taskId, status);
-    this.abortLegacyProvisioning(taskId);
+    this.inlineAdmission.abortProvisioning(taskId);
     this.clearTimers(taskId);
     this.runnerMinutes.recordEnd(taskId);
   }
@@ -2275,12 +2283,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     plan: SandboxSettlePlan,
     terminalStatus?: TaskStatus,
   ): Promise<void> {
-    const diagnosticAttempt = await this.resolveLegacyTerminalDiagnosticAttempt(
-      taskId,
-    );
+    const diagnosticAttempt =
+      await this.inlineAdmission.resolveTerminalDiagnosticAttempt(taskId);
     let cleanupAuthority: SandboxRunCleanupAuthorityProjection | undefined;
     let providerBoundaryCrossed =
-      this.legacyProviderBoundariesCrossed.has(taskId);
+      this.inlineAdmission.providerBoundaryCrossed(taskId);
     const getCleanupAuthority = this.sandbox?.getSandboxCleanupAuthority;
     if (getCleanupAuthority) {
       try {
@@ -2299,15 +2306,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
     }
     if (diagnosticAttempt) {
-      await this.settleLegacyTerminalPrimary(
+      await this.inlineAdmission.settleTerminalPrimary(
         taskId,
         diagnosticAttempt,
         terminalStatus ?? (await this.terminalTaskStatus(taskId)),
-        createLegacyProvisioningCancellationError(),
         providerBoundaryCrossed,
       );
     }
-    const cleanupNotRequired = this.legacyCleanupNotRequired.has(taskId);
+    const cleanupNotRequired = this.inlineAdmission.cleanupNotRequired(taskId);
     if (
       cleanupAuthority?.ownershipKind === 'generation' &&
       (cleanupAuthority.status === 'provisioning' ||
@@ -2370,11 +2376,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         cleanupSummary,
       );
     }
-    this.legacyDiagnosticAttempts.delete(taskId);
-    this.legacyDiagnosticPositions.delete(taskId);
-    this.legacyProvisioningFailureCandidates.delete(taskId);
-    this.legacyProviderBoundariesCrossed.delete(taskId);
-    this.legacyCleanupNotRequired.delete(taskId);
+    this.inlineAdmission.forget(taskId);
     if (
       cleanupAuthority?.ownershipKind === 'generation' &&
       (cleanupAuthority.status === 'provisioning' ||
@@ -2579,7 +2581,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // crossing a provider boundary so an operator terminal transition that won
     // during that window cannot start stale provisioning work.
     if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-      await this.settleLegacyProvisioningSupersession(
+      await this.inlineAdmission.settleProvisioningSupersession(
         taskId,
         diagnosticAttempt,
         undefined,
@@ -2630,437 +2632,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // terminal gateway, which opens an `AioPtyClient` to `connection.wsUrl` and
     // registers the `TerminalSession` (4.2). Best-effort: a provision failure is
     // logged, not fatal to the lifecycle transition.
-    const sandbox = this.sandbox;
-    if (sandbox) {
-      let provisionPlan;
-      try {
-        provisionPlan = await this.resolveProvisionPlan(taskId);
-      } catch (err) {
-        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-          await this.settleLegacyProvisioningSupersession(
-            taskId,
-            diagnosticAttempt,
-            err,
-            false,
-          );
-          this.clearAdmissionRuntime(taskId);
-          return 'superseded';
-        }
-        this.rememberLegacyProvisioningFailure(
-          taskId,
-          err,
-          'provider_selection',
-          false,
-        );
-        const winner = await this.failProvisioning(taskId, err);
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          err,
-          false,
-        );
-        if (
-          winner === 'failed' &&
-          this.terminalTaskStatuses.get(taskId) === 'failed'
-        ) {
-          this.logger.error(
-            `resolve sandbox requirements for task ${taskId} failed (provider details redacted)`,
-          );
-        }
-        return this.finishLegacyProvisioningFailure(taskId, winner);
-      }
-      if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          undefined,
-          false,
-        );
-        this.clearAdmissionRuntime(taskId);
-        return 'superseded';
-      }
-      let selected;
-      let selectionError: unknown;
-      try {
-        selected = selectSandboxProvider(
-          sandbox,
-          provisionPlan.requiredCapabilities,
-        );
-      } catch (error) {
-        selectionError = error;
-      }
-      if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          selectionError,
-          false,
-        );
-        this.clearAdmissionRuntime(taskId);
-        return 'superseded';
-      }
-      if (this.terminalTasks.has(taskId)) {
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          selectionError,
-          false,
-        );
-        this.clearAdmissionRuntime(taskId);
-        return 'superseded';
-      }
-      if (!selected) {
-        const error = selectionError ?? new Error('Sandbox provider unavailable');
-        this.rememberLegacyProviderUnavailable(taskId, false);
-        const winner = await this.forceFail(taskId, 'provision_failed');
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          error,
-          false,
-        );
-        if (
-          winner === 'failed' &&
-          this.terminalTaskStatuses.get(taskId) === 'failed'
-        ) {
-          this.logger.error(
-            `select sandbox provider for task ${taskId} failed (provider details redacted)`,
-          );
-        }
-        return this.finishLegacyProvisioningFailure(taskId, winner);
-      }
-
-      // The synchronous fence immediately precedes the provider invocation.
-      // Legacy admission has no lease-owned signal, so retain one task-owned
-      // controller for this provider call and combine it with any plan signal.
-      // The persisted transition guard closes the same race across replicas.
-      if (this.terminalTasks.has(taskId)) {
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          undefined,
-          false,
-        );
-        this.clearAdmissionRuntime(taskId);
-        return 'superseded';
-      }
-      let connection: SandboxConnection | undefined;
-      const provisioningCancellation = this.beginLegacyProvisioning(taskId);
-      const providerCancellationSignal = combineCancellationSignals(
-        provisionPlan.cancellationSignal,
-        provisioningCancellation.signal,
-      );
-      try {
-        // Resolved BEFORE the provider boundary is marked: a fail-closed
-        // workspace-source error (copy not ready / unsupported provider) is a
-        // provisioning failure that crossed no provider boundary.
-        const workspaceSource = await this.resolveWorkspaceSource(
-          taskId,
-          provisionPlan,
-          selected.capabilities,
-        );
-        this.legacyProviderBoundariesCrossed.add(taskId);
-        connection = await selected.provider.provision(
-          snapshotSandboxProvisionContext({
-            taskId,
-            ...(workspaceSource === undefined ? {} : { workspaceSource }),
-            ...(diagnosticAttempt === undefined
-              ? {}
-              : {
-                  diagnostics: this.observeLegacyProvisioningDiagnostics(
-                    taskId,
-                    diagnosticAttempt.diagnostics,
-                  ),
-                }),
-            cloneSpec: provisionPlan.cloneSpec,
-            modelIntent: provisionPlan.modelIntent,
-            runtimeId: provisionPlan.runtimeId,
-            executionMode: provisionPlan.executionMode,
-            environment: provisionPlan.environment,
-            resources: provisionPlan.resources,
-            workspace: provisionPlan.workspace,
-            cancellationSignal: providerCancellationSignal,
-            externalBoundaryGuard: async () => {
-              if (
-                await this.waitForRunningAdmission(
-                  taskId,
-                  transitionToken,
-                  providerCancellationSignal,
-                )
-              ) {
-                return;
-              }
-              if (!provisioningCancellation.signal.aborted) {
-                provisioningCancellation.abort(
-                  createLegacyProvisioningCancellationError(),
-                );
-              }
-              throw (
-                provisioningCancellation.signal.reason ??
-                createLegacyProvisioningCancellationError()
-              );
-            },
-            // detach-workspace-clone D11: the legacy chain is kept (it still
-            // has live callers) but routed through the same shared workspace
-            // progress chain as durable admission, so additive progress
-            // variants can never drift between the two chains. Legacy has no
-            // durable lease, so no checkpoint hook is supplied — and for the
-            // same reason it deliberately passes NO workspaceTransferDetachment:
-            // without a parked settlement/lease to hand the claim to, the
-            // legacy chain explicitly and consistently keeps the inline
-            // (blocking) await of the detached transfer, which still runs as
-            // a detached job under dual-gate liveness — never the old
-            // single-deadline blocking exec, and never a half-parked state.
-            onWorkspaceProgress: this.buildWorkspaceProgressChain({
-              forward: provisionPlan.onWorkspaceProgress,
-            }),
-          }),
-        );
-      } catch (err) {
-        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-          await this.settleLegacyProvisioningSupersession(
-            taskId,
-            diagnosticAttempt,
-            err,
-          );
-          this.clearAdmissionRuntime(taskId);
-          return 'superseded';
-        }
-        this.rememberLegacyProvisioningFailure(
-          taskId,
-          err,
-          'sandbox_creation',
-          true,
-        );
-        const winner = await this.failProvisioning(taskId, err);
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          err,
-          true,
-        );
-        if (
-          winner === 'failed' &&
-          this.terminalTaskStatuses.get(taskId) === 'failed'
-        ) {
-          this.logger.error(
-            `provision sandbox for task ${taskId} failed (provider details redacted)`,
-          );
-        }
-        return this.finishLegacyProvisioningFailure(taskId, winner);
-      } finally {
-        this.releaseLegacyProvisioning(taskId, provisioningCancellation);
-      }
-      if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          createLegacyProvisioningCancellationError(),
-          true,
-        );
-        await selected.provider.teardownSandbox(taskId, {
-          disposition: 'superseded-remove',
-        }).catch(() => {
-          this.logger.warn(
-            `discarding superseded sandbox for task ${taskId} failed (provider details redacted)`,
-          );
-        });
-        this.clearAdmissionRuntime(taskId);
-        return 'superseded';
-      }
-      if (connection) {
-        this.connections.set(taskId, connection);
-        const selectedRun = await this.resolveSelectedRun(taskId);
-        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-          await this.settleLegacyProvisioningSupersession(
-            taskId,
-            diagnosticAttempt,
-            undefined,
-            true,
-          );
-          await selected.provider.teardownSandbox(taskId, {
-            disposition: 'superseded-remove',
-          }).catch(() => {
-            this.logger.warn(
-              `discarding superseded sandbox for task ${taskId} failed (provider details redacted)`,
-            );
-          });
-          this.clearAdmissionRuntime(taskId);
-          return 'superseded';
-        }
-        if (this.terminalTasks.has(taskId)) {
-          await this.settleLegacyProvisioningSupersession(
-            taskId,
-            diagnosticAttempt,
-            undefined,
-            true,
-          );
-          await selected.provider.teardownSandbox(taskId, {
-            disposition: 'superseded-remove',
-          }).catch(() => {
-            this.logger.warn(
-              `discarding terminal sandbox for task ${taskId} failed (provider details redacted)`,
-            );
-          });
-          this.clearAdmissionRuntime(taskId);
-          return 'superseded';
-        }
-        // 4.2 — hand the handle through to the terminal gateway so it dials the
-        // sandbox terminal OUT and registers the session (replacing the previous
-        // dial-back-registers-the-session flow). Idempotent on the gateway side;
-        // best-effort so a terminal wiring hiccup never fails the lifecycle.
-        const gateway = this.gateway;
-        if (gateway) {
-          try {
-            this.legacyDiagnosticPositions.set(taskId, {
-              stage: 'agent_launch',
-              operation: 'agent_launch',
-              commandKind: 'agent_launch',
-            });
-            const session = gateway.openSession(connection, selectedRun);
-            this.observeLegacyAgentLaunchDiagnostics(
-              taskId,
-              transitionToken,
-              diagnosticAttempt,
-              session.launchDecision,
-            );
-          } catch {
-            this.logger.error(
-              `opening terminal session for task ${taskId} failed (provider details redacted)`,
-            );
-            await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-              state: 'failed',
-              stage: 'agent_launch',
-              operation: 'agent_launch',
-              commandKind: 'agent_launch',
-              outcome: 'failed',
-              cause: 'unknown',
-              retryable: false,
-              exitCode: null,
-              completion: 'leave_partial',
-            });
-          }
-        } else {
-          await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-            state: 'failed',
-            stage: 'agent_launch',
-            operation: 'agent_launch',
-            commandKind: 'agent_launch',
-            outcome: 'failed',
-            cause: 'provider_unavailable',
-            retryable: false,
-            exitCode: null,
-            completion: 'leave_partial',
-          });
-        }
-      } else {
-        // provision REJECTED (or returned no handle): the provider already tore
-        // down any partially-started container (its own try/catch). Reclaim NOW
-        // instead of waiting for the idle ceiling — forceFail transitions the
-        // task to `failed`, clears its timers, tears down the session, and
-        // RELEASES the run slot (admitting the next queued task). Without this
-        // the slot stays held until idle-timeout, starving the queue whenever a
-        // provision fails (e.g. codex auth / clone fail-closed).
-        const error = new Error('Sandbox provider returned no connection');
-        this.rememberLegacyProvisioningFailure(
-          taskId,
-          error,
-          'sandbox_creation',
-          true,
-        );
-        const winner = await this.forceFail(taskId, 'provision_failed');
-        await this.settleLegacyProvisioningSupersession(
-          taskId,
-          diagnosticAttempt,
-          error,
-          true,
-        );
-        return this.finishLegacyProvisioningFailure(taskId, winner);
-      }
-    } else {
-      const error = new Error('Sandbox provider unavailable');
-      this.rememberLegacyProviderUnavailable(taskId, false);
-      const winner = await this.forceFail(taskId, 'provision_failed');
-      await this.settleLegacyProvisioningSupersession(
-        taskId,
-        diagnosticAttempt,
-        error,
-        false,
-      );
-      return this.finishLegacyProvisioningFailure(taskId, winner);
-    }
-    return 'transitioned';
+    return this.inlineAdmission.run(taskId, transitionToken, diagnosticAttempt);
   }
 
-  /**
-   * Legacy admission returns after session registration, but the terminal's
-   * non-rejecting launch decision is the actual agent-launch proof. Observe it
-   * out of band so request completion/disconnect never owns diagnostic lifetime.
-   */
-  private observeLegacyAgentLaunchDiagnostics(
-    taskId: string,
-    transitionToken: string,
-    attempt: BegunTaskProvisioningDiagnosticObserver | undefined,
-    launchDecision: Promise<AgentTerminalLaunchOutcome>,
-  ): void {
-    void launchDecision
-      .then(async (decision) => {
-        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-          await this.settleLegacyProvisioningSupersession(
-            taskId,
-            attempt,
-            undefined,
-            true,
-          );
-          return;
-        }
-        if (decision.kind === 'fenced') return;
-        if (decision.kind === 'launched' || decision.kind === 'attached') {
-          await this.settleProvisioningDiagnostics(attempt, {
-            state: 'succeeded',
-            stage: 'agent_launch',
-            operation: 'agent_launch',
-            commandKind: 'agent_launch',
-            outcome: 'succeeded',
-            cause: null,
-            retryable: false,
-            exitCode: null,
-            completion: 'leave_partial',
-          });
-          return;
-        }
-        await this.settleProvisioningDiagnostics(attempt, {
-          state: 'failed',
-          stage: 'agent_launch',
-          operation: 'agent_launch',
-          commandKind: 'agent_launch',
-          outcome:
-            decision.kind === 'indeterminate' ? 'indeterminate' : 'failed',
-          cause: 'unknown',
-          retryable: false,
-          exitCode: null,
-          completion: 'leave_partial',
-        });
-      })
-      .catch(async (error: unknown) => {
-        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-          await this.settleLegacyProvisioningSupersession(
-            taskId,
-            attempt,
-            error,
-            true,
-          );
-          return;
-        }
-        await this.settleProvisioningDiagnostics(attempt, {
-          ...classifyTaskProvisioningDiagnosticPrimaryFailure(
-            error,
-            'agent_launch',
-          ),
-          completion: 'leave_partial',
-        });
-      });
-  }
 
   /**
    * Open evidence only when the independent deployment switch and recorder are
@@ -3096,11 +2670,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         // continuation will settle it directly from the retained terminal
         // fence before returning.
         if (!this.terminalTasks.has(input.taskId)) {
-          this.legacyDiagnosticAttempts.set(input.taskId, attempt);
-          this.legacyDiagnosticPositions.set(input.taskId, {
-            stage: 'provider_selection',
-            operation: 'provider_select',
-          });
+          this.inlineAdmission.rememberBegunAttempt(input.taskId, attempt);
         }
       }
       return attempt;
@@ -3114,7 +2684,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       void begin
         .then(async (lateAttempt) => {
           if (input.admissionMode === 'legacy' && this.terminalTasks.has(input.taskId)) {
-            await this.settleLegacyProvisioningSupersession(
+            await this.inlineAdmission.settleProvisioningSupersession(
               input.taskId,
               lateAttempt,
               undefined,
@@ -3158,52 +2728,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  /**
-   * Legacy cleanup has no durable SandboxRun recovery authority, but its
-   * diagnostic attempt is still durable evidence. Prefer the process-local
-   * controller and, after a process restart, resume only the exact latest
-   * legacy attempt number already allocated by the recorder.
-   */
-  private async resolveLegacyTerminalDiagnosticAttempt(
-    taskId: string,
-  ): Promise<BegunTaskProvisioningDiagnosticObserver | undefined> {
-    const existing = this.legacyDiagnosticAttempts.get(taskId);
-    if (existing) return existing;
-    if (
-      !this.prisma ||
-      !this.provisioningDiagnosticRecorder ||
-      !this.provisioningDiagnosticWriteGate
-    ) {
-      return undefined;
-    }
-    try {
-      if (!this.provisioningDiagnosticWriteGate.isEnabled()) return undefined;
-      const task = await this.prisma.task.findUnique({
-        where: { id: taskId },
-        select: {
-          provisioningDiagnosticSchemaVersion: true,
-          provisioningDiagnosticNextAttempt: true,
-        },
-      });
-      if (
-        task?.provisioningDiagnosticSchemaVersion === null ||
-        task?.provisioningDiagnosticSchemaVersion === undefined ||
-        task.provisioningDiagnosticNextAttempt === null ||
-        task.provisioningDiagnosticNextAttempt <= 1
-      ) {
-        return undefined;
-      }
-      const resumed = await this.tryResumeProvisioningDiagnostics({
-        taskId,
-        admissionMode: 'legacy',
-        attempt: task.provisioningDiagnosticNextAttempt - 1,
-      });
-      if (resumed) this.legacyDiagnosticAttempts.set(taskId, resumed);
-      return resumed;
-    } catch {
-      return undefined;
-    }
-  }
 
   /**
    * Best-effort attempt projection. Even a malformed custom binding must not
@@ -3218,7 +2742,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       attempt.context.admissionMode === 'legacy' &&
       input.completion === 'mark_if_complete'
     ) {
-      this.legacyCleanupNotRequired.add(attempt.context.taskId);
+      this.inlineAdmission.markCleanupNotRequired(attempt.context.taskId);
     }
     // `settlePrimary` selects its immutable first winner synchronously. Invoke
     // it directly so a Task-CAS terminal continuation cannot overtake an
@@ -3389,104 +2913,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  private beginLegacyProvisioning(taskId: string): AbortController {
-    this.abortLegacyProvisioning(taskId);
-    const controller = new AbortController();
-    this.legacyProvisioningAbortControllers.set(taskId, controller);
-    return controller;
-  }
 
-  private abortLegacyProvisioning(taskId: string): void {
-    const controller = this.legacyProvisioningAbortControllers.get(taskId);
-    if (!controller) return;
-    this.legacyProvisioningAbortControllers.delete(taskId);
-    if (!controller.signal.aborted) {
-      controller.abort(createLegacyProvisioningCancellationError());
-    }
-  }
 
-  private releaseLegacyProvisioning(
-    taskId: string,
-    controller: AbortController,
-  ): void {
-    if (this.legacyProvisioningAbortControllers.get(taskId) === controller) {
-      this.legacyProvisioningAbortControllers.delete(taskId);
-    }
-  }
 
-  private observeLegacyProvisioningDiagnostics(
-    taskId: string,
-    diagnostics: SandboxProvisioningDiagnosticEmitter,
-  ): SandboxProvisioningDiagnosticEmitter {
-    return Object.freeze({
-      mode: 'task' as const,
-      get attemptContext() {
-        return diagnostics.attemptContext;
-      },
-      createOperationId(replayKey?: Parameters<typeof diagnostics.createOperationId>[0]) {
-        return diagnostics.createOperationId(replayKey);
-      },
-      emit: async (fact: SandboxProvisioningDiagnosticFact): Promise<void> => {
-        await diagnostics.emit(fact);
-        this.legacyDiagnosticPositions.set(taskId, {
-          stage: fact.stage,
-          operation: fact.operation,
-          ...(fact.commandKind === undefined
-            ? {}
-            : { commandKind: fact.commandKind }),
-        });
-      },
-      flush(): Promise<void> {
-        return diagnostics.flush();
-      },
-      bindProviderFamily(
-        providerFamily: TaskProvisioningDiagnosticProviderFamily,
-      ) {
-        diagnostics.bindProviderFamily(providerFamily);
-      },
-    });
-  }
 
-  private rememberLegacyProvisioningFailure(
-    taskId: string,
-    error: unknown,
-    fallbackStage: TaskProvisioningDiagnosticStage,
-    providerBoundaryCrossed: boolean,
-  ): void {
-    this.legacyProvisioningFailureCandidates.set(taskId, {
-      settlement: {
-        ...classifyTaskProvisioningDiagnosticPrimaryFailure(
-          error,
-          fallbackStage,
-        ),
-        completion: providerBoundaryCrossed
-          ? 'leave_partial'
-          : 'mark_if_complete',
-      },
-      providerBoundaryCrossed,
-    });
-  }
 
-  private rememberLegacyProviderUnavailable(
-    taskId: string,
-    providerBoundaryCrossed: boolean,
-  ): void {
-    this.legacyProvisioningFailureCandidates.set(taskId, {
-      settlement: {
-        state: 'failed',
-        stage: 'provider_selection',
-        operation: 'provider_select',
-        outcome: 'failed',
-        cause: 'provider_unavailable',
-        retryable: false,
-        exitCode: null,
-        completion: providerBoundaryCrossed
-          ? 'leave_partial'
-          : 'mark_if_complete',
-      },
-      providerBoundaryCrossed,
-    });
-  }
 
   private async terminalTaskStatus(
     taskId: string,
@@ -3509,155 +2940,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  private cancellationSettlementForLegacyAttempt(
-    taskId: string,
-    error: unknown,
-    providerBoundaryCrossed: boolean,
-    completion: 'mark_if_complete' | 'leave_partial',
-  ): TaskProvisioningDiagnosticPrimarySettlementInput {
-    const classified = classifyTaskProvisioningDiagnosticPrimaryFailure(
-      error,
-      providerBoundaryCrossed
-        ? 'sandbox_creation'
-        : 'provider_selection',
-    );
-    const position = this.legacyDiagnosticPositions.get(taskId);
-    return {
-      ...classified,
-      ...(position === undefined
-        ? {}
-        : {
-            stage: position.stage,
-            operation: position.operation,
-            ...(position.commandKind === undefined
-              ? { commandKind: null }
-              : { commandKind: position.commandKind }),
-          }),
-      state: 'cancelled',
-      outcome: 'cancelled',
-      cause: 'cancelled',
-      retryable: false,
-      exitCode: null,
-      completion,
-    };
-  }
 
-  private async settleLegacyTerminalPrimary(
-    taskId: string,
-    diagnosticAttempt: BegunTaskProvisioningDiagnosticObserver | undefined,
-    status: TaskStatus | undefined,
-    error: unknown,
-    providerBoundaryCrossed: boolean,
-  ): Promise<void> {
-    if (!diagnosticAttempt) return;
-    const candidate = this.legacyProvisioningFailureCandidates.get(taskId);
-    if (
-      status === 'failed' &&
-      candidate &&
-      this.terminalTaskStatuses.get(taskId) === 'failed'
-    ) {
-      await this.settleProvisioningDiagnostics(
-        diagnosticAttempt,
-        candidate.settlement,
-      );
-      return;
-    }
-    if (status === 'cancelled') {
-      await this.settleProvisioningDiagnostics(
-        diagnosticAttempt,
-        this.cancellationSettlementForLegacyAttempt(
-          taskId,
-          error,
-          providerBoundaryCrossed,
-          providerBoundaryCrossed ? 'leave_partial' : 'mark_if_complete',
-        ),
-      );
-      return;
-    }
 
-    const position = this.legacyDiagnosticPositions.get(taskId);
-    const classified = classifyTaskProvisioningDiagnosticPrimaryFailure(
-      error,
-      providerBoundaryCrossed
-        ? 'sandbox_creation'
-        : 'provider_selection',
-    );
-    await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-      ...classified,
-      ...(position === undefined
-        ? {}
-        : {
-            stage: position.stage,
-            operation: position.operation,
-            ...(position.commandKind === undefined
-              ? { commandKind: null }
-              : { commandKind: position.commandKind }),
-          }),
-      state: 'interrupted',
-      outcome: 'indeterminate',
-      cause: 'settlement_unknown',
-      retryable: true,
-      exitCode: null,
-      completion: providerBoundaryCrossed
-        ? 'leave_partial'
-        : 'mark_if_complete',
-    });
-  }
 
-  private async settleLegacyProvisioningSupersession(
-    taskId: string,
-    diagnosticAttempt: BegunTaskProvisioningDiagnosticObserver | undefined,
-    error: unknown = createLegacyProvisioningCancellationError(),
-    providerBoundaryCrossed = true,
-  ): Promise<void> {
-    await this.settleLegacyTerminalPrimary(
-      taskId,
-      diagnosticAttempt,
-      await this.terminalTaskStatus(taskId),
-      error,
-      providerBoundaryCrossed,
-    );
-    if (!providerBoundaryCrossed || !diagnosticAttempt) return;
-    const getCleanupAuthority = this.sandbox?.getSandboxCleanupAuthority;
-    if (!getCleanupAuthority) return;
-    try {
-      const authority = await getCleanupAuthority.call(this.sandbox, taskId);
-      if (authority.status === null) return;
-      // A provider continuation may be the only replica that can close its
-      // entered create fence. Once that continuation has durably converged the
-      // cleanup, advance the same task attempt from the terminal replica's
-      // pending evidence. A still-pending attempt is retained too: it carries
-      // exact failed/indeterminate evidence without manufacturing completeness.
-      await this.settleCleanupDiagnostics(
-        diagnosticAttempt.settlement,
-        authority,
-      );
-    } catch {
-      // Cleanup authority remains owned by the persistent fence. An uncertain
-      // read cannot manufacture terminal cleanup or diagnostic completeness.
-    }
-  }
-
-  /**
-   * TasksService returns the already-committed row when another replica wins
-   * the same `failed` transition. With no local terminal callback, that replica
-   * owns audit and physical settlement; this process must retire only its local
-   * timers/session mirror and report supersession so admitUntracked releases its
-   * exact semaphore reservation.
-   */
-  private finishLegacyProvisioningFailure(
-    taskId: string,
-    winner: TaskStatus | undefined,
-  ): 'transitioned' | 'superseded' {
-    if (
-      winner !== 'failed' ||
-      this.terminalTaskStatuses.get(taskId) === 'failed'
-    ) {
-      return 'transitioned';
-    }
-    this.clearAdmissionRuntime(taskId);
-    return 'superseded';
-  }
 
   private clearAdmissionRuntime(taskId: string): void {
     this.clearTimers(taskId);
@@ -3668,7 +2953,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
   private async armDurableRuntime(
     taskId: string,
-    lease: import('../task-admission/task-admission.types').TaskAdmissionLeaseControls,
+    lease: import('@/admission-coordination/task-admission.types').TaskAdmissionLeaseControls,
   ): Promise<void> {
     if (this.durableRuntimeArmed.has(taskId)) return;
     await lease.authorize();
@@ -4484,22 +3769,7 @@ function isTaskAdmissionControlSignal(error: unknown): boolean {
   );
 }
 
-function combineCancellationSignals(
-  ...signals: Array<AbortSignal | undefined>
-): AbortSignal | undefined {
-  const defined = signals.filter(
-    (signal): signal is AbortSignal => signal !== undefined,
-  );
-  if (defined.length === 0) return undefined;
-  if (defined.length === 1) return defined[0];
-  return AbortSignal.any(defined);
-}
 
-function createLegacyProvisioningCancellationError(): Error {
-  const error = new Error('Legacy sandbox provisioning was cancelled');
-  error.name = 'AbortError';
-  return error;
-}
 
 function isTerminalTaskStatus(status: TaskStatus): boolean {
   return (

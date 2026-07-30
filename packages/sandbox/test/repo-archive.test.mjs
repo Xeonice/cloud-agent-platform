@@ -79,9 +79,16 @@ try {
         /exit_code 7$/u.test(error.message),
     );
   });
+  // `%0600d`, not `%0600s`. POSIX defines the `0` flag for numeric conversions
+  // only: bash pads `%s` with ZEROS while dash pads it with SPACES, and this
+  // assertion needs the excerpt to survive `.trim()` after the implementation
+  // truncates it to its first 500 characters. Under dash those 500 characters
+  // were all whitespace, so the excerpt vanished and the message arrived without
+  // it — a portability defect in this fixture that read exactly like a Linux-only
+  // failure in the code under test.
   await writeFile(
     failingTar,
-    "#!/bin/sh\nprintf '%0600s' x >&2\nexit 8\n",
+    "#!/bin/sh\nprintf '%0600d' 0 >&2\nexit 8\n",
   );
   await withPath(failingBin, async () => {
     await assert.rejects(

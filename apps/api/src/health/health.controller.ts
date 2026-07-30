@@ -1,5 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
-import { resolveVersionResponse, type VersionResponse } from '@cap/contracts';
+import { resolveVersionResponse, type VersionResponse } from '@cap-console/contracts';
 
 /**
  * Unauthenticated liveness endpoint.
@@ -32,7 +32,7 @@ export class HealthController {
  * in the api Dockerfile and injected by the release workflow's build args). Each
  * field falls back to `"unknown"` when not provided, so a plain source build with
  * no version args reports HONESTLY rather than failing. The fallback logic lives
- * in `@cap/contracts.resolveVersionResponse` (pure, shared, testable); the handler
+ * in `@cap-console/contracts.resolveVersionResponse` (pure, shared, testable); the handler
  * reads `process.env` at REQUEST time so a redeploy with new args is reflected
  * without a code change.
  */

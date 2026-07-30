@@ -22,12 +22,12 @@
  * trusted verbatim.
  */
 import { useSyncExternalStore } from "react";
-import { GitBranchNameSchema, TaskResponseSchema } from "@cap/contracts";
+import { GitBranchNameSchema, TaskResponseSchema } from "@cap-console/contracts";
 import type {
   ClaudeCredential,
   CodexCredential,
   RetentionDays,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 /** The `localStorage` key, reused from the prototype (research-brief risk #12). */
 export const STORE_KEY = "agent-control-plane-state";

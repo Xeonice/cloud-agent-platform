@@ -16,14 +16,14 @@
 
 ```
 apps/
-├── web/            # @cap/web — TanStack Start 控制台 (Vite + Nitro)，部署到 Vercel
-├── api/            # @cap/api — NestJS 后端：本地账号/会话、任务、仓库、
+├── web/            # @cap-console/web — TanStack Start 控制台 (Vite + Nitro)，部署到 Vercel
+├── api/            # @cap-console/api — NestJS 后端：本地账号/会话、任务、仓库、
 │                   #   指标、审计/历史、设置、GitHub 导入、终端 WS 网关
 ├── runner/         # 任务 runner
 └── sandbox-hooks/  # 沙箱生命周期钩子
 packages/
-├── contracts/      # @cap/contracts — 共享的 Task/Repo/TaskStatus 类型、WS 帧、schema
-└── ui/             # @cap/ui — 共享的 shadcn 派生组件 (Button/Card/Badge/Terminal)
+├── contracts/      # @cap-console/contracts — 共享的 Task/Repo/TaskStatus 类型、WS 帧、schema
+└── ui/             # @cap-console/ui — 共享的 shadcn 派生组件 (Button/Card/Badge/Terminal)
 docs/               # 面向贡献者的导览文档 (见 docs/repo-layout.md)
 openspec/           # spec 内容：specs、changes、schema fork
 ```
@@ -50,10 +50,10 @@ Node/pnpm 由工作区统一管理（pnpm 10，Node ≥ 22）。请在仓库根�
 | --- | --- |
 | 安装 | `pnpm install` |
 | 校验所有内容 | `pnpm verify` (= `turbo typecheck lint build` + 终端响应 profile 源一致性门禁) |
-| Web 开发服务器 | `pnpm --filter @cap/web dev` (端口 3000) |
-| Web 生产构建 | `pnpm --filter @cap/web build` |
-| Web 类型检查 | `pnpm --filter @cap/web typecheck` |
-| Web 单元测试 | `pnpm --filter @cap/web test` |
+| Web 开发服务器 | `pnpm --filter @cap-console/web dev` (端口 3000) |
+| Web 生产构建 | `pnpm --filter @cap-console/web build` |
+| Web 类型检查 | `pnpm --filter @cap-console/web typecheck` |
+| Web 单元测试 | `pnpm --filter @cap-console/web test` |
 | 构建全部 | `turbo build` |
 | 类型检查全部 | `turbo typecheck` |
 | Lint 全部 | `turbo lint` |
@@ -126,7 +126,7 @@ legacy env 已被 gitignore，绝不提交。
   反向代理、cookie 作用域和防火墙。
 - **网页控制台现在随 compose 栈一起发布**（一个 `web` Node 服务，端口 3000），
   因此 `docker compose up` 会把 web + api + Postgres 一起拉起；本地开发时你
-  仍可独立运行它（`pnpm --filter @cap/web dev`）。
+  仍可独立运行它（`pnpm --filter @cap-console/web dev`）。
 
 要进行真正的**生产自托管**（通过 `docker compose up` 拉起完整的 web + api +
 Postgres 栈、本地账号登录、PAT 仓库访问，以及公网域名 / cookie 作用域配置），

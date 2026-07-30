@@ -96,7 +96,9 @@ interface FakeContext {
 function ctx(opts: { path?: string; cookie?: string } = {}): FakeContext {
   const headers: Record<string, string> = {};
   if (opts.cookie !== undefined) headers.cookie = opts.cookie;
-  const request = { path: opts.path ?? '/tasks', url: opts.path ?? '/tasks', headers };
+  // A real Express request always carries a method; these cases exercise session
+  // validation, not writes, so GET keeps them out of the cross-site-forgery lane.
+  const request = { method: 'GET', path: opts.path ?? '/tasks', url: opts.path ?? '/tasks', headers };
   return {
     request: request as unknown as AuthenticatedRequest,
     switchToHttp: () => ({ getRequest: () => request }),

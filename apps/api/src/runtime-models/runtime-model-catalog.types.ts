@@ -7,7 +7,7 @@ import type {
   RuntimeModelCatalogSource,
   RuntimeModelEffectiveEnvironment,
   RuntimeModelError,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 export type RuntimeModelCredentialMode =
   | 'official'

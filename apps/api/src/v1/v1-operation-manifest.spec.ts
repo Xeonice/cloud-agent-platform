@@ -24,16 +24,16 @@ import {
   DispatchScheduleRequestSchema,
   PUBLIC_V1_OPERATIONS,
   UpdateScheduleRequestSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
-import { AppModule } from '../app.module';
-import { OpenApiController } from '../openapi/openapi.controller';
+import { AppModule } from '@/app.module';
+import { OpenApiController } from '@/openapi/openapi.controller';
 import {
   PUBLIC_V1_DATA_CONTROLLER_METADATA,
   publicV1OperationForHandler,
   publicV1OperationIdForHandler,
   type PublicV1Handler,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 import { V1Module } from './v1.module';
 
 /**

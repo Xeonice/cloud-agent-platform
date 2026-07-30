@@ -28,9 +28,9 @@ import { ForbiddenException, BadRequestException } from '@nestjs/common';
 
 import { AccountsService } from './accounts.service';
 import { AccountsController } from './accounts.controller';
-import { PrismaService } from '../prisma/prisma.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import { PrismaService } from '@/prisma/prisma.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 // ---------------------------------------------------------------------------
 // In-memory fake Prisma (user + identityLink delegates, incl. nested create)
@@ -221,6 +221,11 @@ function sessionPrincipal(userId: string): OperatorPrincipal {
       name: 'Admin',
       avatarUrl: '',
       allowed: true,
+      // `role` is REQUIRED on a real SessionUser and `resolveSession` reads it
+      // fresh from the DB on every request, so the admin gate may rely on it.
+      // Derived from the id here to match how each case seeds its account row.
+      role: userId.startsWith('admin') ? 'admin' : 'member',
+      mustChangePassword: false,
     },
   } as unknown as OperatorPrincipal;
 }

@@ -2,7 +2,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { TASK_PROVISIONING_STAGES, type TaskResponse } from "@cap/contracts";
+import { TASK_PROVISIONING_STAGES, type TaskResponse } from "@cap-console/contracts";
 
 import { TaskProvisioningTimeline } from "./task-provisioning-timeline";
 import {

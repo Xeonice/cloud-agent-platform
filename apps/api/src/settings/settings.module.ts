@@ -4,14 +4,14 @@ import {
   RequestMethod,
   type NestModule,
 } from '@nestjs/common';
-import { GuardrailsModule } from '../guardrails/guardrails.module';
+import { GuardrailsModule } from '@/guardrails/guardrails.module';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { ModelDiscoveryClient } from './model-discovery.client';
 import { ClaudeCredentialProbe } from './claude-credential-probe';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
-import { ForgeModule } from '../forge/forge.module';
+import { ForgeModule } from '@/forge/forge.module';
 import { CODEX_DEVICE_LOGIN_RUNNER } from './codex-device-login-runner';
 import { DockerCodexDeviceLoginRunner } from './docker-codex-device-login-runner';
 import { DeviceLoginNoStoreMiddleware } from './device-login-no-store.middleware';

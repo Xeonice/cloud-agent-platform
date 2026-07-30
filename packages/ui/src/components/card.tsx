@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "../lib/cn.js";
 
 /**
- * shadcn/ui-style `<Card>` family. Exported from `@cap/ui` and consumed by
+ * shadcn/ui-style `<Card>` family. Exported from `@cap-console/ui` and consumed by
  * `apps/web` (dashboard rows, session panels) rather than redefined locally.
  */
 export const Card = React.forwardRef<

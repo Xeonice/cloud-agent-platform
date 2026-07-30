@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TASK_ADMISSION_WAKE_TOKEN } from '../tasks/task-admission-gate';
+import { TASK_ADMISSION_WAKE_TOKEN } from './task-admission-gate';
 import { PrismaTaskAdmissionStore } from './prisma-task-admission.store';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
@@ -21,7 +21,7 @@ import {
   TASK_ADMISSION_CANCELLATION_TOKEN,
   TASK_ADMISSION_PROCESSOR_TOKEN,
   TaskAdmissionStore,
-} from './task-admission.types';
+} from '@/admission-coordination/task-admission.types';
 import { TaskAdmissionCapabilityController } from './task-admission-capability.controller';
 import { TaskAdmissionCapabilityService } from './task-admission-capability.service';
 

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * `<Container>` — the horizontal width constraint for the marketing site
- * (`@cap/www`).
+ * (`@cap-console/www`).
  *
  * Centers content to a max width with responsive gutters so every section
  * aligns to the same measure and never overflows the viewport (supporting the

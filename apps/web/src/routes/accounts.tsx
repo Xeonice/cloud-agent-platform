@@ -32,7 +32,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdminAccountListItem } from "@cap/contracts";
+import type { AdminAccountListItem } from "@cap-console/contracts";
 
 import { cn } from "@/utils";
 import { adminAccountsQuery, authSessionQuery } from "@/lib/api/queries";

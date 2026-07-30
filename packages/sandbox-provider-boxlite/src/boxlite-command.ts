@@ -3,8 +3,8 @@ import type {
   SandboxCommandExecutor,
   SandboxProvisioningDiagnosticCommandKind,
   SandboxProvisioningDiagnosticObserver,
-} from '@cap/sandbox-core';
-import { createSandboxCommandExecutor } from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
+import { createSandboxCommandExecutor } from '@cap-console/sandbox-core';
 import type { BoxLiteClient } from './boxlite-client.js';
 
 export function createBoxLiteCommandExecutor(args: {

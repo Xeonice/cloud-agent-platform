@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
-import { TasksModule } from '../tasks/tasks.module';
-import { ReposModule } from '../repos/repos.module';
+import { TasksModule } from '@/tasks/tasks.module';
+import { ReposModule } from '@/repos/repos.module';
 import {
   SessionTranscriptService,
-} from '../tasks/session-transcript.service';
+} from '@/tasks/session-transcript.service';
 import {
   TRANSCRIPT_STORE,
   AUDIT_TIMELINE_READER,
-} from '../tasks/session-history.controller';
-import { AuditService } from '../audit/audit.service';
+} from '@/tasks/session-history.controller';
+import { AuditService } from '@/audit/audit.service';
 import { V1TasksController } from './v1-tasks.controller';
 import { V1ReposController } from './v1-repos.controller';
 import { V1TranscriptController } from './v1-transcript.controller';
@@ -17,12 +17,12 @@ import { V1SchedulesController } from './v1-schedules.controller';
 import { V1RuntimeModelsController } from './v1-runtime-models.controller';
 import { V1TaskProvisioningDiagnosticsController } from './v1-task-provisioning-diagnostics.controller';
 import { IdempotencyService } from './idempotency.service';
-import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
-import { TaskProvisioningDiagnosticsModule } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.module';
+import { ScheduledTasksModule } from '@/scheduled-tasks/scheduled-tasks.module';
+import { TaskProvisioningDiagnosticsModule } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import {
   PublicV1ContractInterceptor,
   PublicV1OperationGuard,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 
 /**
  * The public `/v1` feature module (public-v1-api, Integration task 3.6).

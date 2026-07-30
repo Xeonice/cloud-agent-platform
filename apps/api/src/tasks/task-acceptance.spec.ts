@@ -4,11 +4,11 @@ import {
   TASK_ADMISSION_V2_CAPABILITY,
   type CreateTaskBody,
   type TaskResponse,
-} from '@cap/contracts';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { TaskBranchResolver } from '../forge/task-branch-resolver';
+} from '@cap-console/contracts';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
 import { TasksController } from './tasks.controller';
 import {
   TasksService,
@@ -21,11 +21,11 @@ import {
   taskAdmissionV2Enabled,
   type TaskAdmissionGatePort,
   type TaskAdmissionWakePort,
-} from './task-admission-gate';
-import { McpServerFactory } from '../mcp/mcp.server';
-import type { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
-import type { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
-import { buildRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
+} from '@/task-admission/task-admission-gate';
+import { McpServerFactory } from '@/mcp/mcp.server';
+import type { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
+import type { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
+import { buildRuntimeExecutionEnvironmentSnapshot } from '@/runtime-models/runtime-model-snapshot';
 
 const REPO_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -358,9 +358,20 @@ test('gate is read once during preparation and a later flip cannot change the wr
   const resourceResolutions: unknown[] = [];
   const service = serviceWith(prisma, {
     gate: {
-      isEnabled() {
+      evaluate() {
         gateReads += 1;
-        return enabled;
+        return enabled
+          ? {
+              capability: 'task-admission-v2',
+              open: true,
+              verifiedRoles: ['api', 'worker'],
+            }
+          : {
+              capability: 'task-admission-v2',
+              open: false,
+              reason: 'disabled',
+              missingRoles: [],
+            };
       },
     },
     branches: {
@@ -440,7 +451,13 @@ test('explicit-model durable preparation freezes snapshot resources through one 
   const policyCalls: unknown[] = [];
   let legacyEnvironmentCalls = 0;
   const service = serviceWith(prisma, {
-    gate: { isEnabled: () => true },
+    gate: {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    },
     taskModelCapability: {
       assertOpen() {},
     } as unknown as TaskModelCapabilityService,
@@ -519,7 +536,13 @@ test('explicit-model durable preparation fails closed when provider capability r
   let branchCalls = 0;
   const policyCalls: unknown[] = [];
   const service = serviceWith(prisma, {
-    gate: { isEnabled: () => true },
+    gate: {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    },
     taskModelCapability: {
       assertOpen() {},
     } as unknown as TaskModelCapabilityService,
@@ -684,6 +707,7 @@ test('Console and MCP create delegates converge on TasksService.create', async (
   );
   const mcp = new McpServerFactory(
     tasks,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,

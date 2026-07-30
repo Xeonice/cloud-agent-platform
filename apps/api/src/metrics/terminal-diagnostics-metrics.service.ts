@@ -8,7 +8,7 @@ import {
   type TerminalAttachOutcome,
   type TerminalCleanupOutcome,
   type TerminalDiagnosticsMetrics,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 

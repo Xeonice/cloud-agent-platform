@@ -21,7 +21,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 import {
   TASK_PROVISIONING_DIAGNOSTIC_DEFAULT_PAGE_SIZE,
   TaskProvisioningDiagnosticsQuerySchema,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import type {
   AuditQuery,
   ListTasksResponse,
@@ -53,7 +53,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeModelCatalogQuery,
   TaskProvisioningDiagnosticsResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
 import { taskSandboxProviderLabel } from "../sandbox-provider-label";
@@ -658,7 +658,7 @@ export function taskContextQuery(id: string) {
  * The cached, server-side update check (`GET /update-status`,
  * update-availability-check D4) the app-shell banner reads. Rides the standard
  * real/mock seam: gated by `BACKEND_CAPABILITIES.updateCheck`, it reads
- * `real.getUpdateStatus` (Zod `.parse` against the `@cap/contracts`
+ * `real.getUpdateStatus` (Zod `.parse` against the `@cap-console/contracts`
  * `UpdateStatusSchema`) when capable and the typed `mock.mockUpdateStatus`
  * otherwise — so the banner renders on the mock until the live endpoint is
  * verified, then ONE flag flip repoints it. The api already caches the upstream

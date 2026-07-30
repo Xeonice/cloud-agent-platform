@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BadRequestException } from '@nestjs/common';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
   SandboxEnvironmentValidationRunner,
   SandboxEnvironmentValidationTarget,
-} from '../sandbox-environments/sandbox-environments.validator';
+} from '@/sandbox-environments/sandbox-environments.validator';
 import {
   ConfiguredDeploymentRuntimeModelEnvironmentResolver,
   ConfiguredManagedRuntimeModelProviderResolver,

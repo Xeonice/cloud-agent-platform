@@ -1,10 +1,10 @@
-# @cap/sandbox-cloud-http
+# @cap-console/sandbox-cloud-http
 
 HTTP cloud sandbox provider adapter for CAP.
 
 This package is the managed/cloud counterpart to local provider adapters such as
 the current AIO/Docker provider in `apps/api`. It implements the
-`SandboxProviderPort` contract from `@cap/sandbox` and registers as a cloud
+`SandboxProviderPort` contract from `@cap-console/sandbox` and registers as a cloud
 candidate through `defineHttpCloudSandboxProvider`.
 
 ## Control Plane Contract
@@ -32,6 +32,6 @@ The adapter expects a CAP-compatible cloud sandbox control plane:
 ## Capabilities
 
 By default the adapter declares the full current capability set from
-`@cap/sandbox`. Deployments can pass a narrower `capabilities` list when their
+`@cap-console/sandbox`. Deployments can pass a narrower `capabilities` list when their
 cloud backend does not support delivery, retained transcript reads, or
 readoption.

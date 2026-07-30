@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
   SandboxEnvironmentsService,
 } from './sandbox-environments.service';
 import type { SandboxEnvironmentValidationRunner } from './sandbox-environments.validator';
-import { decryptStored, encryptToStored } from '../settings/secret-storage';
+import { decryptStored, encryptToStored } from '@/crypto/secret-storage';
 
 const ENV_A = '00000000-0000-4000-a000-000000000301';
 const ENV_B = '00000000-0000-4000-a000-000000000302';

@@ -17,9 +17,22 @@
  */
 
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const runtimeRegistry = {
+  // Resolves the format from the id exactly as the real registry does, by
+  // reading each runtime's declared `transcriptFormat`; absent falls back to
+  // codex, matching AgentRuntimeRegistry's documented default.
+  resolve: (runtime) => ({
+    id: runtime ?? 'codex',
+    executionModes: new Set(['interactive-pty']),
+    transcriptFormat: runtime === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
+  }),
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const apiRoot = resolve(__dirname, '..', '..'); // apps/api
@@ -36,20 +49,10 @@ function assert(cond, label) {
 
 const outDir = mkdtempSync(join(apiRoot, '.v1-transcript-test-'));
 function compile() {
-  execFileSync(
-    tscBin,
-    [
-      controllerSrc,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--experimentalDecorators',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [controllerSrc].flat(),
+    outDir,
+  });
   const hit = findFile(outDir, 'v1-transcript.controller.js');
   if (hit) return hit;
   throw new Error('compiled v1-transcript.controller.js not found under ' + outDir);
@@ -109,8 +112,7 @@ async function main() {
       { type: 'task.created', title: '任务创建', description: 'repo', level: 'info', timestamp: new Date('2026-06-01T10:00:00Z') },
     ];
     const ctrl = new V1TranscriptController(
-      makeTasks('completed'), makeProvider().provider, makeTranscripts(RICH_ROLLOUT), makeAudit(events),
-    );
+      makeTasks('completed'), makeProvider().provider, makeTranscripts(RICH_ROLLOUT), makeAudit(events), runtimeRegistry);
     const res = await ctrl.get(TASK_ID, REQ);
     assert(res.status === 'available', '/v1 transcript resolves to available');
 
@@ -125,8 +127,7 @@ async function main() {
   // ---- backward-compatible: an old archive omits the new fields, still valid -
   {
     const ctrl = new V1TranscriptController(
-      makeTasks('completed'), makeProvider().provider, makeTranscripts(OLD_ROLLOUT), makeAudit([]),
-    );
+      makeTasks('completed'), makeProvider().provider, makeTranscripts(OLD_ROLLOUT), makeAudit([]), runtimeRegistry);
     const res = await ctrl.get(TASK_ID, REQ);
     assert(res.status === 'available', '/v1 old archive still resolves to available');
     assert(res.turns.every((t) => t.at === undefined), '/v1 old-archive turns omit at (additive-optional)');
@@ -137,8 +138,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ capabilities: ['terminal.websocket'] });
     const ctrl = new V1TranscriptController(
-      makeTasks('completed'), provider, makeTranscripts(null), makeAudit([]),
-    );
+      makeTasks('completed'), provider, makeTranscripts(null), makeAudit([]), runtimeRegistry);
     const res = await ctrl.get(TASK_ID, REQ);
     assert(res.status === 'expired', '/v1 missing retained-read capability + durable miss → expired');
     assert(calls.readRollout === 0 && calls.sandboxExists === 0, '/v1 missing retained-read: container is never read');

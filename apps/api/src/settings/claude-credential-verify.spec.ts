@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { BadRequestException } from '@nestjs/common';
-import type { SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap-console/contracts';
 
 import {
   ClaudeCredentialProbe,
@@ -11,9 +11,9 @@ import {
   type ClaudeCredentialProbeOutcome,
 } from './claude-credential-probe';
 import { SettingsService } from './settings.service';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type { ModelDiscoveryClient } from './model-discovery.client';
-import type { GuardrailsService } from '../guardrails/guardrails.service';
+import type { GuardrailsService } from '@/guardrails/guardrails.service';
 
 /**
  * fix-claude-onboarding-and-token-verify — save-time verification of a newly

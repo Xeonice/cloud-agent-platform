@@ -8,7 +8,7 @@ import {
   TaskModelSelectorSchema,
   type Runtime,
   type RuntimeExecutionEnvironmentSnapshot,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
   SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
@@ -23,23 +23,23 @@ import {
   type SandboxResourceSnapshot,
   type SandboxWorkspaceMaterializationPlan,
   type WorkspaceSource,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { WorkspaceSourceResolver } from './workspace-source-resolver';
-import { PrismaService } from '../prisma/prisma.service';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   TaskBranchResolutionError,
   TaskBranchResolver,
-} from '../forge/task-branch-resolver';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+} from '@/forge/task-branch-resolver';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
 import type {
   CloneSpec,
   ProvisionLookup,
   SandboxPinnedEnvironmentMetadata,
   TaskLaunchContext,
-} from './provision-lookup.port';
-import { validateRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
+} from '@/provision-lookup/provision-lookup.port';
+import { validateRuntimeExecutionEnvironmentSnapshot } from '@/runtime-models/runtime-model-snapshot';
 
 /**
  * Prisma-backed {@link ProvisionLookup}. Canonical admission consumes the

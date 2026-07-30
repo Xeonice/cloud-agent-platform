@@ -14,19 +14,19 @@ import {
   type CreateRepoBody,
   type ForgeKind,
   type RepoResponse,
-} from '@cap/contracts';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
+} from '@cap-console/contracts';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import {
   ForgeHttpError,
   type AvailableRepo,
   type ForgeTarget,
-} from '../forge/forge.port';
+} from '@/forge/forge.port';
 import {
   RemoteRefsProbePort,
   type RemoteRefsProbeFailureReason,
-} from '../forge/remote-refs-probe';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@/forge/remote-refs-probe';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { PrismaService } from '@/prisma/prisma.service';
 import { RepoCopyService } from './repo-copy.service';
 import { repoRowToResponse, type RepoRowProjection } from './repo-response';
 

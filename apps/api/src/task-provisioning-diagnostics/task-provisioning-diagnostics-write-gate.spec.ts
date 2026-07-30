@@ -6,7 +6,7 @@ import { MODULE_METADATA } from '@nestjs/common/constants';
 import {
   TASK_ADMISSION_GATE_TOKEN,
   TASK_ADMISSION_V2_ENABLED_ENV,
-} from '../tasks/task-admission-gate';
+} from '@/task-admission/task-admission-gate';
 import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnostics.module';
 import {
   EnvironmentTaskProvisioningDiagnosticsWriteGate,

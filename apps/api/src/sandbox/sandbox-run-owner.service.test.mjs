@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import 'reflect-metadata';
@@ -43,29 +45,10 @@ function compileService() {
   const cacheDir = join(apiRoot, 'node_modules', '.cache');
   mkdirSync(cacheDir, { recursive: true });
   const outDir = mkdtempSync(join(cacheDir, 'cap-sandbox-run-owner-'));
-  execFileSync(
-    'pnpm',
-    [
-      'exec',
-      'tsc',
-      '--module',
-      'NodeNext',
-      '--moduleResolution',
-      'NodeNext',
-      '--target',
-      'ES2022',
-      '--experimentalDecorators',
-      '--emitDecoratorMetadata',
-      '--skipLibCheck',
-      '--types',
-      'node',
-      '--outDir',
-      outDir,
-      'src/sandbox/sandbox-run-owner.service.ts',
-      'src/prisma/prisma.service.ts',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [resolve(apiRoot, 'src/sandbox/sandbox-run-owner.service.ts'), resolve(apiRoot, 'src/prisma/prisma.service.ts')],
+    outDir,
+  });
   const compiled = findFile(outDir, 'sandbox-run-owner.service.js');
   assert(compiled && existsSync(compiled), 'compiled sandbox-run-owner.service.js exists');
   return { outDir, compiled };

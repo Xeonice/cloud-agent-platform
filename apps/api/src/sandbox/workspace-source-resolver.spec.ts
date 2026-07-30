@@ -19,9 +19,9 @@ import {
   type RepoStoreVolumeInspector,
   type WorkspaceSourceFailureReason,
 } from './workspace-source-resolver';
-import { classifyTaskProvisioningDiagnosticPrimaryFailure } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { RepoStoreService } from '../repo-store/repo-store.service';
+import { classifyTaskProvisioningDiagnosticPrimaryFailure } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { RepoStoreService } from '@/repo-store/repo-store.service';
 
 const REPO_ID = '11111111-1111-4111-8111-111111111111';
 const TASK_ID = '22222222-2222-4222-8222-222222222222';

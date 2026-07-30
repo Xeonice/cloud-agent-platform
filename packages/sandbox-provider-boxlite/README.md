@@ -1,4 +1,4 @@
-# @cap/sandbox-provider-boxlite
+# @cap-console/sandbox-provider-boxlite
 
 BoxLite sandbox provider adapter for CAP.
 
@@ -71,6 +71,9 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
 - `BOXLITE_PROVIDER_LOCATION`: `local` or `cloud`, default `cloud`.
 - `BOXLITE_CAPABILITIES`: comma-separated explicit capability list. No
   capabilities are implied.
+  - `lifecycle.readoption` is a DEPRECATED spelling of `lifecycle.readopt`. It is
+    still accepted and normalized to the canonical name, so an existing `.env`
+    keeps working unchanged; prefer `lifecycle.readopt` in new configuration.
 - `BOXLITE_WORKSPACE_PATH`: in-sandbox workspace path, default `/home/gem/workspace`.
 - `BOXLITE_SANDBOX_ID_PREFIX`: task-scoped provider sandbox id prefix, default
   `cap-boxlite-`.
@@ -122,7 +125,7 @@ BoxLite advertises only what `BOXLITE_CAPABILITIES` names and the adapter can
 support. Common examples:
 
 ```sh
-BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoption
+BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readopt
 ```
 
 Interactive terminal support must be explicit. In native mode CAP uses its own
@@ -179,7 +182,7 @@ Responses may be plain objects or wrapped in `{ data: ... }`.
 Fast tests use `FakeBoxLiteClient` and provider conformance:
 
 ```sh
-pnpm --filter @cap/sandbox-provider-boxlite test
+pnpm --filter @cap-console/sandbox-provider-boxlite test
 ```
 
 Live integration is opt-in:
@@ -190,8 +193,8 @@ BOXLITE_ENDPOINT=https://boxlite.example.test \
 BOXLITE_API_TOKEN=... \
 BOXLITE_IMAGE=ghcr.io/xeonice/cap-boxlite-sandbox:vX.Y.Z \
 BOXLITE_PROTOCOL_MODE=native \
-BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoption \
-pnpm --filter @cap/sandbox-provider-boxlite test
+BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readopt \
+pnpm --filter @cap-console/sandbox-provider-boxlite test
 ```
 
 To live-test a rootfs source instead, replace `BOXLITE_IMAGE` with an absolute
@@ -217,7 +220,7 @@ BOXLITE_DISK_SIZE_GB=5 \
 BOXLITE_TIMEOUT_MS=30000 \
 BOXLITE_GIT_CLONE_TIMEOUT_MS=900000 \
 BOXLITE_CAPABILITIES=command.exec,resource.disk-size-gb,workspace.archive.transfer,workspace.git.materialize \
-pnpm --filter @cap/api test:generated-private-git
+pnpm --filter @cap-console/api test:generated-private-git
 ```
 
 `BOXLITE_NATIVE_PRIVATE_GIT_FIXTURE_HOST` is the loopback host address as

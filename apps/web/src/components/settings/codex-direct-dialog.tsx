@@ -9,7 +9,7 @@ import type {
   CodexDeviceLoginSessionId,
   CodexDeviceLoginStartResponse,
   CodexDeviceLoginStatus,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   Dialog,
   DialogBody,

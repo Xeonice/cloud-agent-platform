@@ -1,5 +1,5 @@
 {
-  "extends": "@cap/tsconfig/next.json",
+  "extends": "@cap-console/tsconfig/next.json",
   "compilerOptions": {
     "tsBuildInfoFile": "dist/.tsbuildinfo",
     "paths": {

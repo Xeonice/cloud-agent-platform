@@ -1,4 +1,4 @@
-import type { SandboxProviderCapability } from '@cap/sandbox-core';
+import type { SandboxProviderCapability } from '@cap-console/sandbox-core';
 import {
   type ConfiguredSandboxProviderFamily,
   readConfiguredSandboxProviderFamily,

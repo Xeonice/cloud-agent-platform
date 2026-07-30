@@ -1,5 +1,5 @@
 {
-  "name": "@cap/sandbox-environment",
+  "name": "@cap-console/sandbox-environment",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,20 +15,24 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
-    "build": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json",
-    "typecheck": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node test/sandbox-environment.test.mjs && node test/package-boundary.test.mjs",
-    "coverage": "pnpm build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/sandbox-environment.test.mjs && node test/package-boundary.test.mjs\"",
+    "build": "pnpm --filter @cap-console/sandbox-core build && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap-console/sandbox-environment",
+    "test": "node --test --test-force-exit \"test/**/*.test.mjs\"",
+    "coverage": "c8 --100 --include=dist/**/*.js --reporter=text node --test --test-force-exit \"test/**/*.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "@cap/sandbox-core": "workspace:*"
+    "@cap-console/sandbox-core": "workspace:*"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@types/node": "^20.14.0",
     "eslint": "^9.27.0",
     "typescript": "^5.5.4"

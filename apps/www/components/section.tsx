@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * `<Section>` — the vertical-rhythm primitive for the marketing site
- * (`@cap/www`).
+ * (`@cap-console/www`).
  *
  * Renders a `<section>` landmark with consistent top/bottom spacing so the
  * landing page's stacked sections (Hero, Features, How-it-works, Security,

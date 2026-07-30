@@ -102,9 +102,9 @@ The clone success path and the clone fail-closed path SHALL be VERIFIED END-TO-E
 For an AIO-backed interactive task, CAP SHALL launch Codex inside the sandbox over the
 AIO `/v1/shell/ws` terminal transport and SHALL NOT substitute request/response exec or
 MCP for the interactive TUI. `CodexRuntime` SHALL contribute
-`--dangerously-bypass-approvals-and-sandbox`; the provider-neutral `@cap/sandbox`
+`--dangerously-bypass-approvals-and-sandbox`; the provider-neutral `@cap-console/sandbox`
 session engine SHALL build the detached tmux launch, apply the runtime's startup policy,
-and attach; `@cap/sandbox-provider-aio` SHALL own only the AIO transport and command
+and attach; `@cap-console/sandbox-provider-aio` SHALL own only the AIO transport and command
 execution mechanics. API terminal code SHALL NOT recreate an AIO-specific launch helper.
 
 The task's operator prompt SHALL be obtained through the host-harness provisioning
@@ -469,22 +469,22 @@ The API MAY register a managed HTTP sandbox provider when `CAP_SANDBOX_CLOUD_HTT
 
 ### Requirement: AIO provider orchestration lives in the AIO provider package
 
-The full AIO backend implementation SHALL live in `@cap/sandbox-provider-aio`, including Docker lifecycle, readiness, runtime setup hooks, workspace materialization, terminal and command descriptors, AIO transport lifecycle and wire translation, command executor protocol handling, retention behavior, transcript/readoption support, and provider descriptor registration. The provider-neutral agent terminal session engine SHALL live in `@cap/sandbox` and compose the AIO transport through its descriptor. API code SHALL only provide neutral host harness ports such as persistence adapters, runtime registries, auth/material lookup, skill installers, approval sinks, and Nest wiring.
+The full AIO backend implementation SHALL live in `@cap-console/sandbox-provider-aio`, including Docker lifecycle, readiness, runtime setup hooks, workspace materialization, terminal and command descriptors, AIO transport lifecycle and wire translation, command executor protocol handling, retention behavior, transcript/readoption support, and provider descriptor registration. The provider-neutral agent terminal session engine SHALL live in `@cap-console/sandbox` and compose the AIO transport through its descriptor. API code SHALL only provide neutral host harness ports such as persistence adapters, runtime registries, auth/material lookup, skill installers, approval sinks, and Nest wiring.
 
 #### Scenario: AIO provision does not require API provider class logic
-- **WHEN** `@cap/sandbox-provider-aio` is built and tested independently
+- **WHEN** `@cap-console/sandbox-provider-aio` is built and tested independently
 - **THEN** it can provision, describe, command, retain, readopt, and tear down AIO sandboxes through its exported provider implementation
 - **AND** it does not rely on `apps/api/src/sandbox/aio-sandbox.provider.ts` for lifecycle orchestration
 
 #### Scenario: AIO is registered by the sandbox host harness
 - **WHEN** CAP registers configured sandbox providers
-- **THEN** `@cap/sandbox` creates the AIO descriptor from `@cap/sandbox-provider-aio` using neutral host harness hooks
+- **THEN** `@cap-console/sandbox` creates the AIO descriptor from `@cap-console/sandbox-provider-aio` using neutral host harness hooks
 - **AND** API code does not import AIO provider factories, controllers, Docker clients, AIO env readers, AIO command executors, or AIO terminal transports
 
 #### Scenario: AIO terminal backend is composed with the shared session engine
 - **WHEN** an AIO-backed task terminal is opened
-- **THEN** `@cap/sandbox` provides launch-or-attach, initial-ready sequencing, runtime-declared DSR/CPR behavior, tmux liveness, and normalized exit handling through its shared session engine
-- **AND** `@cap/sandbox-provider-aio` provides AIO frame translation, provider transport lifecycle, and AIO command/wait protocol handling behind the descriptor factory
+- **THEN** `@cap-console/sandbox` provides launch-or-attach, initial-ready sequencing, runtime-declared DSR/CPR behavior, tmux liveness, and normalized exit handling through its shared session engine
+- **AND** `@cap-console/sandbox-provider-aio` provides AIO frame translation, provider transport lifecycle, and AIO command/wait protocol handling behind the descriptor factory
 - **AND** `apps/api/src/terminal` does not instantiate an AIO PTY client or AIO terminal transport
 
 ### Requirement: AIO provider e2e runs without CAP API backend

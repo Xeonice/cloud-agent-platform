@@ -1,7 +1,7 @@
 import type {
   SandboxPreflightResult,
   SandboxProviderCapability,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type { BoxLiteSandbox } from './boxlite-client.js';
 import type {
   BoxLiteRuntimePreflight,

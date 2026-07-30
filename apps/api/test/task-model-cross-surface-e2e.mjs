@@ -27,11 +27,11 @@ import {
   TaskResponseSchema,
   V1ListScheduleRunsResponseSchema,
   V1ListTasksResponseSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
   taskModelLaunchMaterial,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 import { AppModule } from '../dist/app.module.js';
 import { CodexRuntime } from '../dist/agent-runtime/codex-runtime.js';

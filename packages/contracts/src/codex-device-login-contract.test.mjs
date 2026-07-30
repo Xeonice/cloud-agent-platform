@@ -1,6 +1,6 @@
 /**
  * Compiled-schema coverage for the asynchronous, session-scoped Codex device
- * login contract. Requires `pnpm --filter @cap/contracts build` first.
+ * login contract. Requires `pnpm --filter @cap-console/contracts build` first.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

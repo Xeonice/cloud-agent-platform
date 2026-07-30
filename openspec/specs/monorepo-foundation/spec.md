@@ -15,6 +15,79 @@ The system SHALL be a single pnpm + Turborepo workspace authored from scratch, c
 - **WHEN** the repository is inspected at its root
 - **THEN** `package.json`, `pnpm-workspace.yaml`, and `turbo.json` all exist and parse without syntax error
 
+### Requirement: Package-internal imports use a path alias, not relative traversal
+
+An application or package SHALL refer to its own modules through a path alias
+rooted at that package's source directory, not by relative traversal out of the
+importing directory. `apps/web` already establishes the convention (`@/*` →
+`./src/*`); the repository SHALL use ONE such convention rather than a different
+answer per package.
+
+The purpose is relocation: a directory whose consumers name it by position
+relative to themselves cannot be moved without editing every consumer, which is
+what makes reorganising a large module tree a manual exercise instead of a
+mechanical one.
+
+The alias SHALL resolve in every path the package is built or tested through —
+the application build, the compiled test runner, and any standalone compilation
+harness — so that adopting it cannot leave one lane silently unable to resolve
+what the others can.
+
+#### Scenario: A module is referred to by alias rather than traversal
+- **WHEN** a source file inside an application imports another module of the same application
+- **THEN** it names it by the package's alias
+- **AND** no relative traversal out of the importing directory appears
+
+#### Scenario: The alias resolves in every build and test lane
+- **WHEN** the application is built, its compiled suite is run, and a standalone compilation harness compiles a single source file
+- **THEN** the alias resolves in all of them
+- **AND** no lane requires a second convention to resolve what the others resolve
+
+#### Scenario: A newly added relative import fails the build
+- **WHEN** a source file is added that traverses out of its directory to reach another module of the same package
+- **THEN** a repository check fails and names the file
+
+### Requirement: Directory dependencies are acyclic outside module composition
+
+Two directories of an application SHALL NOT depend on each other through
+non-module source. A mutual dependency between directories means neither owns
+the concern they share, and it is what prevents either from being moved,
+extracted, or reasoned about independently.
+
+Dependency-injection COMPOSITION is exempt and SHALL be stated as such: imports
+made BY a `*.module.ts` file — of another module, or of a provider class it
+registers — are composition, because a framework whose composition model
+requires them would otherwise be satisfied by indirection that hides the same
+cycle rather than removing it. The exemption SHALL be narrow, and it is about
+the IMPORTING file: a cycle in which any participating import comes from
+ordinary source is NOT composition and is forbidden.
+
+Where a symbol is reached for by a directory that does not own it, the symbol
+SHALL be moved to a home named for what it IS, rather than left in a feature
+directory that consumers must reach into. A single catch-all destination SHALL
+NOT be used: a name that describes nothing cannot say what does or does not
+belong in it.
+
+#### Scenario: Two directories forming a mutual dependency fail the build
+- **WHEN** ordinary source in one directory imports another directory that imports it back
+- **THEN** a repository check fails and names both directories
+- **AND** the check names the imports that form the cycle
+
+#### Scenario: Module composition may be mutual
+- **WHEN** two directories depend on each other ONLY through imports written in `*.module.ts` files — whether of another module or of a provider class being registered
+- **THEN** the check passes
+- **AND** the exemption is visible in the check as a stated rule rather than an unexplained absence
+
+#### Scenario: A cycle with any ordinary-source import is not composition
+- **WHEN** two directories form a mutual dependency in which at least one import is written in a file that is not a `*.module.ts`
+- **THEN** the check fails
+- **AND** it is not treated as composition merely because the other side is a module file
+
+#### Scenario: A shared symbol lives where its name says
+- **WHEN** a symbol is used by directories that do not own it
+- **THEN** it lives in a directory named for the concern it belongs to
+- **AND** that directory is not a general-purpose destination for unrelated symbols
+
 ### Requirement: contracts package is the single source of truth
 The `packages/contracts` package SHALL export zod schemas together with their inferred TypeScript types, and `apps/api`, `apps/web`, and `apps/runner` SHALL each depend on it via `workspace:*` rather than redefining shared shapes locally.
 
@@ -80,8 +153,8 @@ Docker/vite build.
 
 - **WHEN** a pull request is opened or updated
 - **THEN** a CI job installs dependencies with a frozen lockfile, runs `turbo build`
-  (generating the `@cap/web` route tree, the `@cap/api` Prisma client, and the
-  `@cap/contracts`/`@cap/ui` dist types), then runs `turbo typecheck lint`
+  (generating the `@cap-console/web` route tree, the `@cap-console/api` Prisma client, and the
+  `@cap-console/contracts`/`@cap-console/ui` dist types), then runs `turbo typecheck lint`
 - **AND** the job's conclusion is success only when strict `tsc --noEmit` and ESLint pass
   across the whole workspace
 
@@ -118,14 +191,14 @@ The CI pipeline SHALL include a check that starts the BUILT application (with it
 The edit-time TypeScript hook SHALL classify changes to public contracts,
 capability registry entries, Public V1 bindings, MCP adapters, OpenAPI projection,
 and Playground projection. For a public contract or registry edit it SHALL
-typecheck `@cap/contracts` and every directly affected API/Web consumer and SHALL
+typecheck `@cap-console/contracts` and every directly affected API/Web consumer and SHALL
 run `pnpm test:public-surface`; checking only the owning package SHALL NOT count
 as success. The classifier SHALL be shared by edit and staged-file gates so their
 trigger sets cannot silently diverge.
 
 #### Scenario: A contracts edit omits an MCP adapter
 
-- **WHEN** a developer adds a mapped operation in `@cap/contracts` but has not
+- **WHEN** a developer adds a mapped operation in `@cap-console/contracts` but has not
   added its exhaustive API adapter
 - **THEN** the edit-time downstream typecheck exits non-zero and surfaces the
   missing operation id
@@ -139,16 +212,30 @@ trigger sets cannot silently diverge.
 
 ### Requirement: Contracts tests participate in normal verification
 
-`@cap/contracts` SHALL expose a package test command, and its schema, registry,
-and type fixtures SHALL run under the focused public-surface command and the
-normal CI test graph. A test file present in the contracts package but absent
-from normal package/CI scripts SHALL NOT be considered enforced.
+Every workspace package that owns tests SHALL expose a package test command, and
+those tests SHALL run under the repository-wide test task and the normal CI test
+graph. `@cap-console/contracts` schema, registry, and type fixtures SHALL additionally run
+under the focused public-surface command. A test file present in any workspace
+package but absent from the normal package/CI test graph SHALL NOT be considered
+enforced, and the repository SHALL detect that condition mechanically rather than
+relying on review to notice it.
 
 #### Scenario: A contracts fixture fails
 
 - **WHEN** a contracts registry/schema test fails
 - **THEN** the package test, `pnpm test:public-surface`, and the corresponding CI
   gate all exit non-zero
+
+#### Scenario: Any package's failing test fails the graph
+
+- **WHEN** a test fails in any workspace package that declares a test command
+- **THEN** the repository-wide test task and the CI job invoking it exit non-zero
+
+#### Scenario: An unenforced test file is detected, not tolerated
+
+- **WHEN** a test file exists in a workspace package but no configured runner
+  would execute it
+- **THEN** the repository's discovery check exits non-zero and names that file
 
 ### Requirement: Local hooks and CI reuse stable public-surface commands
 
@@ -180,3 +267,37 @@ reuse root scripts rather than maintaining separate command lists.
 - **THEN** it verifies contracts, API parity, OpenAPI, and Playground without a
   production database, external credential, or listening-port probe
 
+### Requirement: Every workspace package SHALL share one npm scope the project controls
+
+All packages in the workspace SHALL be named under a single npm scope, and that
+scope SHALL be one the project owns on the public registry. Publishing any package
+SHALL therefore require no rename.
+
+A package that is never published SHALL NOT be exempt. The registry does not
+validate a name it is never asked to publish, so an unowned scope can persist
+indefinitely on unpublished packages and is discovered only at the moment
+publishing becomes necessary — which is the moment it is most expensive to fix.
+
+Ownership SHALL be established by an authenticated, member-scoped query rather
+than by absence of evidence: a 404 on a package name, or an empty public listing
+for a scope, proves only that nothing has been published there.
+
+#### Scenario: A package can be published without being renamed
+
+- **WHEN** any workspace package is prepared for publication to the public
+  registry
+- **THEN** its existing name SHALL be publishable as-is, because its scope is
+  already owned by the project
+
+#### Scenario: Unpublished packages carry the same scope as published ones
+
+- **WHEN** the workspace package names are inspected
+- **THEN** every package SHALL share one scope, so that no reader or tool has to
+  know which names are registry names and which are local-only
+
+#### Scenario: Scope ownership is proven, not assumed
+
+- **WHEN** scope ownership is asserted
+- **THEN** the evidence SHALL be an authenticated query that distinguishes an
+  owned scope from an unowned one, verified against a control that is known not to
+  be owned

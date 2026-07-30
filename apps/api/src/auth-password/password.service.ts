@@ -1,15 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import type { SessionUser } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { hashPassword, verifyPassword } from '../auth/argon2';
-import { normalizeEmail } from '../auth-otp/email-otp.service';
+import type { SessionUser } from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
+import { hashPassword, verifyPassword } from '@/auth/argon2';
+import { normalizeEmail } from '@/auth-otp/email-otp.service';
 import {
   hashSessionToken,
   isSessionExpired,
   mintSessionToken,
   sessionExpiryFrom,
   type MintedSessionToken,
-} from '../auth/session-token';
+} from '@/auth/session-token';
 
 /** The fixed provider discriminator for a local email+password login identity. */
 const PASSWORD_IDENTITY_PROVIDER = 'password' as const;

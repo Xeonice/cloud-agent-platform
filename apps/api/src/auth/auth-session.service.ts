@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import type { Scope, SessionUser } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
+import type { Scope, SessionUser } from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   hashSessionToken,
   isSessionExpired,

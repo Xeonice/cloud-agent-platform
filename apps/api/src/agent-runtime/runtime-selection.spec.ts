@@ -21,12 +21,13 @@ import assert from 'node:assert/strict';
 import { Logger } from '@nestjs/common';
 
 import { IntegrationRuntimeRegistry } from './agent-runtime.integration';
-import { PrismaProvisionLookup } from '../sandbox/prisma-provision-lookup';
-import type { PrismaService } from '../prisma/prisma.service';
+import { UnknownRuntimeError } from './agent-runtime.port';
+import { PrismaProvisionLookup } from '@/sandbox/prisma-provision-lookup';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type {
   CloneSpec,
   ProvisionLookup,
-} from '../sandbox/provision-lookup.port';
+} from '@/provision-lookup/provision-lookup.port';
 
 /**
  * A real-SHAPED `ProvisionLookup` (satisfies the FULL port — not a partial fake that
@@ -135,17 +136,30 @@ test('REAL registry + REAL PrismaProvisionLookup selects claude end-to-end', asy
 // Scenario: an unresolvable runtime is logged, never silently defaulted (D3)
 // ---------------------------------------------------------------------------
 
-test('an out-of-set stored runtime resolves codex AND logs a warning', async () => {
-  let resolvedId = '';
-  const warnings = await captureWarnings(async () => {
-    const registry = new IntegrationRuntimeRegistry(lookupReturning('gemini'));
-    resolvedId = (await registry.resolveForTask('task-6')).id;
-  });
-  assert.equal(resolvedId, 'codex', 'an unknown runtime degrades to the codex default');
-  assert.ok(
-    warnings.some((w) => w.includes('task-6') && w.includes('gemini')),
-    'an out-of-set runtime is warned, not silently defaulted',
+test('an out-of-set stored runtime RAISES rather than degrading to codex', async () => {
+  // Until fail-loud-on-unknown-runtime this warned and returned codex. A warning
+  // does not stop the launch, so the task ran an agent it never asked for — and
+  // nothing downstream could tell that had happened. The failure has to be one
+  // the caller receives.
+  const registry = new IntegrationRuntimeRegistry(lookupReturning('gemini'));
+  await assert.rejects(
+    () => registry.resolveForTask('task-6'),
+    (err: unknown) => {
+      assert.ok(err instanceof UnknownRuntimeError, 'the error must be the named one');
+      assert.equal(err.taskId, 'task-6');
+      assert.equal(err.value, 'gemini');
+      return true;
+    },
   );
+});
+
+test('the raise comes from what is REGISTERED, not a hand-written pair of ids', async () => {
+  // Both shipped ids must pass the same narrowing the unknown id fails, so the
+  // check cannot drift from the union the way a literal comparison did.
+  for (const id of ['codex', 'claude-code']) {
+    const registry = new IntegrationRuntimeRegistry(lookupReturning(id));
+    assert.equal((await registry.resolveForTask(`task-${id}`)).id, id);
+  }
 });
 
 test('a throwing lookup resolves codex AND logs a warning', async () => {

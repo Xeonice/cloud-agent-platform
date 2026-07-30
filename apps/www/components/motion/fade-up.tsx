@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * `<FadeUp>` — restrained fade-up-on-scroll motion for the marketing site
- * (`@cap/www`), gated behind `prefers-reduced-motion` (task 2.3, design.md D5).
+ * (`@cap-console/www`), gated behind `prefers-reduced-motion` (task 2.3, design.md D5).
  *
  * The element starts translated down and transparent, then animates to its
  * resting position the first time it scrolls into view (via Intersection

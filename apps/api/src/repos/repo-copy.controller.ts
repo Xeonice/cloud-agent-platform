@@ -15,12 +15,12 @@ import {
   type LocalRepoImportAvailability,
   type LocalRepoImportRequest,
   type RepoResponse,
-} from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+} from '@cap-console/contracts';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { requireConsoleAccountId } from './console-account';
 import { LocalRepoImportService } from './local-import.service';
 import { RepoCopyService } from './repo-copy.service';
-import { ZodValidationPipe } from './zod-validation.pipe';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 
 /**
  * Console-internal repository CONTENT surface (add-repo-content-store).

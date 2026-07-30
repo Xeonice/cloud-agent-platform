@@ -56,7 +56,13 @@ const requireFromApi = createRequire(
   new URL('../apps/api/package.json', import.meta.url),
 );
 const Docker = requireFromApi('dockerode');
-const { Terminal } = requireFromApi('@xterm/headless');
+// `@xterm/headless` is declared by apps/web, not apps/api — 68c0907 dropped it
+// from apps/api while introducing this lookup. `terminal-active-buffer-snapshot`
+// already resolves it the correct way; this follows it.
+const requireFromWeb = createRequire(
+  new URL('../apps/web/package.json', import.meta.url),
+);
+const { Terminal } = requireFromWeb('@xterm/headless');
 
 const WORKSPACE = '/home/gem/workspace';
 const DEFAULT_TIMEOUT_MS = 240_000;

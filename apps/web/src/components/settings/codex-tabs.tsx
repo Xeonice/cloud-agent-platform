@@ -34,7 +34,7 @@ import * as React from "react";
 import type {
   CodexCredential,
   CodexCredentialMode,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 import { Panel, PanelHead } from "@/components/settings/panel";

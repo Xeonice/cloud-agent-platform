@@ -7,7 +7,7 @@ import type {
   TerminalTransportFrame,
   TerminalTransportReadyState,
   TerminalTransportWriteOutcome,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   deleteAioShellSessionExact,
   type AioShellFetch,

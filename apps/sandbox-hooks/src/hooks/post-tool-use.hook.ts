@@ -3,8 +3,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { FileEdit, PostToolUseReportFrame } from '@cap/contracts';
-import { PostToolUseReportFrameSchema, FRAME_CHANNEL } from '@cap/contracts';
+import type { FileEdit, PostToolUseReportFrame } from '@cap-console/contracts';
+import { PostToolUseReportFrameSchema, FRAME_CHANNEL } from '@cap-console/contracts';
 
 const execFileAsync = promisify(execFile);
 

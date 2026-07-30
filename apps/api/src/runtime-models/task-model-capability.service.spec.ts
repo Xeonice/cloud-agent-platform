@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   TASK_MODEL_SELECTION_CAPABILITY,
   type TaskModelSelectionDeploymentAttestation,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { RuntimeModelPreflightError } from './runtime-model-preflight.error';
 import {
   TASK_MODEL_SELECTION_ATTESTATION_ENV,

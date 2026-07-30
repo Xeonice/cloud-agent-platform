@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { GitBranchNameSchema } from '@cap/contracts';
+import { GitBranchNameSchema } from '@cap-console/contracts';
 import {
   basicAuthHeader,
   forgeFetch,

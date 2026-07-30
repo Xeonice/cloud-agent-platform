@@ -1,13 +1,15 @@
 /**
  * Focused unit test for the pure asciicast v2 line builders
  * (session-terminal-replay, Track 2). Compiles `cast-writer.ts` standalone with
- * tsc (the only import is a type-only `@cap/contracts` symbol, which elides) and
+ * tsc (the only import is a type-only `@cap-console/contracts` symbol, which elides) and
  * asserts the header/event/resize lines are well-formed asciicast and that a
  * multibyte UTF-8 `data` round-trips byte-for-byte through JSON.
  *
  * Run: `node cast-writer.test.mjs` (no prior build needed — it self-compiles).
  */
 import { execFileSync } from 'node:child_process';
+
+import { compileSingleSource } from '../testing/compile-single-source.mjs';
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,19 +37,10 @@ function findFile(dir, name) {
 
 const outDir = mkdtempSync(join(apiRoot, '.cast-writer-test-'));
 try {
-  execFileSync(
-    tscBin,
-    [
-      src,
-      '--outDir', outDir,
-      '--module', 'commonjs',
-      '--moduleResolution', 'node',
-      '--target', 'ES2021',
-      '--esModuleInterop',
-      '--skipLibCheck',
-    ],
-    { cwd: apiRoot, stdio: 'pipe' },
-  );
+  compileSingleSource({
+    sources: [src].flat(),
+    outDir,
+  });
   const compiled = findFile(outDir, 'cast-writer.js');
   if (!compiled) throw new Error('compiled cast-writer.js not found');
   const { buildCastHeaderLine, buildCastEventLine, castResizeData } = await import(

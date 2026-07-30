@@ -20,10 +20,11 @@ import {
   type SandboxEnvironmentResponse,
   type UpdateSandboxEnvironmentParametersRequest,
   type ValidateSandboxEnvironmentResponse,
-} from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { PrismaService } from '../prisma/prisma.service';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+} from '@cap-console/contracts';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { isAdminPrincipal } from '@/principal/admin';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { SandboxEnvironmentsService } from './sandbox-environments.service';
 
 @Controller('sandbox-environments')
@@ -104,6 +105,9 @@ export class SandboxEnvironmentsController {
     const principal = req.operatorPrincipal;
     const user = principal?.user;
     if (!principal || !user) throw this.adminDenied();
+
+    // KIND FIRST — see the note in AccountsController.requireAdmin.
+    if (!isAdminPrincipal(principal)) throw this.adminDenied();
 
     const where = resolveAccountWhere(user);
     if (where === null) throw this.adminDenied();

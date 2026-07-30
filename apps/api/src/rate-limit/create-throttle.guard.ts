@@ -2,7 +2,7 @@ import { Injectable, type ExecutionContext } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { CREATE_THROTTLE_NAME } from './throttler.options';
 import { principalTrackerKey } from './principal.throttler-guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 /**
  * The ONE route the {@link CreateThrottleGuard} scopes its stricter task-admission

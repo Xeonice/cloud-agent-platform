@@ -16,7 +16,7 @@ import type {
   ClaudeCredential,
   ClaudeCredentialMode,
   SaveClaudeCredentialRequest,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 import {

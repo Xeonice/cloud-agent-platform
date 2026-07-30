@@ -1,5 +1,5 @@
 /**
- * Canonical build-time public config for the marketing site (`@cap/www`).
+ * Canonical build-time public config for the marketing site (`@cap-console/www`).
  *
  * Integration seam (tasks 2.4 / 3.1 / 5.3): the parallel tracks each reached for
  * a slightly different env name (scaffolding's `.env.example` documents

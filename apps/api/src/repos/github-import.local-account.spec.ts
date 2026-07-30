@@ -18,7 +18,7 @@ import type {
   AvailableGithubRepo,
   RepoResponse,
   SessionUser,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { RepoCopyService } from './repo-copy.service';
 
 import { GithubImportController } from './github-import.controller';
@@ -26,11 +26,11 @@ import {
   GithubAuthorizationRequiredException,
   GithubImportService,
 } from './github-import.service';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import type { GithubReposClient, GithubListResult } from './github-repos.client';
 import type { ReposService } from './repos.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { encryptToStored } from '../settings/secret-storage';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { encryptToStored } from '@/crypto/secret-storage';
 
 // --- fixtures --------------------------------------------------------------
 

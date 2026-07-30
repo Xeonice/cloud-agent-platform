@@ -11,13 +11,13 @@ import { Test } from '@nestjs/testing';
 import {
   RuntimeModelCatalogSchema,
   type RuntimeModelCatalogQuery,
-} from '@cap/contracts';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { RuntimeModelCatalogService } from '../runtime-models/runtime-model-catalog.service';
-import { RuntimeModelHttpExceptionFilter } from '../runtime-models/runtime-model-http.filter';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
-import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
+} from '@cap-console/contracts';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { RuntimeModelCatalogService } from '@/runtime-models/runtime-model-catalog.service';
+import { RuntimeModelHttpExceptionFilter } from '@/runtime-models/runtime-model-http.filter';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
+import { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
 import { V1RuntimeModelsController } from './v1-runtime-models.controller';
 
 const OWNER_ID = 'owner-runtime-models';

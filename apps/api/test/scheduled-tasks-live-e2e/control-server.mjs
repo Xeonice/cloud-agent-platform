@@ -3,7 +3,7 @@ import {
   ForgeKindSchema,
   GitBranchNameSchema,
   createRepoBodySchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 const CONTROL_HOST = '127.0.0.1';
 const MAX_BODY_BYTES = 16 * 1024;

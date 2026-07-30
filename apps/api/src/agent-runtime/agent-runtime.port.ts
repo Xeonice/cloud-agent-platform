@@ -1,9 +1,10 @@
+import { DEFAULT_AGENT_RUNTIME_ID, type AgentRuntimeId } from '@cap-console/contracts';
 import type {
   SandboxRuntimePreflightCommandDescriptor,
   SandboxRuntimePrivateFile,
   SandboxRuntimeSetupCommandDescriptor,
   TaskModelLaunchMaterial,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 /**
  * AgentRuntime port (add-claude-code-runtime, design D1).
@@ -28,13 +29,21 @@ import type {
  */
 
 /**
- * The set of runtime identifiers. Kept as a local literal union (NOT imported
- * from `@cap/contracts`) so this leaf module compiles standalone; it is the same
- * `{ 'claude-code' | 'codex' }` the contract `RuntimeSchema` enumerates and the
- * Prisma `Task.runtime` column persists. `codex` is the default when a task
- * carries no runtime.
+ * The set of runtime identifiers, taken from the one declaration in
+ * `@cap-console/contracts`.
+ *
+ * This was a local literal union, justified by keeping the leaf module
+ * standalone. The justification did not hold — the module already takes a
+ * package-level type dependency on `@cap-console/sandbox` — and the cost was real: the
+ * union and the contract schema were two independent statements of one set, so
+ * widening either alone produced assignability errors at unrelated call sites
+ * rather than at the disagreement.
+ *
+ * The api keeps its own NAME for the concept, because `RuntimeId` reads better
+ * than `AgentRuntimeId` at the registry's use sites. What it no longer keeps is
+ * its own definition.
  */
-export type RuntimeId = 'codex' | 'claude-code';
+export type RuntimeId = AgentRuntimeId;
 
 /**
  * Stable task-failure codes a runtime may derive from its own output stream.
@@ -54,8 +63,14 @@ export interface RuntimeOutputFailure {
   readonly code: RuntimeOutputFailureCode;
 }
 
-/** The default runtime when a task does not specify one. */
-export const DEFAULT_RUNTIME_ID: RuntimeId = 'codex';
+/**
+ * The default runtime when a task does not specify one.
+ *
+ * Re-exported from the declaration rather than restated: this and the contract's
+ * `DEFAULT_TASK_RUNTIME` were two literals that happened to match, an agreement
+ * maintained by luck rather than by construction.
+ */
+export const DEFAULT_RUNTIME_ID: RuntimeId = DEFAULT_AGENT_RUNTIME_ID;
 
 /**
  * The execution mode a task runs under (add-headless-execution-track).
@@ -69,7 +84,7 @@ export type ExecutionMode = 'interactive-pty' | 'headless-exec';
 /**
  * The transcript format a runtime declares. The sandbox transcript-read layer (which
  * owns the parsers) dispatches by this tag — the port stays a dependency-light LEAF and
- * never imports the parsers or `@cap/contracts`.
+ * never imports the parsers or `@cap-console/contracts`.
  */
 export type TranscriptFormat = 'codex-rollout' | 'claude-jsonl';
 
@@ -98,18 +113,6 @@ export interface TranscriptArtifact {
  * variant — e.g. `{ kind: 'multi-record'; … }` — additively, WITHOUT editing codex/claude.
  */
 export type TranscriptReadStrategy = { readonly kind: 'single-newest-jsonl' };
-
-/**
- * The canonical runtime → transcript-format mapping: a registry-free accessor for the
- * value each runtime declares as its `transcriptFormat`. Lets the durable-read path resolve
- * the parser without holding a runtime instance. A unit test asserts it agrees with the
- * runtimes' declared `transcriptFormat` so the two never drift.
- */
-export function transcriptFormatForRuntime(
-  runtime: RuntimeId | null | undefined,
-): TranscriptFormat {
-  return runtime === 'claude-code' ? 'claude-jsonl' : 'codex-rollout';
-}
 
 /**
  * A minimal shell-exec handle into a provisioned sandbox: runs ONE command over
@@ -404,10 +407,39 @@ export interface AgentRuntime {
    * Declare HOW this runtime's transcript source is read out of the retained container
    * (unify-transcript-parsers, design D3). The sandbox read mechanism reads this STRATEGY
    * (alongside {@link transcriptArtifact}'s WHERE and {@link transcriptFormat}'s WHAT) to
-   * materialize the source it hands the parser — generalizing the former baked-in
-   * single-newest-file read. codex/claude declare `{ kind: 'single-newest-jsonl' }`
-   * verbatim; a future multi-record runtime declares a non-single-JSONL strategy WITHOUT
-   * editing them. The leaf port still owns NO read I/O and never imports the parsers.
+   * materialize the source it hands the parser.
+   *
+   * NOT YET AN EXTENSION POINT. {@link TranscriptReadStrategy} has exactly ONE member,
+   * both shipped runtimes declare it verbatim, and every provider implements only that
+   * one — so a runtime declaring anything else gets NO transcript, it does not get a
+   * different read. This comment used to promise a future runtime could declare a
+   * non-single-JSONL strategy without editing the others, which was never true of the
+   * code beneath it. Building the real dispatch belongs with the runtime-axis work,
+   * when a second strategy exists to shape it against (fail-loud-on-unknown-runtime,
+   * Track 7). Until then the providers REFUSE an unimplemented strategy loudly rather
+   * than returning empty.
    */
   readonly readTranscriptSource: TranscriptReadStrategy;
+}
+
+/**
+ * A persisted runtime value that names no runtime this deployment has.
+ *
+ * ABSENT and UNRECOGNISED are different things and only the latter reaches here:
+ * a task that predates the runtime column carries no value and keeps the
+ * documented {@link DEFAULT_RUNTIME_ID}. An id nobody recognises used to take
+ * that same default, so the task silently launched the WRONG agent — the one
+ * outcome a caller can neither see nor recover from. Raising instead turns it
+ * into a visible, attributable failure.
+ */
+export class UnknownRuntimeError extends Error {
+  constructor(
+    readonly taskId: string,
+    readonly value: string,
+  ) {
+    super(
+      `task ${taskId} names runtime "${value}", which this deployment does not provide`,
+    );
+    this.name = 'UnknownRuntimeError';
+  }
 }

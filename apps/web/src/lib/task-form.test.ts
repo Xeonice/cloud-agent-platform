@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CreateTaskRequestSchema,
   type ScheduleResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 import {
   buildSchedulePayload,

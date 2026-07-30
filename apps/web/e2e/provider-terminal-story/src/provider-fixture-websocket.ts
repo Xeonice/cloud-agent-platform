@@ -1,7 +1,7 @@
 import {
   TERMINAL_PROTOCOL_VERSION,
   XTERM_5_5_0_RESPONSE_PROFILE_ID,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import type { ProviderTerminalFixture } from "./provider-terminal-fixtures";
 
 type FixtureSocketFrame =

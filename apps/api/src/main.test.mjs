@@ -16,7 +16,7 @@
  * (isLegacyTokenEnabled, authTokenConfigSchema), reproduced here exactly as
  * main.ts evaluates it (no app bootstrap / DI / network needed).
  *
- * Requires `pnpm --filter @cap/api build` first. Run: `node main.test.mjs`.
+ * Requires `pnpm --filter @cap-console/api build` first. Run: `node main.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

@@ -5,14 +5,14 @@ import type {
   TerminalExitStatus,
   TerminalTransportFactory,
   TerminalViewerAttachmentFactory,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   createAioTerminalExitStatusResolver,
   createAioTerminalTransportFactory,
   isCompleteAioTerminalOwnershipScope,
   type AioTerminalOwnershipScope,
-} from '@cap/sandbox-provider-aio';
-import { createBoxLiteTerminalTransportFactory } from '@cap/sandbox-provider-boxlite';
+} from '@cap-console/sandbox-provider-aio';
+import { createBoxLiteTerminalTransportFactory } from '@cap-console/sandbox-provider-boxlite';
 import { buildSandboxCommandExecutor } from './command-executor.js';
 import {
   createTerminalTransportRegistry,
@@ -29,7 +29,7 @@ import {
   type TerminalViewerAttachmentPolicy,
 } from '../terminal/viewer-attachment.js';
 import { materializeTaskModel } from './model-material.js';
-import { SandboxRuntimeModelSetupError } from '@cap/sandbox-core';
+import { SandboxRuntimeModelSetupError } from '@cap-console/sandbox-core';
 
 export interface SandboxTerminalTransportLogger {
   warn(message: string): void;

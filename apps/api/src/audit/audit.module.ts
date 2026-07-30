@@ -2,7 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { AuditController } from './audit.controller';
 import { AuditService } from './audit.service';
 import { AUDIT_RECORDER_TOKEN } from './audit-recorder.port';
-import { TerminalModule } from '../terminal/terminal.module';
+import { TerminalModule } from '@/terminal/terminal.module';
 
 /**
  * Audit / approvals module (be-audit-approvals 6.2–6.5).

@@ -12,7 +12,7 @@ import {
   TaskModelSelectorSchema,
   TaskResponseSchema,
   TERMINAL_TASK_STATUSES,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   ClaudeReferenceSubscriptionE2eConfigSchema,
   bindClaudeReferenceConfigToArtifactEvidence,

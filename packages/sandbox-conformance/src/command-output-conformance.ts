@@ -4,7 +4,7 @@ import {
   type SandboxCommandExecutionRequest,
   type SandboxCommandExecutionResult,
   type SandboxProvisioningDiagnosticEvent,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 import type {
   SandboxProviderConformanceAssert,

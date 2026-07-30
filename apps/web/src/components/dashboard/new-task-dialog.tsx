@@ -37,7 +37,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 
-import type { Repo, SandboxEnvironment, ScheduleResponse } from "@cap/contracts";
+import type { Repo, SandboxEnvironment, ScheduleResponse } from "@cap-console/contracts";
 import {
   createScheduleMutation,
   createTaskMutation,
@@ -49,6 +49,10 @@ import {
   sandboxEnvironmentsQuery,
   settingsQuery,
 } from "@/lib/api/queries";
+import {
+  AGENT_RUNTIME_IDS,
+  DEFAULT_AGENT_RUNTIME_ID,
+} from "@cap-console/contracts";
 import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
 import { taskRepoCopyNotReadyFromApiError } from "@/lib/api/real";
 import {
@@ -124,17 +128,34 @@ const STRATEGIES = [
  * and failing at launch (frontend-console spec "runtime selector gated on readiness").
  * Exported so `/tasks/new` shares the same catalog (one module, no drift).
  */
+const RUNTIME_COPY: Readonly<Record<RuntimeId, { label: string; hint: string }>> = {
+  codex: { label: "Codex", hint: "OpenAI Codex CLI（默认）" },
+  "claude-code": { label: "Claude Code", hint: "Anthropic Claude Code CLI" },
+};
+
+/**
+ * Built from a total mapping rather than written as a list, so a runtime added to
+ * the contract without console copy is a build error. As a list it was silently
+ * incomplete: a newly declared and registered runtime would be accepted by the
+ * API, reported ready by `/runtimes`, and simply never appear in this picker —
+ * the same defect `runtime-label.ts` next door already avoids.
+ *
+ * Ordered default-first, which is a presentation rule rather than a copy of the
+ * set: the picker should lead with what the operator gets by doing nothing. It is
+ * stated here because inheriting the contract's declaration order would silently
+ * reorder the dialog whenever that declaration is reordered.
+ */
 export const RUNTIME_CATALOG: ReadonlyArray<{
   id: RuntimeId;
   label: string;
   hint: string;
 }> = [
-  { id: "codex", label: "Codex", hint: "OpenAI Codex CLI（默认）" },
-  { id: "claude-code", label: "Claude Code", hint: "Anthropic Claude Code CLI" },
-];
+  DEFAULT_AGENT_RUNTIME_ID,
+  ...AGENT_RUNTIME_IDS.filter((id) => id !== DEFAULT_AGENT_RUNTIME_ID),
+].map((id) => ({ id, ...RUNTIME_COPY[id] }));
 
 /** The default runtime when the operator makes no explicit choice. */
-export const DEFAULT_RUNTIME: RuntimeId = "codex";
+export const DEFAULT_RUNTIME: RuntimeId = DEFAULT_AGENT_RUNTIME_ID;
 
 /**
  * Selectable preinstall skills (task-preinstall-skills). The `id`s MUST match the
@@ -373,7 +394,9 @@ export function NewTaskDialog({
   const settings = useQuery(settingsQuery());
   const authSession = useQuery(authSessionQuery());
   const readyById = React.useMemo(() => {
-    const map = new Map<RuntimeId, boolean>();
+    // Keyed by the raw reported id: the api is the authority on which
+    // runtimes exist, so an id outside this console's union still gets an entry.
+    const map = new Map<string, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
     return map;
   }, [runtimesReadiness.data]);

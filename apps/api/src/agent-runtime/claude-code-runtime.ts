@@ -2,8 +2,8 @@ import {
   buildHasSessionCommand,
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
-} from '../terminal/codex-launch';
-import { createSandboxRuntimePrivateFile } from '@cap/sandbox';
+} from './codex-launch';
+import { createSandboxRuntimePrivateFile } from '@cap-console/sandbox';
 import { claudeProjectSlug } from './claude-transcript';
 import type {
   AgentRuntime,

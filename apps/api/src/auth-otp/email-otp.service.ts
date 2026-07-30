@@ -1,14 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash, randomInt } from 'node:crypto';
-import type { SessionUser } from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { MailService } from '../mail/mail.service';
+import type { SessionUser } from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
+import { MailService } from '@/mail/mail.service';
 import { renderOtpEmail } from './otp-email-template';
 import {
   mintSessionToken,
   sessionExpiryFrom,
   type MintedSessionToken,
-} from '../auth/session-token';
+} from '@/auth/session-token';
 
 /** Number of decimal digits in an emailed verification code. */
 const OTP_DIGITS = 6;

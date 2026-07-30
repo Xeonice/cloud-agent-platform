@@ -4,12 +4,12 @@ import type {
   SandboxPreflightProbeResult,
   SandboxResolvedEnvironmentMetadata,
   SandboxResourceSnapshot,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   SandboxProviderConfigurationError,
   SandboxProvisioningStageError,
   snapshotSandboxResources,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type { BoxLiteClient } from './boxlite-client.js';
 import { startBoxLiteNativeExecutionDiagnosticSession } from './boxlite-provisioning-diagnostics.js';
 import { deleteBoxLiteSandboxAndConfirm } from './boxlite-workspace-security.js';

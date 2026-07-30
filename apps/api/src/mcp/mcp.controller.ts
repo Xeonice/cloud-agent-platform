@@ -42,7 +42,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { McpServerFactory } from './mcp.server';
 
 /**

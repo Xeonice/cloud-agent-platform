@@ -1,5 +1,5 @@
 {
-  "extends": "@cap/tsconfig/node.json",
+  "extends": "@cap-console/tsconfig/node.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",

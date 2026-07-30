@@ -1,4 +1,4 @@
-import { ModelDiscoveryClient } from '../settings/model-discovery.client';
+import { ModelDiscoveryClient } from '@/settings/model-discovery.client';
 import type {
   RuntimeModelAdapterDescriptor,
   RuntimeModelAdapterResult,

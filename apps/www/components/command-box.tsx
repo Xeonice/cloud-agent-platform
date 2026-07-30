@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * `<CommandBox>` — a monospace command block with copy-to-clipboard for the
- * marketing site (`@cap/www`), used by the Hero to present the `curl | sh`
+ * marketing site (`@cap-console/www`), used by the Hero to present the `curl | sh`
  * one-line installer (task 2.2; design.md D4).
  *
  * The command renders in Geist Mono inside a hairline-bordered surface. The

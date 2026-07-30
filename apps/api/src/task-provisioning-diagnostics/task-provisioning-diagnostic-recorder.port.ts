@@ -8,7 +8,7 @@ import type {
   TaskProvisioningDiagnosticProviderFamily,
   TaskProvisioningDiagnosticStage,
   TaskProvisioningDiagnosticEvent,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 /**
  * Global leaf-module token used by Guardrails and provider adapters.  Callers

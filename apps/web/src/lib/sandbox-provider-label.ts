@@ -1,4 +1,4 @@
-import type { TaskResponse } from "@cap/contracts";
+import type { TaskResponse } from "@cap-console/contracts";
 
 export const SANDBOX_PROVIDER_PENDING_LABEL = "沙箱待启动";
 

@@ -5,7 +5,7 @@ import {
   type TerminalGeometry,
   type TerminalHandle,
   type TerminalResponseProfileRuntimeInputs,
-} from "@cap/ui";
+} from "@cap-console/ui";
 
 import {
   runTerminalStoryFixture,

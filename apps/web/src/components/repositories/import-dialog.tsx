@@ -47,7 +47,7 @@ import {
   type CreateRepoRequest,
   type ForgeKind,
   type Repo,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   availableForgeReposQuery,
   githubReposQuery,

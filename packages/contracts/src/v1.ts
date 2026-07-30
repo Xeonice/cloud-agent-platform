@@ -7,7 +7,7 @@ import {
 } from './task.js';
 
 /**
- * `@cap/contracts` — the `/v1` public-API DTOs (public-v1-api spec, D2).
+ * `@cap-console/contracts` — the `/v1` public-API DTOs (public-v1-api spec, D2).
  *
  * These shapes are ADDITIVE: they live ALONGSIDE the console's
  * `CreateTaskRequestSchema` / `ListTasksResponseSchema` / `ListReposResponseSchema`

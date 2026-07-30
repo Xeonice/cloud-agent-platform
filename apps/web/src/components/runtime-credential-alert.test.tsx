@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { TaskResponse } from "@cap/contracts";
+import type { TaskResponse } from "@cap-console/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 

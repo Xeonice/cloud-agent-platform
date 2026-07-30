@@ -19,7 +19,7 @@
  */
 import * as React from "react";
 
-import type { Repo } from "@cap/contracts";
+import type { Repo } from "@cap-console/contracts";
 import { cn } from "@/utils";
 
 /**

@@ -5,7 +5,7 @@ import type {
   CreateRepoRequest,
   ListReposResponse,
   VerifiedRepoImportResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 const mocks = vi.hoisted(() => ({
   createRepo: vi.fn(),

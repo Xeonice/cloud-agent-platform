@@ -11,9 +11,10 @@ import {
   Req,
   UsePipes,
 } from '@nestjs/common';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { PrismaService } from '../prisma/prisma.service';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { isAdminPrincipal } from '@/principal/admin';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import {
   AccountsService,
   AssignRoleSchema,
@@ -133,6 +134,16 @@ export class AccountsController {
     const principal = req.operatorPrincipal;
     const user = principal?.user;
     if (!principal || !user) {
+      throw this.adminDenied();
+    }
+
+    // KIND FIRST. A machine credential resolves to its OWNER's account row, so
+    // re-reading `role`/`allowed` alone would let an API key or MCP token minted
+    // by an admin inherit account administration — including password reset and
+    // role assignment — however narrow its granted scopes are. `isAdminPrincipal`
+    // is the single predicate for "this credential is an interactive admin"; the
+    // live re-read below then stays as the freshness check it was written to be.
+    if (!isAdminPrincipal(principal)) {
       throw this.adminDenied();
     }
 

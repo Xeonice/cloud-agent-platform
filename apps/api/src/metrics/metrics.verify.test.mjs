@@ -6,12 +6,12 @@
  * Unlike the impl agent's metrics-projection / resource-sampler tests (which
  * INLINE copies of the pure functions), this file drives the ACTUAL compiled
  * code from dist/ so a future drift between source and test cannot hide:
- *   - dist/metrics/metrics-projection.js  (projectCapacity, buildSlotOccupancy)
- *   - dist/metrics/runner-minutes.js      (deriveRunnerMinutes)
+ *   - dist/runner-metrics/metrics-projection.js  (projectCapacity, buildSlotOccupancy)
+ *   - dist/runner-metrics/runner-minutes.js (deriveRunnerMinutes)
  *   - dist/metrics/resource-sampler.service.js (real ResourceSamplerService +
  *     buildSampledResources / freshnessStatus)
  *
- * These three leaf modules have only erased TYPE imports from @cap/contracts, so
+ * These three leaf modules have only erased TYPE imports from @cap-console/contracts, so
  * they load under plain `node`. Run with: `node metrics.verify.test.mjs`.
  *
  * Scenarios named by the verify task:
@@ -35,8 +35,8 @@
  *     payload (no taskSamples) still parses, and the real MetricsService.build()
  *     response keeps every prior field unchanged in name/type.
  *
- * Requires `pnpm --filter @cap/api build` (refreshes dist/) and
- * `pnpm --filter @cap/contracts build` (compiled zod schemas) before running.
+ * Requires `pnpm --filter @cap-console/api build` (refreshes dist/) and
+ * `pnpm --filter @cap-console/contracts build` (compiled zod schemas) before running.
  */
 
 import { createRequire } from 'node:module';
@@ -48,11 +48,14 @@ import assert from 'node:assert/strict';
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(here, '../../dist/metrics');
+// The two pure projection modules moved out of metrics/ — guardrails feeds them,
+// so leaving them inside metrics made those two directories depend on each other.
+const DIST_RUNNER = path.resolve(here, '../../dist/runner-metrics');
 
 const { projectCapacity, buildSlotOccupancy, foldTaskSamples } = require(
-  path.join(DIST, 'metrics-projection.js'),
+  path.join(DIST_RUNNER, 'metrics-projection.js'),
 );
-const { deriveRunnerMinutes } = require(path.join(DIST, 'runner-minutes.js'));
+const { deriveRunnerMinutes } = require(path.join(DIST_RUNNER, 'runner-minutes.js'));
 const { ResourceSamplerService } = require(
   path.join(DIST, 'resource-sampler.service.js'),
 );

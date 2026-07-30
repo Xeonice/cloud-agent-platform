@@ -8,7 +8,7 @@ import {
   type RuntimeModelCatalog,
   type RuntimeModelCatalogQuery,
   type RuntimeModelError,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   environmentSelectionFromCatalogQuery,
   type RuntimeModelCredentialResolver,

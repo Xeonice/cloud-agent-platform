@@ -16,6 +16,11 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "test": {
+      "dependsOn": ["build", "^build"],
+      "outputs": [],
+      "cache": false
+    },
     "test:public-surface": {
       "dependsOn": ["build", "^build"],
       "outputs": [],

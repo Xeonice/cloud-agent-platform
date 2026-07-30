@@ -1,5 +1,5 @@
 {
-  "name": "@cap/sandbox-hooks",
+  "name": "@cap-console/sandbox-hooks",
   "version": "0.0.0",
   "private": true,
   "description": "Isolated compatibility implementation of the historical Codex 0.131 approval/report hook adapter; not shipped in bypass-mode AIO or BoxLite images.",
@@ -11,12 +11,12 @@
     "test": "node src/hooks/codex-0131-adapter.test.mjs"
   },
   "dependencies": {
-    "@cap/contracts": "workspace:*",
+    "@cap-console/contracts": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@types/node": "^22.15.21",
     "eslint": "^9.27.0",
     "typescript": "^5.8.3"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SandboxEnvironment } from "@cap/contracts";
+import type { SandboxEnvironment } from "@cap-console/contracts";
 
 import {
   IMAGE_PROVIDERS,

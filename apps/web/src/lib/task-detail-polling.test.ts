@@ -7,7 +7,7 @@ import {
   type TaskProvisioningState,
   type TaskResponse,
   type TaskStatus,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 import {
   TASK_DETAIL_POLL_INTERVAL_MS,

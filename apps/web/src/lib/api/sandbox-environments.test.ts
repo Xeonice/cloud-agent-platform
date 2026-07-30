@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
-import type { CreateSandboxEnvironmentRequest } from "@cap/contracts";
+import type { CreateSandboxEnvironmentRequest } from "@cap-console/contracts";
 
 const flags: Record<string, boolean> = {};
 

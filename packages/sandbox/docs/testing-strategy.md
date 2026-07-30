@@ -1,21 +1,21 @@
-# @cap/sandbox Testing Strategy
+# @cap-console/sandbox Testing Strategy
 
 The sandbox area is split around real extension points: core provider contracts,
 the CAP provider center, and concrete provider adapters. Helper-only scheduler,
 lifecycle, workspace-git, and AIO-local packages are no longer active workspace
-packages; their runtime logic lives under `@cap/sandbox` or
-`@cap/sandbox-provider-aio`. Provider adapters must prove conformance against
+packages; their runtime logic lives under `@cap-console/sandbox` or
+`@cap-console/sandbox-provider-aio`. Provider adapters must prove conformance against
 the shared contracts.
 
 ## Coverage Gate
 
 Every implementation package has a `coverage` script using `c8 --100`.
 
-- `@cap/sandbox-core`
-- `@cap/sandbox-cloud-http`
-- `@cap/sandbox-provider-aio`
-- `@cap/sandbox-provider-boxlite`
-- `@cap/sandbox` provider center
+- `@cap-console/sandbox-core`
+- `@cap-console/sandbox-cloud-http`
+- `@cap-console/sandbox-provider-aio`
+- `@cap-console/sandbox-provider-boxlite`
+- `@cap-console/sandbox` provider center
 
 Run all sandbox coverage gates with:
 
@@ -33,15 +33,15 @@ Real provider e2e suites are owned by provider packages and do not start the CAP
 API backend or production web app:
 
 ```sh
-pnpm --filter @cap/sandbox-provider-aio test:e2e
-pnpm --filter @cap/sandbox-provider-boxlite test:e2e
+pnpm --filter @cap-console/sandbox-provider-aio test:e2e
+pnpm --filter @cap-console/sandbox-provider-boxlite test:e2e
 ```
 
 The frontend provider terminal fixture story runs without the CAP API backend or
 live provider resources:
 
 ```sh
-pnpm --filter @cap/web test:provider-terminal-story
+pnpm --filter @cap-console/web test:provider-terminal-story
 ```
 
 ## Unit Tests
@@ -113,15 +113,15 @@ Every local or cloud provider adapter should run the same conformance suite:
 - Local provider path: run against the AIO/Docker adapter with no host port
   publishing, network-only control-plane access, runtime preflight, clone,
   terminal connect, delivery, stop-only retention, transcript replay, and
-  startup re-adoption. `@cap/sandbox-provider-aio` covers deterministic local
+  startup re-adoption. `@cap-console/sandbox-provider-aio` covers deterministic local
   adapter config, pinned image checks, container create options, task-id parsing,
   descriptor metadata, and the framework-free Docker lifecycle/readoption/
   transcript mechanisms that the API consumes through the sandbox host harness.
 - Cloud provider path: run the same conformance suite against a managed provider
   adapter using test credentials, verifying cloud sandbox creation/destruction,
   addressable terminal handles, workspace materialize/sync, and provider-side
-  cleanup. `@cap/sandbox-cloud-http` covers the HTTP control-plane adapter with
-  fake-fetch unit tests. `@cap/sandbox-provider-boxlite` covers its BoxLite REST
+  cleanup. `@cap-console/sandbox-cloud-http` covers the HTTP control-plane adapter with
+  fake-fetch unit tests. `@cap-console/sandbox-provider-boxlite` covers its BoxLite REST
   adapter with fake-client tests and runs live BoxLite checks only when
   `BOXLITE_LIVE_TEST=1` and valid `BOXLITE_*` env vars are configured.
 - Mixed scheduling path: configure one local and one cloud candidate. Verify

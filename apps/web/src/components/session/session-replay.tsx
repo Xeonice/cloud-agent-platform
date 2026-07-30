@@ -22,7 +22,7 @@ import type {
   SessionTurn,
   ReplayPresentationState,
   ExecutionMode,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { TranscriptMarkdown } from "@/components/markdown/transcript-markdown";
 import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";

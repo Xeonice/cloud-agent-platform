@@ -4,7 +4,7 @@ import {
   type TaskProvisioningStage,
   type TaskProvisioningState,
   type TaskResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 /**
  * Keep the detail page polling while a task can still advance through durable

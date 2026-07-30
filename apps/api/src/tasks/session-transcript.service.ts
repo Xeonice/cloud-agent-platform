@@ -6,14 +6,15 @@ import * as path from 'node:path';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
-import { parseTranscript } from '../sandbox/parse-transcript';
-import type { TranscriptSource } from '../sandbox/transcript-source';
+} from '@/sandbox/sandbox-provider.port';
+import { parseTranscript } from '@/sandbox/parse-transcript';
+import type { TranscriptSource } from '@/sandbox/transcript-source';
+import { type RuntimeId } from '@/agent-runtime/agent-runtime.port';
 import {
-  transcriptFormatForRuntime,
-  type RuntimeId,
-} from '../agent-runtime/agent-runtime.port';
-import { PrismaService } from '../prisma/prisma.service';
+  AGENT_RUNTIME_REGISTRY_TOKEN,
+  type IAgentRuntimeRegistry,
+} from './tasks.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -76,6 +77,8 @@ export class SessionTranscriptService {
   constructor(
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     private readonly prisma: PrismaService,
+    @Inject(AGENT_RUNTIME_REGISTRY_TOKEN)
+    private readonly runtimes: IAgentRuntimeRegistry,
   ) {}
 
   /** Absolute path to a task's transcript archive on the durable volume. */
@@ -204,9 +207,14 @@ export class SessionTranscriptService {
     }
 
     try {
+      // Resolve the format from the runtime's OWN declaration rather than
+      // re-deriving it from its identity. The registry keeps the absent-id
+      // default and THROWS for an id it does not know, so an unrecognised
+      // runtime fails here instead of having its transcript mislabelled as a
+      // codex rollout and handed to the wrong parser.
       const { turns, meta } = parseTranscript(
         rawJsonl,
-        transcriptFormatForRuntime(runtime),
+        this.runtimes.resolve(runtime).transcriptFormat,
       );
       // Concatenated search text over the parsed turn text (design D3 FTS source);
       // persisted into the `content` column the schema/migration declare (the

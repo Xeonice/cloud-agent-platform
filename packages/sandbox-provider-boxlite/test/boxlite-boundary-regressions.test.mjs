@@ -1758,4 +1758,53 @@ await (async function providerGenerationProbeDuringReadoption() {
   );
 })();
 
+// ---------------------------------------------------------------------------
+// enforce-provider-contract-parity, task 1.4 — the deprecated capability
+// spelling is an OPERATOR-facing input and must keep working.
+//
+// `BOXLITE_CAPABILITIES` is a documented `.env` interface and the README's own
+// worked examples spell readoption as `lifecycle.readoption`, so deployments in
+// the field have it written down. The spelling no longer exists internally; it
+// is normalized at this one parse boundary. These two cases are what stop that
+// normalization from being dropped as "dead code" later.
+// ---------------------------------------------------------------------------
+
+await (async () => {
+  const deprecated = boxLiteProviderConfig({
+    BOXLITE_CAPABILITIES: 'command.exec,lifecycle.readoption',
+  });
+  const canonical = boxLiteProviderConfig({
+    BOXLITE_CAPABILITIES: 'command.exec,lifecycle.readopt',
+  });
+  assert.deepEqual(
+    [...deprecated.capabilities].sort(),
+    [...canonical.capabilities].sort(),
+    'the deprecated spelling must resolve to the same capability set as the canonical one',
+  );
+  assert(
+    !deprecated.capabilities.includes('lifecycle.readoption'),
+    'the deprecated spelling must not survive past the parse boundary',
+  );
+  assert(
+    deprecated.capabilities.includes('lifecycle.readopt'),
+    'the deprecated spelling must resolve TO the canonical capability',
+  );
+})();
+
+await (async () => {
+  // Normalization must not turn a genuinely unknown capability into a silent
+  // pass, and the error must echo what the operator actually wrote.
+  const parsed = mod.readBoxLiteProviderConfig({
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'token',
+    BOXLITE_IMAGE: 'registry.example.test/cap:v1',
+    BOXLITE_CAPABILITIES: 'command.exec,lifecycle.readoptionn',
+  });
+  assert.equal(parsed.status, 'invalid');
+  assert(
+    parsed.errors.some((line) => line.includes('lifecycle.readoptionn')),
+    'an unknown capability must be reported using the operator\'s own spelling',
+  );
+})();
+
 console.log('BoxLite boundary regression tests passed');

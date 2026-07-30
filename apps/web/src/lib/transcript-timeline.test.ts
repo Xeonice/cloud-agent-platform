@@ -7,7 +7,7 @@
  * visual gate (the repo's vitest suite is node-env, no DOM).
  */
 import { describe, it, expect } from "vitest";
-import type { SessionTurn } from "@cap/contracts";
+import type { SessionTurn } from "@cap-console/contracts";
 
 import {
   clock,

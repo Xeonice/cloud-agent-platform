@@ -7,8 +7,8 @@ import {
   type TaskFailure,
   type TaskProvisioningStage,
   type TaskStatus,
-} from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   AUDIT_KIND_DESCRIPTORS,
   applyAuditQuery,
@@ -24,7 +24,7 @@ import {
 import {
   taskFailureMessage,
   taskFailureTitle,
-} from '../tasks/task-failure';
+} from '@/task-failure/task-failure';
 import {
   taskCreatedAuditData,
   taskCreatedAuditDedupeKey,

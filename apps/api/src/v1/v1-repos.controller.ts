@@ -6,17 +6,17 @@ import {
   type V1ListQuery,
   type V1ListReposResponse,
   type RepoResponse,
-} from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { ReposService } from '../repos/repos.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
+} from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ReposService } from '@/repos/repos.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 import { listRepoPage } from './public-list-pages';
 import {
   PublicV1Controller,
   PublicV1Input,
   PublicV1Operation,
   requirePublicV1Principal,
-} from '../public-surface/public-v1-operation';
+} from '@/public-surface/public-v1-operation';
 
 /**
  * `/v1` repo READ surface (public-v1-api, D1) — additive public data controller

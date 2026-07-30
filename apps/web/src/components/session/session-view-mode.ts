@@ -8,8 +8,8 @@
  *                       not a terminal stream)
  *   - live-terminal   : a RUNNING interactive task → live xterm terminal (unchanged)
  */
-import type { TaskStatus, ExecutionMode } from "@cap/contracts";
-import { isReplayableStatus, TERMINAL_TASK_STATUSES } from "@cap/contracts";
+import type { TaskStatus, ExecutionMode } from "@cap-console/contracts";
+import { isReplayableStatus, TERMINAL_TASK_STATUSES } from "@cap-console/contracts";
 
 import type { SessionTaskState } from "@/components/status-pill";
 

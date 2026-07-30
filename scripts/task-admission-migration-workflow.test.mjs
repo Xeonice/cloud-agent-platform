@@ -34,11 +34,11 @@ test('migration compatibility has a gated disposable service job and fixed comma
     /^          CAP_TASK_ADMISSION_MIGRATION_TEST: "1"$/mu,
   );
   const command = job.match(
-    /^        run: (pnpm --filter @cap\/api test:migration:task-admission)$/mu,
+    /^        run: (pnpm --filter @cap-console\/api test:migration:task-admission)$/mu,
   );
   assert.equal(
     command?.[1],
-    'pnpm --filter @cap/api test:migration:task-admission',
+    'pnpm --filter @cap-console/api test:migration:task-admission',
   );
   assert.doesNotMatch(command?.[1] ?? '', /(?:\||&&|;|\b(?:bash|sh)\b)/u);
 });

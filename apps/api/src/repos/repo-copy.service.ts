@@ -7,12 +7,12 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { isLocalRepoGitSource, type RepoResponse } from '@cap/contracts';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { PrismaService } from '../prisma/prisma.service';
-import type { RepoStoreFailure } from '../repo-store/repo-store.service';
-import { RepoStoreService } from '../repo-store/repo-store.service';
+import { isLocalRepoGitSource, type RepoResponse } from '@cap-console/contracts';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { PrismaService } from '@/prisma/prisma.service';
+import type { RepoStoreFailure } from '@/repo-store/repo-store.service';
+import { RepoStoreService } from '@/repo-store/repo-store.service';
 import { resolveLocalImportTarget } from './local-import';
 import { repoRowToResponse } from './repo-response';
 import { throwLocalImportRejection } from './local-import-errors';

@@ -29,9 +29,9 @@ import {
   V1TaskEventSchema,
   type AuditEvent,
   type SessionUser,
-} from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+} from '@cap-console/contracts';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   V1EventsController,
   auditEventToV1TaskEvent,

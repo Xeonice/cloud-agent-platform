@@ -13,9 +13,9 @@ const GIT_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 const OPENSPEC_CHANGE_PATHSPEC = 'openspec/changes';
 
 export const PUBLIC_SURFACE_FILTERS = Object.freeze([
-  '@cap/contracts',
-  '@cap/api',
-  '@cap/web',
+  '@cap-console/contracts',
+  '@cap-console/api',
+  '@cap-console/web',
 ]);
 
 const FILTER_ARGS = Object.freeze(

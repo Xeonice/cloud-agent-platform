@@ -10,7 +10,7 @@ import type {
   TerminalViewerAttachmentFactory,
   TerminalViewerAttachmentOutcome,
   TerminalViewerDataListener,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   buildExactHasSessionCommand,
   buildViewerAttachSessionCommand,

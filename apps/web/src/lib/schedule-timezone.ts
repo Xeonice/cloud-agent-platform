@@ -1,4 +1,4 @@
-import { isValidScheduleTimezone } from "@cap/contracts";
+import { isValidScheduleTimezone } from "@cap-console/contracts";
 
 export const SCHEDULE_TIMEZONE_FALLBACK = "UTC";
 

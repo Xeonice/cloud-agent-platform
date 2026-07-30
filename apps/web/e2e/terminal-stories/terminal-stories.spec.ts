@@ -8,11 +8,11 @@ import {
   XTERM_5_5_0_RESPONSE_PROFILE_FINGERPRINT_SOURCE,
   XTERM_5_5_0_RESPONSE_PROFILE_ID,
   classifyTerminalResponseBytes,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   buildTerminalResponseProfileDescriptor,
   type TerminalResponseProfileRuntimeInputs,
-} from "@cap/ui";
+} from "@cap-console/ui";
 
 const requireFromUi = createRequire(
   new URL("../../../../packages/ui/package.json", import.meta.url),

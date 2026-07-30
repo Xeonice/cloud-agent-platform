@@ -3,7 +3,7 @@ import {
   TaskProvisioningDiagnosticsResponseSchema,
   type TaskProvisioningDiagnosticAttempt,
   type TaskProvisioningDiagnosticsResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { Buffer } from "node:buffer";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";

@@ -1,5 +1,5 @@
 import { Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   AdminRevealHolder,
   SYSTEM_SETTINGS_ROW_ID,

@@ -4,6 +4,17 @@ const mod = await import(new URL('../dist/index.js', import.meta.url).href);
 const core = await import(new URL('../../sandbox-core/dist/index.js', import.meta.url).href);
 const conformance = await import(new URL('../../sandbox-conformance/dist/index.js', import.meta.url).href);
 
+// enforce-provider-contract-parity, Track 4 — conformance participation is
+// derived from what this provider DECLARES, not from which suites this file
+// happens to build. Dropping a suite below no longer shrinks the run; it fails
+// `assertComplete()` naming the capability that obliged the family.
+const participation = conformance.createConformanceParticipationLedger({
+  providerLabel: 'cloud-http',
+  declaredCapabilities: mod.HTTP_CLOUD_SANDBOX_PROVIDER_CAPABILITIES,
+  onGap: (capability, why) =>
+    console.log(`  GAP   cloud-http declares ${capability}: ${why}`),
+});
+
 let passed = 0;
 let failed = 0;
 
@@ -2617,6 +2628,7 @@ await test('cloud provider passes shared provisioning diagnostic conformance', a
     baseUrl: 'https://cloud.example.test',
     fetch: makeFetch({}).fetch,
   });
+  participation.ran('diagnostic');
   const diagnosticScenarios =
     conformance.createSandboxProviderDiagnosticConformanceScenarios(
       {
@@ -2979,6 +2991,7 @@ await test('cloud provider passes applicable ownership behavior conformance', as
     if (trace.length === 0) appendTrace({ kind: 'provider-selected' });
     return selected;
   };
+  participation.ran('behavior');
   const scenarios = conformance.createSandboxProviderBehaviorConformanceScenarios(
     {
       provider,
@@ -3043,6 +3056,7 @@ await test('cloud provider passes the shared sandbox provider conformance scenar
     baseUrl: 'https://cloud.example.test',
     fetch,
   });
+  participation.ran('provider');
   const scenarios = conformance.createSandboxProviderConformanceScenarios(
     {
       provider,
@@ -3058,6 +3072,8 @@ await test('cloud provider passes the shared sandbox provider conformance scenar
     await scenario.run();
   }
 });
+
+participation.assertComplete();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

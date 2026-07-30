@@ -3,7 +3,7 @@
  * (surface-task-sandbox-provider-label). Drives the REAL compiled zod schemas
  * from dist/ so api + web stay on the same response contract.
  *
- * Requires `pnpm --filter @cap/contracts build` first.
+ * Requires `pnpm --filter @cap-console/contracts build` first.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

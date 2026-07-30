@@ -1,5 +1,5 @@
 {
-  "name": "@cap/web",
+  "name": "@cap-console/web",
   "version": "0.0.0",
   "private": true,
   "description": "TanStack Start console (web-only; deployed to Vercel via the Nitro vercel preset). Talks to the api over env-configured cross-origin VITE_API_BASE_URL/VITE_WS_URL.",
@@ -15,15 +15,15 @@
     "terminal-stories:dev": "vite --config e2e/terminal-stories/vite.config.ts",
     "test:terminal-stories": "playwright test --config playwright.terminal-stories.config.ts",
     "provider-terminal-story:dev": "vite --config e2e/provider-terminal-story/vite.config.ts",
-    "test:provider-terminal-story": "pnpm --filter @cap/ui build && playwright test --config playwright.provider-terminal-story.config.ts",
+    "test:provider-terminal-story": "pnpm --filter @cap-console/ui build && playwright test --config playwright.provider-terminal-story.config.ts",
     "codex-device-login:dev": "vite --config e2e/codex-device-login/vite.config.ts",
     "test:codex-device-login": "playwright test --config e2e/codex-device-login/playwright.config.ts",
     "test:e2e:schedules": "playwright test --config e2e/scheduled-tasks/playwright.config.ts",
     "lint": "eslint ."
   },
   "dependencies": {
-    "@cap/contracts": "workspace:*",
-    "@cap/ui": "workspace:*",
+    "@cap-console/contracts": "workspace:*",
+    "@cap-console/ui": "workspace:*",
     "@hookform/resolvers": "^5.4.0",
     "@tanstack/react-query": "5.101.0",
     "@tanstack/react-router": "1.170.11",
@@ -47,8 +47,8 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@cap/eslint-config": "workspace:*",
-    "@cap/tsconfig": "workspace:*",
+    "@cap-console/eslint-config": "workspace:*",
+    "@cap-console/tsconfig": "workspace:*",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "4.3.0",
     "@tanstack/react-router-devtools": "1.167.0",

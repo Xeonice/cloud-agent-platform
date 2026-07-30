@@ -42,8 +42,8 @@ import {
 } from './mcp-tools';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
-import { PrismaService } from '../prisma/prisma.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { PrismaService } from '@/prisma/prisma.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import {
   CreateScheduleRequestSchema,
   CreateTaskRequestSchema,
@@ -80,20 +80,20 @@ import {
   type TaskProvisioningDiagnosticsResponse,
   type TaskResponse,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
-import { MCP_PUBLIC_ERROR_MAP } from '../public-surface/public-error-mappings';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import type { TaskBranchResolver } from '../forge/task-branch-resolver';
-import { ReposService } from '../repos/repos.service';
+} from '@cap-console/contracts';
+import { MCP_PUBLIC_ERROR_MAP } from '@/public-surface/public-error-mappings';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
+import { ReposService } from '@/repos/repos.service';
 import {
   TasksService,
   type TaskAcceptanceClient,
-} from '../tasks/tasks.service';
+} from '@/tasks/tasks.service';
 import type {
   TaskAdmissionGatePort,
   TaskAdmissionWakePort,
-} from '../tasks/task-admission-gate';
+} from '@/task-admission/task-admission-gate';
 
 // ---------------------------------------------------------------------------
 // Fakes: a server that captures (name -> callback), and recording deps.
@@ -1869,6 +1869,7 @@ test('the production MCP factory delegates diagnostics to the shared public quer
     {} as never,
     {} as never,
     publicQuery as never,
+    {} as never,
   );
 
   const response = await factory.getTaskProvisioningDiagnostics(
@@ -1889,6 +1890,7 @@ test('the production MCP factory delegates diagnostics to the shared public quer
 
 test('the production MCP factory advertises exactly the registry tool set', async () => {
   const factory = new McpServerFactory(
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -2362,6 +2364,7 @@ test('McpServerFactory list_tasks uses the canonical persisted failure projectio
     {} as never,
     {} as never,
     prisma,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -3033,7 +3036,13 @@ test(
         providerOperations.push(operation);
       },
     };
-    const gate: TaskAdmissionGatePort = { isEnabled: () => true };
+    const gate: TaskAdmissionGatePort = {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    };
     const environments = {
       async resolveTaskAdmission() {
         return Object.freeze({
@@ -3108,6 +3117,7 @@ test(
       {} as never,
       {} as never,
       provider as SandboxProvider,
+      {} as never,
       {} as never,
     );
     const server = factory.createServer();

@@ -6,7 +6,7 @@ TBD - created by archiving change agent-control-platform. Update Purpose after a
 ### Requirement: SandboxProvider port exposing sandbox-mode as a capability
 The system SHALL define a `SandboxProvider` port abstraction whose `provision()` method accepts a `ProvisionContext` (which no longer carries a `taskToken`, since there is no dial-back to authenticate) and returns a `SandboxConnection { taskId, baseUrl, wsUrl }` rather than `void`, so that callers can address the provisioned sandbox by container name and open its terminal WebSocket. Providers SHALL be exposed through provider descriptors that include an id, location (`local` or `cloud`), priority, supported capabilities, and the provider implementation. Capability selection SHALL be provider-neutral: callers declare required capabilities, the provider center SHALL consider only providers satisfying all required capabilities, and selection SHALL order candidates by priority with optional preferred-location tie-breaking. The port SHALL continue to expose the execution sandbox mode (one of `read-only`, `workspace-write`, `danger-full-access`) as an explicit capability via `getSandboxMode()`, but that mode SHALL be treated as INFORMATIONAL only and SHALL NOT be the scheduling boundary — under AIO Sandbox the real isolation boundary is the container with `seccomp=unconfined` plus network isolation, not the reported mode. The concrete OS-isolating implementation SHALL remain deferrable and swappable without changing callers. `teardownSandbox` SHALL be unchanged.
 
-Provider-neutral contracts and capability types SHALL live in `@cap/sandbox-core`. Provider registry, selection, lifecycle, workspace, readoption, selected-run routing, and shared terminal-session behavior SHALL live in the API-facing `@cap/sandbox` provider center. Concrete AIO, BoxLite, and cloud HTTP mechanics SHALL live in their owning provider packages. Internal scheduler, lifecycle, workspace-git, and AIO-local helpers SHALL NOT remain helper-only runtime packages, and conformance code SHALL be dev-only testkit or package test code rather than a production dependency. None of these layers SHALL require `@cap/api` internals.
+Provider-neutral contracts and capability types SHALL live in `@cap-console/sandbox-core`. Provider registry, selection, lifecycle, workspace, readoption, selected-run routing, and shared terminal-session behavior SHALL live in the API-facing `@cap-console/sandbox` provider center. Concrete AIO, BoxLite, and cloud HTTP mechanics SHALL live in their owning provider packages. Internal scheduler, lifecycle, workspace-git, and AIO-local helpers SHALL NOT remain helper-only runtime packages, and conformance code SHALL be dev-only testkit or package test code rather than a production dependency. None of these layers SHALL require `@cap-console/api` internals.
 
 #### Scenario: provision returns a SandboxConnection, not void
 - **WHEN** a caller invokes `SandboxProvider.provision()` with a `ProvisionContext`
@@ -47,8 +47,8 @@ Provider-neutral contracts and capability types SHALL live in `@cap/sandbox-core
 
 #### Scenario: Sandbox package boundaries match real extension points
 - **WHEN** sandbox provider logic and package manifests are inspected
-- **THEN** provider-neutral contracts live in `@cap/sandbox-core`, shared orchestration lives in `@cap/sandbox`, and backend mechanics live in concrete provider packages
-- **AND** helper-only packages are not production runtime dependencies, conformance is dev-only, and `@cap/api` imports only the provider-center surface
+- **THEN** provider-neutral contracts live in `@cap-console/sandbox-core`, shared orchestration lives in `@cap-console/sandbox`, and backend mechanics live in concrete provider packages
+- **AND** helper-only packages are not production runtime dependencies, conformance is dev-only, and `@cap-console/api` imports only the provider-center surface
 
 ### Requirement: Path to restore OS-level isolation is preserved
 The `SandboxProvider` port SHALL be defined such that a future implementation can provide OS-level isolation (for example a Claude Code sandbox-runtime) by satisfying the same interface, without requiring changes to the port's consumers.
@@ -95,6 +95,19 @@ The sandbox scheduler SHALL produce a selected run context for each provisioned 
 
 The system SHALL maintain capability names for provider features such as command execution, interactive terminal transport, archive workspace transfer, retained transcript source, readoption, snapshot, sleep, and port exposure, while preserving operation-level required-capability helpers for CAP workflows. The scheduler SHALL match on capabilities rather than concrete provider class names.
 
+Each capability SHALL have exactly ONE internal spelling. A capability SHALL NOT
+be expressed under two names that comparison sites must reconcile; where a
+deprecated spelling must remain accepted for compatibility, it SHALL be
+normalized to the canonical spelling at a SINGLE boundary and SHALL NOT exist
+beyond it.
+
+The distinction between provider-feature and CAP-operation capabilities SHALL be
+TOTAL: every capability SHALL be classified, and the classification SHALL be the
+source from which the vocabulary lists derive rather than a set of lists
+maintained alongside it. Introducing a capability without classifying it SHALL
+be a compile error. No hand-maintained copy of the vocabulary SHALL be the only
+thing verifying the vocabulary.
+
 #### Scenario: Provider feature capabilities compose into operation requirements
 - **WHEN** CAP provisions an interactive task with workspace materialization
 - **THEN** the planner resolves that operation into the required provider feature capabilities before selecting a provider
@@ -102,6 +115,21 @@ The system SHALL maintain capability names for provider features such as command
 #### Scenario: Provider class checks are not used for selection
 - **WHEN** AIO and BoxLite are both registered
 - **THEN** selecting a provider for a task depends on declared capabilities, priority, and location preference, not on `instanceof` checks or provider names
+
+#### Scenario: One capability has one internal spelling
+- **WHEN** the capability vocabulary is inspected for two names denoting the same capability
+- **THEN** none exist
+- **AND** no comparison site treats one capability name as satisfying a requirement for another
+
+#### Scenario: A deprecated spelling is accepted at the boundary only
+- **WHEN** an operator's configuration declares a capability under a deprecated spelling
+- **THEN** the provider's effective capability set is identical to the one produced by the canonical spelling
+- **AND** the deprecated spelling does not appear in the resolved set
+
+#### Scenario: An unclassified capability does not compile
+- **WHEN** a capability is added to the vocabulary without being classified as a provider feature or a CAP operation
+- **THEN** compilation fails
+- **AND** the vocabulary lists cannot disagree with the vocabulary, because they derive from the classification
 
 ### Requirement: Provider run ownership is durable enough for restart
 
@@ -301,6 +329,80 @@ post-fence Task-authority recheck before its provider method is called.
 - **WHEN** AIO or BoxLite advertises interactive terminal capability in an enabled real-provider gate
 - **THEN** that provider passes the same fresh-identity, current-frame, no-history-prefix, live-delta, opaque-byte input, isolation, and resource-cleanup story against its supported native protocol
 - **AND** provider-specific implementation details do not weaken the shared terminal contract
+
+### Requirement: Provider identity has a single declaration
+
+The set of provider families SHALL be declared exactly ONCE, and every schema,
+validation, and decision that depends on which providers exist SHALL derive from
+that declaration. A provider family list SHALL NOT be restated independently.
+
+Where a surface legitimately admits a value outside the shared set — such as a
+diagnostic emitted before a provider is selected — it SHALL be expressed as an
+explicit extension of the shared declaration, so that the widening is visible
+rather than hidden in a separately maintained list. Where a surface legitimately
+covers only a SUBSET of providers, it SHALL be expressed as an explicit subset of
+the shared declaration together with the reason, rather than as an independent
+list that merely happens to be shorter.
+
+A decision that must produce a value for every provider family SHALL be
+expressed as a total mapping, so that introducing a provider is a compile error
+at each site that must decide something for it.
+
+#### Scenario: Adding a provider family fails the build at every decision point
+- **WHEN** a new member is added to the provider-family declaration
+- **THEN** compilation fails at every total mapping that must produce a value for it until each supplies one
+- **AND** no schema silently continues to describe the previous set
+
+#### Scenario: Provider-family schemas agree by construction
+- **WHEN** the provider-family schemas are compared
+- **THEN** their members are the shared declaration, plus only those extensions each states explicitly
+- **AND** no schema carries a hand-written member list that can drift from the declaration
+
+### Requirement: Conformance participation is derived from declared capabilities
+
+The conformance families a provider is required to run SHALL be derived from the
+capabilities that provider DECLARES, not chosen by the author of its test. A
+provider that declares a capability whose conformance family is not exercised
+SHALL fail.
+
+Where a capability is exercised INDIRECTLY — by a shared implementation the
+provider delegates to rather than by a provider-specific scenario — that
+arrangement SHALL be stated explicitly as the coverage for that capability.
+
+Where a capability has NO conformance scenario at all, that gap SHALL be
+ENUMERATED as data alongside the mapping, naming the capability. Such a
+capability SHALL NOT be demanded of a provider, and SHALL NOT be silently
+skipped either: the enumeration is what turns it from an absence nobody can see
+into a debt that is written down. An absent MAPPING ENTRY SHALL NOT read as
+coverage — every capability SHALL resolve to a scenario family, a stated shared
+coverage, or a stated gap.
+
+Conformance participation SHALL be enforced by an executable ledger that derives
+the required families from the provider's declared capabilities and FAILS the
+provider's conformance run when a required family did not run. The obligation
+SHALL NOT be restated by the provider's test — the test declares which family
+each suite it builds belongs to, and what is REQUIRED is computed from the
+declaration alone, so a family cannot be dropped by simply not mentioning it.
+
+#### Scenario: Declaring a capability requires exercising it
+- **WHEN** a provider declares a capability
+- **THEN** the conformance family covering that capability runs for that provider
+- **AND** the provider's conformance run FAILS if that family did not run, naming the capability and the family
+
+#### Scenario: A capability that is not declared is not demanded
+- **WHEN** a provider does not declare command execution
+- **THEN** command-output conformance is not required of it
+- **AND** its conformance result is unaffected by that family's absence
+
+#### Scenario: Indirect coverage is stated, not inferred
+- **WHEN** a capability is covered by a shared implementation's conformance rather than a provider-specific scenario
+- **THEN** that is recorded as the explicit coverage for the capability
+
+#### Scenario: A capability with no scenario is an enumerated gap, not a silent pass
+- **WHEN** a capability has no conformance scenario in any family
+- **THEN** it appears in the enumerated gap list naming the capability
+- **AND** a provider declaring it is not failed for the missing scenario
+- **AND** a capability that appears in NEITHER the family mapping nor the gap list fails, so a new capability cannot enter the vocabulary uncovered and unrecorded
 
 ### Requirement: Explicit provider selection constrains eligible providers
 
@@ -705,13 +807,13 @@ Archive-variant workspace materialization SHALL report byte-based transfer progr
 - **WHEN** the deployment runs legacy admission with no provisioning work row
 - **THEN** the transfer proceeds normally and no progress write is attempted or errored
 
-### Requirement: `@cap/sandbox` is the API-facing provider center
+### Requirement: `@cap-console/sandbox` is the API-facing provider center
 
-The API SHALL consume sandbox behavior through `@cap/sandbox` as the provider center and host harness boundary. Provider registry composition, selection, explicit provider-family constraints, owner pinning, readoption routing, selected-run aggregation, workspace helpers, lifecycle planning, command executor resolution, provider readiness, and provider-neutral terminal session behavior SHALL live behind that center rather than in API-local wiring or helper-only packages.
+The API SHALL consume sandbox behavior through `@cap-console/sandbox` as the provider center and host harness boundary. Provider registry composition, selection, explicit provider-family constraints, owner pinning, readoption routing, selected-run aggregation, workspace helpers, lifecycle planning, command executor resolution, provider readiness, and provider-neutral terminal session behavior SHALL live behind that center rather than in API-local wiring or helper-only packages.
 
 #### Scenario: API imports sandbox behavior through the center
 - **WHEN** API sandbox, task, guardrail, terminal, and retention code imports sandbox-layer functionality
-- **THEN** it imports the API-facing surface from `@cap/sandbox`
+- **THEN** it imports the API-facing surface from `@cap-console/sandbox`
 - **AND** it does not import scheduler, lifecycle, workspace-git, conformance, AIO-local, or provider-helper packages directly
 - **AND** it does not import concrete provider factories, provider env readers, provider terminal transports, or provider command executor implementations
 
@@ -722,26 +824,38 @@ The API SHALL consume sandbox behavior through `@cap/sandbox` as the provider ce
 
 #### Scenario: Provider center owns configured registry creation
 - **WHEN** the API binds the sandbox provider port
-- **THEN** API passes a neutral host harness into `@cap/sandbox`
-- **AND** `@cap/sandbox` composes AIO, BoxLite, cloud-http, and future provider descriptors according to configuration
+- **THEN** API passes a neutral host harness into `@cap-console/sandbox`
+- **AND** `@cap-console/sandbox` composes AIO, BoxLite, cloud-http, and future provider descriptors according to configuration
 - **AND** API does not branch on provider family or provider capability implementation details
 
 ### Requirement: Helper-only sandbox packages are not runtime extension packages
 
 Sandbox helper logic SHALL be located inside the owning package unless it represents a stable external extension boundary. Scheduler, lifecycle, workspace-git, AIO-local configuration, and conformance helpers SHALL NOT remain runtime packages solely to hold internal helper code.
 
+A package whose code has been superseded SHALL be REMOVED from the repository,
+not merely excluded from the workspace graph. Excluding it stops the build from
+seeing it but leaves it visible to every reader, grep and search — code that
+cannot run while still reading as live, which costs review attention and
+misdirects work onto files that no build would ever compile.
+
 #### Scenario: Internal helpers move under owning packages
 - **WHEN** the sandbox package graph is inspected after the refactor
-- **THEN** scheduler, lifecycle, and workspace helper code is under `@cap/sandbox`
-- **AND** AIO local configuration/spec helper code is under `@cap/sandbox-provider-aio`
+- **THEN** scheduler, lifecycle, and workspace helper code is under `@cap-console/sandbox`
+- **AND** AIO local configuration/spec helper code is under `@cap-console/sandbox-provider-aio`
 - **AND** conformance helpers are dev-only testkit or test code rather than runtime dependencies
+
+#### Scenario: A superseded package leaves no directory behind
+- **WHEN** a helper package's code has moved to its owning package
+- **THEN** the superseded package directory no longer exists
+- **AND** no workspace exclusion entry remains for it
+- **AND** documentation does not describe it as a package that exists
 
 ### Requirement: Provider packages expose backend descriptors through a common center contract
 
 Each provider package SHALL expose descriptor factories and provider instances that the provider center can register without API-specific dependencies.
 
 #### Scenario: A provider registers without Nest dependencies
-- **WHEN** `@cap/sandbox` registers AIO or BoxLite provider descriptors
+- **WHEN** `@cap-console/sandbox` registers AIO or BoxLite provider descriptors
 - **THEN** the descriptor is created from provider package exports and injected hooks
 - **AND** the provider package does not import Nest, Prisma, API controllers, or API-local module wiring
 

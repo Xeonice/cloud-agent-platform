@@ -1,13 +1,13 @@
 import { Global, Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
-import { PrismaService } from '../prisma/prisma.service';
-import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import { ModelDiscoveryClient } from '../settings/model-discovery.client';
+import { PrismaService } from '@/prisma/prisma.service';
+import { SandboxEnvironmentsModule } from '@/sandbox-environments/sandbox-environments.module';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import { ModelDiscoveryClient } from '@/settings/model-discovery.client';
 import {
   SANDBOX_ENVIRONMENT_VALIDATION_RUNNER,
   type SandboxEnvironmentValidationRunner,
-} from '../sandbox-environments/sandbox-environments.validator';
+} from '@/sandbox-environments/sandbox-environments.validator';
 import {
   RUNTIME_MODEL_CATALOG_ADAPTERS,
   RUNTIME_MODEL_CREDENTIAL_RESOLVER,

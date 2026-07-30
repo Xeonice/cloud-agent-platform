@@ -4,7 +4,7 @@ import type {
   SandboxRuntimePrivateFilePort,
   SandboxTranscriptSourceBase,
   TaskModelIntent,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import type { BoxLiteSandbox } from './boxlite-client.js';
 
 export interface BoxLiteProviderIdentity {

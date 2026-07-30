@@ -1,4 +1,4 @@
-import { repoResponseSchema, type RepoResponse } from '@cap/contracts';
+import { repoResponseSchema, type RepoResponse } from '@cap-console/contracts';
 
 /**
  * The Prisma `Repo` columns every read path projects. Declared structurally (not

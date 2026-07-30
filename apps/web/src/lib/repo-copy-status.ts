@@ -23,7 +23,7 @@ import type {
   Repo,
   RepoCopyStatus,
   TaskRepoCopyBlockingStatus,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import type { StatusPillVariant } from "@/components/status-pill";
 
 /** The subset of a Repo this module reads. */

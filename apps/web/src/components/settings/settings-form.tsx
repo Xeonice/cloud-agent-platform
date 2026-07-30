@@ -42,7 +42,7 @@ import type {
   RetentionDays,
   SandboxEnvironment,
   UpdateSettingsRequest,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { StatusPill } from "@/components/status-pill";
 import {
   Select,

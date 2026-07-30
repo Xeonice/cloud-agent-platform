@@ -4,8 +4,8 @@ import {
   Optional,
   type OnApplicationBootstrap,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { isEncryptionKeyConfigured } from '../settings/secret-storage';
+import { PrismaService } from '@/prisma/prisma.service';
+import { isEncryptionKeyConfigured } from '@/crypto/secret-storage';
 import { resolveSmtpConfig } from './mail.service';
 import { SmtpConfigService } from './smtp-config.service';
 

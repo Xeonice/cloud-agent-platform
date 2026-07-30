@@ -6,30 +6,30 @@ import {
   TaskProvisioningDiagnosticAttemptSchema,
   TaskProvisioningDiagnosticEventSchema,
   type TaskProvisioningDiagnosticCleanupSummary,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   InMemorySandboxRunOwnerStore,
   SandboxProviderRouter,
   defineLocalSandboxProvider,
   type SandboxPhysicalCleanupResult,
-} from '@cap/sandbox';
-import type { AuditRecorderPort } from '../audit/audit-recorder.port';
-import { AuditService } from '../audit/audit.service';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
+} from '@cap-console/sandbox';
+import type { AuditRecorderPort } from '@/audit/audit-recorder.port';
+import { AuditService } from '@/audit/audit.service';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import {
   GuardrailsService,
   type GuardrailsConfig,
-} from '../guardrails/guardrails.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { FencedTaskAdmissionProcessor } from '../task-admission/fenced-task-admission.processor';
+} from '@/guardrails/guardrails.service';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
   TaskAdmissionScheduler,
   type TaskAdmissionTimer,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionStore,
@@ -41,11 +41,11 @@ import {
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
   type TaskAdmissionSettlement,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
-import type { TaskProvisioningDiagnosticRecorderPort } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
-import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
-import { deriveTaskDiagnosticCoverage } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
+import type { TaskProvisioningDiagnosticRecorderPort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+import { deriveTaskDiagnosticCoverage } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
 import type { IGuardrailsService } from './tasks.service';
 import { TasksService } from './tasks.service';
 

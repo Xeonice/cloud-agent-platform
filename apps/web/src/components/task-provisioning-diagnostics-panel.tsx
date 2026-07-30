@@ -15,7 +15,7 @@ import type {
   TaskProvisioningDiagnosticStage,
   TaskProvisioningDiagnosticsResponse,
   TaskProvisioningState,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 
 import { taskProvisioningDiagnosticsInfiniteQuery } from "@/lib/api/queries";
 import { TASK_PROVISIONING_STATE_LABELS } from "@/lib/task-provisioning";

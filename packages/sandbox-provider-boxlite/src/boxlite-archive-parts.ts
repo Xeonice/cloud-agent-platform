@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createSandboxMode0600FileArchive } from '@cap/sandbox-core';
+import { createSandboxMode0600FileArchive } from '@cap-console/sandbox-core';
 
 /**
  * Body-limit-safe archive delivery (chunk-archive-injection-with-progress D1).

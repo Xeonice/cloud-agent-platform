@@ -4,12 +4,12 @@ import type {
   SandboxProviderCapability,
   SandboxProviderDescriptor,
   SandboxResolvedEnvironmentMetadata,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 import {
   SANDBOX_PROVIDER_CAPABILITIES,
   SANDBOX_REPO_SOURCE_MOUNT_DIR,
   defineLocalSandboxProvider,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export const AIO_LOCAL_SANDBOX_PROVIDER_ID = 'aio-local';
 export const AIO_SANDBOX_CONTAINER_PREFIX = 'cap-aio-';

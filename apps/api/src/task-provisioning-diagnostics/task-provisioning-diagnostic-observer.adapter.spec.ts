@@ -7,12 +7,12 @@ import {
   type TaskProvisioningDiagnosticAttempt,
   type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import {
   getTaskLogContext,
   runWithTaskProvisioningAttemptLog,
-} from '../observability/log-context';
+} from '@/observability/log-context';
 import type {
   TaskProvisioningDiagnosticAttemptContext,
   TaskProvisioningDiagnosticRecorderResult,

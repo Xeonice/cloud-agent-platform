@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MetricsResponseSchema } from '@cap/contracts';
+import { MetricsResponseSchema } from '@cap-console/contracts';
 
 import { MetricsService } from './metrics.service';
 import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metrics.service';

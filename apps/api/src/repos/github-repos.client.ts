@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { GitBranchNameSchema, type AvailableGithubRepo } from '@cap/contracts';
+import { GitBranchNameSchema, type AvailableGithubRepo } from '@cap-console/contracts';
 import {
   classifyGithubListError,
   type ClassifiedGithubListError,

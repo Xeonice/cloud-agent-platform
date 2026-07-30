@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Check, LoaderCircle } from "lucide-react";
 
-import type { TaskResponse } from "@cap/contracts";
+import type { TaskResponse } from "@cap-console/contracts";
 import {
   provisioningTimelineEntries,
   taskTransferProgress,

@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskProvisioningStage } from '@cap/contracts';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { SandboxConnection, SelectedSandboxRun } from '../sandbox/sandbox-provider.port';
+import type { TaskProvisioningStage } from '@cap-console/contracts';
+import type { PrismaService } from '@/prisma/prisma.service';
+import type { SandboxConnection, SelectedSandboxRun } from '@/sandbox/sandbox-provider.port';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TaskAdmissionClock,
   TaskAdmissionLeaseTokenFactory,
   TaskAdmissionScheduler,
   type TaskAdmissionTimer,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionStore,
   type TaskAdmissionAuthorityRequest,
@@ -19,14 +19,14 @@ import {
   type TaskAdmissionProcessor,
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
 import {
   TasksService,
   type IGuardrailsService,
   type ISandboxReadoption,
 } from './tasks.service';
-import type { TaskAdmissionWakePort } from './task-admission-gate';
+import type { TaskAdmissionWakePort } from '@/task-admission/task-admission-gate';
 
 const LEGACY_TASK_ID = '11111111-1111-4111-8111-111111111111';
 const DURABLE_TASK_ID = '22222222-2222-4222-8222-222222222222';

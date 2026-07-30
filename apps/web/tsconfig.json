@@ -1,5 +1,5 @@
 {
-  "extends": "@cap/tsconfig/base.json",
+  "extends": "@cap-console/tsconfig/base.json",
   "compilerOptions": {
     "moduleResolution": "Bundler",
     "module": "ESNext",

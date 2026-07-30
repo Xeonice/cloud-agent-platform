@@ -10,7 +10,7 @@ registry that maps each `TranscriptFormat` literal to exactly one parser. `parse
 SHALL dispatch by LOOKING UP the parser in the registry keyed by the runtime's declared
 `transcriptFormat`, and SHALL NOT contain a `switch`/ternary on the format literal. Adding a
 new format to the registry SHALL require ONLY a new key→parser entry; no existing call site,
-the dispatcher control flow, the frontend, or `@cap/contracts` SHALL need to change to register
+the dispatcher control flow, the frontend, or `@cap-console/contracts` SHALL need to change to register
 it. The registry SHALL own the parser implementations; the `AgentRuntime` port SHALL remain a
 leaf that declares only the format tag and never imports the sandbox parsers.
 
@@ -35,7 +35,7 @@ leaf that declares only the format tag and never imports the sandbox parsers.
 - **WHEN** a new `TranscriptParser` is added to the registry under a new format key
 - **THEN** no change is required to the four `parseTranscript` call sites (MCP `get_transcript`,
   `/v1` transcript, console session-history, durable capture/backfill), to the dispatcher control
-  flow, to the frontend, or to `@cap/contracts`
+  flow, to the frontend, or to `@cap-console/contracts`
 
 ### Requirement: TranscriptSource is a format-tagged discriminated union
 The parser input SHALL be a `TranscriptSource` discriminated union tagged by `format`, replacing

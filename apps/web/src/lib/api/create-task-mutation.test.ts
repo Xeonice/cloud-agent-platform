@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MutationObserver, QueryClient } from "@tanstack/react-query";
-import type { ListTasksResponse, TaskResponse } from "@cap/contracts";
+import type { ListTasksResponse, TaskResponse } from "@cap-console/contracts";
 
 import {
   createTaskMutation,

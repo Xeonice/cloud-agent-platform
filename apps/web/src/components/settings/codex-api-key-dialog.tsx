@@ -45,7 +45,7 @@ import type {
   DiscoverModelsResponse,
   ModelDiscoveryErrorCode,
   SaveCodexCredentialRequest,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { cn } from "@/utils";
 import { discoverCodexModelsMutation } from "@/lib/api/mutations";
 import {

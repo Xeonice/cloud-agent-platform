@@ -19,7 +19,7 @@
  */
 import * as React from "react";
 
-import { repoOffersForgeDelivery, type Repo } from "@cap/contracts";
+import { repoOffersForgeDelivery, type Repo } from "@cap-console/contracts";
 import { StatusPill } from "@/components/status-pill";
 import {
   REPO_COPY_STATUS_PRESENTATION,

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { GitBranchNameSchema } from '@cap/contracts';
+import { GitBranchNameSchema } from '@cap-console/contracts';
 import { DefaultForgeRegistry } from './forge-registry';
 import type { ForgeTarget } from './forge.port';
 import {

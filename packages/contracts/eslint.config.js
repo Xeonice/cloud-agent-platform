@@ -1,3 +1,3 @@
-import config from "@cap/eslint-config";
+import config from "@cap-console/eslint-config";
 
 export default config;

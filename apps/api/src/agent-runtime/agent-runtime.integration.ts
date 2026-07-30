@@ -30,6 +30,7 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { AgentRuntimeRegistry } from './agent-runtime.registry';
 import { CodexRuntime } from './codex-runtime';
 import { ClaudeCodeRuntime } from './claude-code-runtime';
+import { UnknownRuntimeError } from './agent-runtime.port';
 import type {
   AgentRuntime as PortAgentRuntime,
   ExecutionMode,
@@ -39,7 +40,7 @@ import type {
 import {
   PROVISION_LOOKUP,
   type ProvisionLookup,
-} from '../sandbox/provision-lookup.port';
+} from '@/provision-lookup/provision-lookup.port';
 
 /**
  * DI token the integration registry is bound under. The provider
@@ -143,13 +144,32 @@ export function sessionIdForTask(taskId: string): string {
  * on the single port interface and build the port `LaunchContext` / map its
  * `ExitSignal` themselves via {@link toPortExec} / {@link sessionIdForTask}).
  */
+/**
+ * The implementation registered for every declared runtime.
+ *
+ * A total `Record` rather than a list, so that declaring a runtime in
+ * `AGENT_RUNTIME_IDS` without supplying an implementation here stops the build.
+ * The registry previously took a positional array, which meant the declaration
+ * and the registrations could disagree with nothing noticing: the project
+ * compiled with a declared-but-unregistered runtime and failed at task launch
+ * with `no runtime registered for "..."`.
+ *
+ * This is the repository's established shape for "every member must state its
+ * own answer" — see `SANDBOX_PROVIDER_CAPABILITY_CLASSES` in `@cap-console/sandbox-core`
+ * and `ADMISSION_MODE_BY_OUTCOME` in `task-admission`. The compiler, not a
+ * reviewer, is what notices the gap.
+ */
+const AGENT_RUNTIME_IMPLEMENTATIONS: Readonly<Record<RuntimeId, PortAgentRuntime>> = {
+  codex: new CodexRuntime(),
+  'claude-code': new ClaudeCodeRuntime(),
+};
+
 @Injectable()
 export class IntegrationRuntimeRegistry implements RuntimeRegistry {
   private readonly logger = new Logger(IntegrationRuntimeRegistry.name);
-  private readonly registry = new AgentRuntimeRegistry([
-    new CodexRuntime(),
-    new ClaudeCodeRuntime(),
-  ]);
+  private readonly registry = new AgentRuntimeRegistry(
+    Object.values(AGENT_RUNTIME_IMPLEMENTATIONS),
+  );
 
   constructor(
     @Optional()
@@ -193,10 +213,14 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
    * v0.6.0 regression where the missing read path silently routed EVERY task —
    * including `claude-code` — through codex.
    *
-   * D3: every fallback to the codex default is logged at `warn`, never silent — the
-   * lookup genuinely unwired, `getTaskRuntime` throwing, or an out-of-set stored
-   * value. A `null` value (task missing / no runtime persisted) is the LEGITIMATE
-   * "absent → codex default" case and is NOT warned (a codex task stores null).
+   * D3: every fallback to the codex default is logged at `warn`, never silent —
+   * the lookup genuinely unwired, or `getTaskRuntime` throwing. A `null` value
+   * (task missing / no runtime persisted) is the LEGITIMATE "absent → codex
+   * default" case and is NOT warned (a codex task stores null).
+   *
+   * An out-of-set stored value is no longer among the fallbacks: it raises
+   * {@link UnknownRuntimeError}. A warn-and-default meant the task ran a
+   * different agent than it asked for, which no caller can detect.
    */
   private async readTaskRuntime(taskId: string): Promise<RuntimeId | null> {
     if (!this.lookup) {
@@ -216,12 +240,13 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
       );
       return null;
     }
-    if (value === 'claude-code' || value === 'codex') return value;
-    if (value !== null) {
-      this.logger.warn(
-        `task ${taskId} has an unknown runtime "${value}" (defaulting to codex)`,
-      );
+    // Absent is the legitimate legacy case and keeps the codex default.
+    if (value === null) return null;
+    // Unrecognised is not. It used to warn and take the same default, which
+    // launched a different agent than the task asked for.
+    if (!this.registry.isRegistered(value)) {
+      throw new UnknownRuntimeError(taskId, value);
     }
-    return null;
+    return value;
   }
 }

@@ -20,7 +20,7 @@ import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { SessionTurn } from "@cap/contracts";
+import type { SessionTurn } from "@cap-console/contracts";
 import { TranscriptMarkdown } from "@/components/markdown/transcript-markdown";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { SessionTag } from "@/components/status-pill";

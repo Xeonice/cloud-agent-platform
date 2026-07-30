@@ -11,14 +11,14 @@ import {
   SandboxWorkspaceMaterializationError,
   type RuntimeModelSetupFailurePhase,
   type SandboxWorkspaceOperationFailure,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 import {
   TaskBranchResolutionError,
   type TaskBranchResolutionFailureReason,
-} from '../forge/task-branch-resolver';
-import { TaskAdmissionProcessingError } from '../task-admission/task-admission.types';
-import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
+} from '@/forge/task-branch-resolver';
+import { TaskAdmissionProcessingError } from '@/admission-coordination/task-admission.types';
+import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
 import {
   classifyTaskProvisioningDiagnosticPrimaryFailure,
   taskProvisioningDiagnosticCauseFromFailureCode,

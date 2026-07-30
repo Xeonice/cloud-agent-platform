@@ -24,19 +24,19 @@ import {
   TASK_REPO_COPY_NOT_READY_ERROR,
   TaskRepoCopyNotReadyErrorSchema,
   type PublicV1OperationShape,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { TasksService, type IAgentRuntimeRegistry } from './tasks.service';
 import {
   RepoCopyNotReadyException,
   classifyRepoCopyGate,
 } from './task-repo-copy-gate';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   normalizePublicSurfaceFailure,
   projectPublicSurfaceErrorToMcp,
   projectPublicV1SurfaceErrorToRest,
-} from '../public-surface/public-surface-error';
+} from '@/public-surface/public-surface-error';
 
 const REPO_ID = '00000000-0000-4000-c000-000000000001';
 const TASK_ID = '00000000-0000-4000-c000-000000000002';
@@ -112,6 +112,8 @@ function makeHarness(copyStatus: string | null | undefined): GateHarness {
       return {
         id: runtime ?? 'codex',
         executionModes: new Set(['interactive-pty', 'headless-exec'] as const),
+        transcriptFormat:
+          (runtime ?? 'codex') === 'claude-code' ? 'claude-jsonl' : 'codex-rollout',
       };
     },
   };

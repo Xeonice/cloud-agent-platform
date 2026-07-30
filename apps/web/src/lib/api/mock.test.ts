@@ -3,8 +3,8 @@
  * contract #2).
  *
  * Proves every mock data-access function returns a value that PARSES against its
- * `@cap/contracts` zod schema (or the local view type, for `mockTaskContext`).
- * This is the design's drift guard: "mocks are typed against @cap/contracts (+
+ * `@cap-console/contracts` zod schema (or the local view type, for `mockTaskContext`).
+ * This is the design's drift guard: "mocks are typed against @cap-console/contracts (+
  * view extensions) so they can't drift off-shape". We parse the ACTUAL runtime
  * output (not the static type) so a mock that produced an out-of-shape value at
  * runtime — e.g. a missing field or a bad enum — fails here.
@@ -37,7 +37,7 @@ import {
   SandboxEnvironmentResponseSchema,
   ValidateSandboxEnvironmentResponseSchema,
   ListSandboxEnvironmentValidationsResponseSchema,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import {
   mockListTasks,
   mockGetTask,
@@ -74,7 +74,7 @@ afterEach(() => {
   resetState();
 });
 
-describe("mock outputs validate against their @cap/contracts schema", () => {
+describe("mock outputs validate against their @cap-console/contracts schema", () => {
   it(
     "mockListTasks -> ListTasksResponse",
     async () => {
@@ -372,7 +372,7 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
  * `updateAvailable: true` would surface a dishonest banner. It therefore degrades
  * to inert by default and only surfaces an available update under the
  * `VITE_FORCE_MOCK=1` visual harness. Both branches must still PARSE against the
- * `@cap/contracts` schema (the drift guard).
+ * `@cap-console/contracts` schema (the drift guard).
  */
 describe("mockUpdateStatus is mode-aware and ships inert by default", () => {
   afterEach(() => {

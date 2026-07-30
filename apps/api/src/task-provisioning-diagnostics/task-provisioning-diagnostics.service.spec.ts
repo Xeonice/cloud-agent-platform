@@ -4,9 +4,9 @@ import { describe, it } from 'node:test';
 import {
   TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
   TaskProvisioningDiagnosticEventSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import { TASK_PROVISIONING_DIAGNOSTIC_LOG_EVENT } from './task-provisioning-diagnostic-log';
 import type { TaskProvisioningDiagnosticAttemptContext } from './task-provisioning-diagnostic-recorder.port';
 import type { TaskProvisioningDiagnosticsMetricsService } from './task-provisioning-diagnostics-metrics.service';

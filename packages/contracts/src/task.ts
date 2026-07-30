@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  AGENT_RUNTIME_IDS,
+  DEFAULT_AGENT_RUNTIME_ID,
+} from './agent-runtime-id.js';
 import { ForgeKindSchema } from './settings.js';
 import { TaskSandboxEnvironmentSummarySchema } from './sandbox-environment.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
@@ -55,10 +59,12 @@ export const TERMINAL_TASK_STATUSES = [
  * and omitted requests stay valid, and the create response / list / fetch-by-id
  * read paths echo it back (the supplied value, or `codex` when omitted).
  *
- * Kept byte-for-byte in sync with the values the api runtime registry resolves
- * by and the `Task.runtime` column persists.
+ * Derived from {@link AGENT_RUNTIME_IDS}. It used to carry a comment promising to
+ * stay "byte-for-byte in sync" with the api's registry; nothing checked that, and
+ * the registry meanwhile keyed off its own separate union. There is now one
+ * declaration, so this schema cannot disagree with anything.
  */
-export const RuntimeSchema = z.enum(['claude-code', 'codex']);
+export const RuntimeSchema = z.enum(AGENT_RUNTIME_IDS);
 export type Runtime = z.infer<typeof RuntimeSchema>;
 
 /**
@@ -74,8 +80,11 @@ export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
  * The default runtime applied when a create request omits `runtime` and when an
  * existing/persisted task carries no `runtime` value (additive-nullable column).
  * Existing tasks and omitted requests therefore read back as `codex`.
+ *
+ * Re-exported from the declaration rather than restated, so the api's own default
+ * and this one are the same value and not two literals that happen to match.
  */
-export const DEFAULT_TASK_RUNTIME = 'codex' as const satisfies Runtime;
+export const DEFAULT_TASK_RUNTIME = DEFAULT_AGENT_RUNTIME_ID;
 
 // ---------------------------------------------------------------------------
 // Safe task provisioning progress

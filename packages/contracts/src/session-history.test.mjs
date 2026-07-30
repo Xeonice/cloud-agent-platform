@@ -5,7 +5,7 @@
  * so this guards that each discriminated state parses/round-trips and that an
  * `empty` state can NEVER carry fabricated transcript items.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node session-history.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node session-history.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

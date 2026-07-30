@@ -2,9 +2,9 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type TaskProvisioningDiagnosticsQuery,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
-import { PublicSurfaceError } from '../public-surface/public-surface-error';
+import { PublicSurfaceError } from '@/public-surface/public-surface-error';
 import {
   assertTaskProvisioningDiagnosticsReadOpen,
   TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,

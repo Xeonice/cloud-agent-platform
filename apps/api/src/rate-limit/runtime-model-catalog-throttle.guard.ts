@@ -6,14 +6,14 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import {
   RuntimeModelErrorSchema,
   type PublicV1OperationId,
-} from '@cap/contracts';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+} from '@cap-console/contracts';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   publicV1HttpExceptionForOperation,
   publicV1OperationIdForHandler,
   type PublicV1Handler,
-} from '../public-surface/public-v1-operation';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+} from '@/public-surface/public-v1-operation';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import { principalTrackerKey } from './principal.throttler-guard';
 import { RUNTIME_MODEL_CATALOG_THROTTLE_NAME } from './throttler.options';
 

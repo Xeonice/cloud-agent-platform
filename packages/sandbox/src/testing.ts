@@ -6,4 +6,4 @@ export {
   createGeneratedPrivateGitFixture,
   type CreateGeneratedPrivateGitFixtureOptions,
   type GeneratedPrivateGitFixture,
-} from '@cap/sandbox-conformance';
+} from '@cap-console/sandbox-conformance';

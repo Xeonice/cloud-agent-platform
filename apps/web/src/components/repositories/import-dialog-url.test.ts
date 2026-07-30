@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { REPO_IMPORT_FAILURE_CODES } from "@cap/contracts";
+import { REPO_IMPORT_FAILURE_CODES } from "@cap-console/contracts";
 import { ApiError } from "@/lib/api/real";
 
 import {

@@ -30,11 +30,11 @@ import {
   UNKNOWN_VERSION_VALUE,
   VERSION_ENV_VARS,
   VersionResponseSchema,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 
 import { HealthModule } from './health.module';
-import { AuthGuard } from '../auth/auth.guard';
-import { AuthSessionService } from '../auth/auth-session.service';
+import { AuthGuard } from '@/auth/auth.guard';
+import { AuthSessionService } from '@/auth/auth-session.service';
 
 /** Records whether the guard's session resolver was reached at all. */
 let resolveSessionCalls = 0;

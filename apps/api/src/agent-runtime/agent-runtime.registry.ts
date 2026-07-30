@@ -16,7 +16,9 @@ import {
  *
  * Kept as a plain class (not a Nest provider here) so the leaf module stays
  * dependency-free and unit-testable; the DI module that constructs it lives with
- * the consumers (Track 3 wiring), built from the two runtime instances.
+ * the consumers, built from `AGENT_RUNTIME_IMPLEMENTATIONS` — a total mapping
+ * over the declared ids, so the set it is constructed from cannot silently
+ * disagree with the set the contract accepts.
  */
 export class AgentRuntimeRegistry {
   private readonly byId: ReadonlyMap<RuntimeId, AgentRuntime>;
@@ -58,6 +60,24 @@ export class AgentRuntimeRegistry {
   /** True when a runtime is registered for `id` (used by readiness probes). */
   has(id: RuntimeId): boolean {
     return this.byId.has(id);
+  }
+
+  /**
+   * Narrow an arbitrary stored string to a registered {@link RuntimeId}.
+   *
+   * Callers reading a persisted runtime value need to know whether it names a
+   * runtime this deployment actually has, and the answer comes from what is
+   * REGISTERED rather than from a hand-written list.
+   *
+   * That claim used to be false in this file: `RuntimeId` was a literal union
+   * maintained by hand three modules away, so a third runtime could not even be
+   * held here without editing it. `RuntimeId` is now the single declaration in
+   * `@cap-console/contracts`, and the production wiring is a total mapping over it — so
+   * registering a third runtime genuinely needs no edit here, and DECLARING one
+   * without registering it stops the build.
+   */
+  isRegistered(value: string): value is RuntimeId {
+    return this.byId.has(value as RuntimeId);
   }
 
   /** The registered runtime ids, for enumeration (e.g. the readiness endpoint). */

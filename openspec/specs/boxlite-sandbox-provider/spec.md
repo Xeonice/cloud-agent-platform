@@ -702,11 +702,11 @@ BoxLite archive workspace injection SHALL split the repo-copy tar stream into pa
 
 ### Requirement: BoxLite provider package owns complete backend lifecycle
 
-`@cap/sandbox-provider-boxlite` SHALL own BoxLite configuration, client protocol, sandbox lifecycle, command execution, terminal descriptor and transport, workspace/archive transfer, runtime preflight, retention descriptors, readoption support, readiness handling, and provider descriptor registration. API code SHALL only pass neutral host harness ports into `@cap/sandbox`; it SHALL NOT call BoxLite provider factories or parse BoxLite env/config directly.
+`@cap-console/sandbox-provider-boxlite` SHALL own BoxLite configuration, client protocol, sandbox lifecycle, command execution, terminal descriptor and transport, workspace/archive transfer, runtime preflight, retention descriptors, readoption support, readiness handling, and provider descriptor registration. API code SHALL only pass neutral host harness ports into `@cap-console/sandbox`; it SHALL NOT call BoxLite provider factories or parse BoxLite env/config directly.
 
 #### Scenario: BoxLite registers through the sandbox host harness
 - **WHEN** BoxLite is configured for CAP
-- **THEN** `@cap/sandbox` registers it through `@cap/sandbox-provider-boxlite` descriptor/factory exports
+- **THEN** `@cap-console/sandbox` registers it through `@cap-console/sandbox-provider-boxlite` descriptor/factory exports
 - **AND** API-local wiring does not implement BoxLite lifecycle, descriptor assembly, readiness, env parsing, or provider-family fallback behavior
 
 #### Scenario: Runtime setup is injected through hooks

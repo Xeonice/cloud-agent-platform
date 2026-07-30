@@ -19,8 +19,8 @@ import {
   createExactHostGitCredential,
   createSandboxSecretFilePort,
   materializeSandboxGitWorkspaceStaged,
-} from '@cap/sandbox';
-import { createGeneratedPrivateGitFixture } from '@cap/sandbox-conformance';
+} from '@cap-console/sandbox';
+import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox-conformance';
 import { basicAuthHeader } from '../dist/forge/forge.port.js';
 import { NodeRemoteRefsCommandRunner } from '../dist/forge/remote-refs-command-runner.js';
 import { GitRemoteRefsProbe } from '../dist/forge/remote-refs-probe.js';

@@ -18,9 +18,9 @@ import {
   type McpTokenMintResponse,
   type McpTokenRevokeResponse,
   type SessionUser,
-} from '@cap/contracts';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+} from '@cap-console/contracts';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { McpTokensService } from './mcp-tokens.service';
 
 /**

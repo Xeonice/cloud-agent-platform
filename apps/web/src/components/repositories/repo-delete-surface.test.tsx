@@ -15,7 +15,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { Repo } from "@cap/contracts";
+import type { Repo } from "@cap-console/contracts";
 
 import { ImportedReposPanel } from "./imported-repos-panel";
 

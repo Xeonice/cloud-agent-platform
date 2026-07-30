@@ -6,7 +6,7 @@ import { twMerge } from "tailwind-merge";
  *
  * The shadcn `add` command targets the `utils` alias (`@/utils`) here rather
  * than the conventional `src/lib/utils.ts`, because `src/lib/**` is owned by the
- * data-layer track this run. Mirrors `@cap/ui`'s `cn` so shared and local
+ * data-layer track this run. Mirrors `@cap-console/ui`'s `cn` so shared and local
  * components merge classNames identically.
  */
 export function cn(...inputs: ClassValue[]): string {

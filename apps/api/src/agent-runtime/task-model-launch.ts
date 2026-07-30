@@ -2,7 +2,7 @@ import {
   SandboxRuntimeModelSetupError,
   TASK_MODEL_MATERIAL_PATH,
   type TaskModelLaunchMaterial,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 const SHA256_CHECKSUM_RE = /^sha256:([0-9a-f]{64})$/;
 

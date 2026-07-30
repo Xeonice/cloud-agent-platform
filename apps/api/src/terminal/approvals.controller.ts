@@ -16,7 +16,7 @@ import {
   type Decision,
   type PermissionRequestFrame,
   type PostToolUseReportFrame,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { TerminalGateway } from './terminal.gateway';
 
 /**

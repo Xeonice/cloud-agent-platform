@@ -31,7 +31,7 @@
  * explicit click (an event, never during render).
  */
 import * as React from "react";
-import type { Scope } from "@cap/contracts";
+import type { Scope } from "@cap-console/contracts";
 
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
@@ -46,7 +46,7 @@ import {
 } from "@/components/ui/dialog";
 
 // ---------------------------------------------------------------------------
-// View types — mirror the Track-2 (`@cap/contracts`) API-key DTOs. Declared
+// View types — mirror the Track-2 (`@cap-console/contracts`) API-key DTOs. Declared
 // locally here because the web-settings track is built in isolation from the
 // contracts track; the page maps the real contract shapes onto these props.
 // ---------------------------------------------------------------------------

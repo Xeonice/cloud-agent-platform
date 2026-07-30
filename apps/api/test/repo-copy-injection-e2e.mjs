@@ -28,7 +28,7 @@ import Docker from 'dockerode';
 import {
   buildAioLocalSandboxProvisionSpec,
   materializeSandboxGitWorkspaceStaged,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 const docker = new Docker();
 const GIT_SOURCE = 'https://example.invalid/acme/widgets.git';

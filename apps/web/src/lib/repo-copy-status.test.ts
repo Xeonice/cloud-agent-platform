@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { RepoSchema, type Repo } from "@cap/contracts";
+import { RepoSchema, type Repo } from "@cap-console/contracts";
 
 import {
   REPO_COPY_STATUS_PRESENTATION,

@@ -3,7 +3,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Hairline `<Card>` for the marketing site (`@cap/www`).
+ * Hairline `<Card>` for the marketing site (`@cap-console/www`).
  *
  * A surface bounded by a single 1px hairline border (design.md D5) with a
  * subtly raised background, used for feature tiles, the terminal demo frame,

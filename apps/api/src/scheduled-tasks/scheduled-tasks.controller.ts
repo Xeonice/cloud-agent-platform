@@ -23,10 +23,10 @@ import {
   type ScheduleResponse,
   type Scope,
   type UpdateScheduleRequest,
-} from '@cap/contracts';
-import { type AuthenticatedRequest } from '../auth/auth.guard';
-import { hasScope } from '../auth/operator-principal';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+} from '@cap-console/contracts';
+import { type AuthenticatedRequest } from '@/auth/auth.guard';
+import { hasScope } from '@/principal/operator-principal';
+import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { ScheduledTasksService } from './scheduled-tasks.service';
 
 @Controller('schedules')

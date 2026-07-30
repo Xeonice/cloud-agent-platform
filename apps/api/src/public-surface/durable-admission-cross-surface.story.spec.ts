@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+
+import { TASK_OPERATIONS } from '@/task-operations/task-operations.port';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
@@ -9,7 +11,7 @@ import {
   type TaskProvisioningStage,
   type TaskStatus,
   type TaskResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import {
   BoxLiteSandboxProvider,
   FakeBoxLiteClient,
@@ -18,48 +20,48 @@ import {
   defineLocalSandboxProvider,
   materializeSandboxGitWorkspaceStaged,
   readBoxLiteProviderConfig,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { AuditService } from '../audit/audit.service';
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { SessionCredentialsService } from '../creds/session-credentials.service';
-import { DefaultForgeRegistry } from '../forge/forge-registry';
-import { ForgeTargetResolver } from '../forge/forge-target-resolver';
-import { GiteeForge } from '../forge/gitee-forge';
-import { GithubForge } from '../forge/github-forge';
-import { GitlabForge } from '../forge/gitlab-forge';
+import { AuditService } from '@/audit/audit.service';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
+import type { SessionCredentialsService } from '@/creds/session-credentials.service';
+import { DefaultForgeRegistry } from '@/forge/forge-registry';
+import { ForgeTargetResolver } from '@/forge/forge-target-resolver';
+import { GiteeForge } from '@/forge/gitee-forge';
+import { GithubForge } from '@/forge/github-forge';
+import { GitlabForge } from '@/forge/gitlab-forge';
 import {
   RemoteRefsCommandRunner,
   type RemoteRefsCommandRequest,
   type RemoteRefsCommandResult,
-} from '../forge/remote-refs-command-runner';
-import { GitRemoteRefsProbe } from '../forge/remote-refs-probe';
-import { NodeRemoteRefsSecretStore } from '../forge/remote-refs-secret-store';
-import { TaskBranchResolver } from '../forge/task-branch-resolver';
+} from '@/forge/remote-refs-command-runner';
+import { GitRemoteRefsProbe } from '@/forge/remote-refs-probe';
+import { NodeRemoteRefsSecretStore } from '@/forge/remote-refs-secret-store';
+import { TaskBranchResolver } from '@/forge/task-branch-resolver';
 import {
   GuardrailsService,
   TERMINAL_GATEWAY_TOKEN,
   type GuardrailsConfig,
   type ITerminalGateway,
-} from '../guardrails/guardrails.service';
-import { McpServerFactory } from '../mcp/mcp.server';
-import { PrismaService } from '../prisma/prisma.service';
-import { ReposController } from '../repos/repos.controller';
-import { ReposService } from '../repos/repos.service';
-import type { RepoCopyService } from '../repos/repo-copy.service';
-import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import { PrismaProvisionLookup } from '../sandbox/prisma-provision-lookup';
-import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
-import { encryptToStored } from '../settings/secret-storage';
-import { FencedTaskAdmissionProcessor } from '../task-admission/fenced-task-admission.processor';
+} from '@/guardrails/guardrails.service';
+import { McpServerFactory } from '@/mcp/mcp.server';
+import { PrismaService } from '@/prisma/prisma.service';
+import { ReposController } from '@/repos/repos.controller';
+import { ReposService } from '@/repos/repos.service';
+import type { RepoCopyService } from '@/repos/repo-copy.service';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import { PrismaProvisionLookup } from '@/sandbox/prisma-provision-lookup';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
+import { encryptToStored } from '@/crypto/secret-storage';
+import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   RandomTaskAdmissionLeaseTokenFactory,
   SystemTaskAdmissionClock,
   SystemTaskAdmissionScheduler,
-} from '../task-admission/task-admission-runtime';
+} from '@/task-admission/task-admission-runtime';
 import {
   TaskAdmissionStore,
   type TaskAdmissionAuthorityRequest,
@@ -68,17 +70,17 @@ import {
   type TaskAdmissionClaimRequest,
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
-} from '../task-admission/task-admission.types';
-import { TaskAdmissionWorker } from '../task-admission/task-admission.worker';
-import { TasksController } from '../tasks/tasks.controller';
+} from '@/admission-coordination/task-admission.types';
+import { TaskAdmissionWorker } from '@/task-admission/task-admission.worker';
+import { TasksController } from '@/tasks/tasks.controller';
 import type {
   IGuardrailsService,
   TaskAcceptanceClient,
-} from '../tasks/tasks.service';
-import { TasksService } from '../tasks/tasks.service';
-import type { TaskAdmissionGatePort } from '../tasks/task-admission-gate';
-import { IdempotencyService } from '../v1/idempotency.service';
-import { V1TasksController } from '../v1/v1-tasks.controller';
+} from '@/tasks/tasks.service';
+import { TasksService } from '@/tasks/tasks.service';
+import type { TaskAdmissionGatePort } from '@/task-admission/task-admission-gate';
+import { IdempotencyService } from '@/v1/idempotency.service';
+import { V1TasksController } from '@/v1/v1-tasks.controller';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const REPO_ID = '22222222-2222-4222-8222-222222222222';
@@ -1115,6 +1117,8 @@ class StoryHarness {
       get(token: unknown) {
         if (token === GuardrailsService) return guardrails;
         if (token === TasksService) return tasks;
+        // guardrails now resolves the task operations by PORT token, not by class
+        if (token === TASK_OPERATIONS) return tasks;
         if (token === TERMINAL_GATEWAY_TOKEN) return gateway;
         if (token === ForgeTargetResolver) return forgeResolver;
         if (token === DefaultForgeRegistry) return forgeRegistry;
@@ -1155,7 +1159,13 @@ class StoryHarness {
       this.audit,
       this.database.prisma,
     );
-    const gate: TaskAdmissionGatePort = { isEnabled: () => true };
+    const gate: TaskAdmissionGatePort = {
+      evaluate: () => ({
+        capability: 'task-admission-v2',
+        open: true,
+        verifiedRoles: ['api', 'worker'],
+      }),
+    };
     const tasks = new TasksService(
       this.database.prisma,
       guardrails as unknown as IGuardrailsService,
@@ -1186,6 +1196,7 @@ class StoryHarness {
       {} as never,
       {} as never,
       this.router as unknown as SandboxProvider,
+      {} as never,
       {} as never,
     );
     this.reposController = new ReposController(this.repos);

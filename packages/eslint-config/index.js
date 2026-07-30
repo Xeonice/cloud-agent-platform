@@ -7,7 +7,7 @@ import prettier from "eslint-config-prettier";
  * Shared ESLint flat config for every workspace member (apps + packages).
  * Consume from a member's eslint.config.js:
  *
- *   import config from "@cap/eslint-config";
+ *   import config from "@cap-console/eslint-config";
  *   export default config;
  *
  * @type {import("eslint").Linter.Config[]}

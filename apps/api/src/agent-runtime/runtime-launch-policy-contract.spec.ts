@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import {
   assertNativeCodexInteractiveLaunchArgv,
   DEFAULT_CODEX_INTERACTIVE_LAUNCH_ARGV,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 import { ClaudeCodeRuntime } from './claude-code-runtime';
 import { CodexRuntime } from './codex-runtime';
 

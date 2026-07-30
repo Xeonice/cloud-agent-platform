@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { ProvisioningDiagnosticsMetricsSchema } from '@cap/contracts';
+import { ProvisioningDiagnosticsMetricsSchema } from '@cap-console/contracts';
 
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 import {
   TaskProvisioningDiagnosticsMetricsService,
   type TaskProvisioningDiagnosticsMetricsOptions,

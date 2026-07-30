@@ -9,7 +9,7 @@ route graph.
 From the repo root:
 
 ```bash
-pnpm --filter @cap/web terminal-stories:dev
+pnpm --filter @cap-console/web terminal-stories:dev
 ```
 
 Open:
@@ -20,12 +20,12 @@ Open:
 Run the automated checks:
 
 ```bash
-pnpm --filter @cap/web test:terminal-stories
+pnpm --filter @cap-console/web test:terminal-stories
 ```
 
 ## What This Covers
 
-- Shared `@cap/ui` `Terminal` mounting and nonblank rendering.
+- Shared `@cap-console/ui` `Terminal` mounting and nonblank rendering.
 - Session-style height chain where the terminal fills the remaining viewport
   slot.
 - Long-output scrollback while later output continues.

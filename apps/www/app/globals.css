@@ -1,6 +1,6 @@
 /*
  * globals.css — Tailwind v4 entry + the SINGLE design-token contract for the
- * marketing site (`@cap/www`).
+ * marketing site (`@cap-console/www`).
  *
  * Tailwind v4 is CSS-first: there is NO tailwind.config.js. This file is the
  * Tailwind entry imported once from app/layout.tsx, and the one source of truth

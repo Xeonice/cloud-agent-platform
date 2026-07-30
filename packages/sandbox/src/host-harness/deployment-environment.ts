@@ -1,11 +1,11 @@
 import {
   AIO_LOCAL_SANDBOX_PROVIDER_ID,
   readAioLocalSandboxConfig,
-} from '@cap/sandbox-provider-aio';
+} from '@cap-console/sandbox-provider-aio';
 import {
   readBoxLiteProviderConfig,
   resolveBoxLiteSandboxSource,
-} from '@cap/sandbox-provider-boxlite';
+} from '@cap-console/sandbox-provider-boxlite';
 import {
   SANDBOX_PROVIDER_CAPABILITIES,
   DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
@@ -21,8 +21,8 @@ import {
   type SandboxProviderCapability,
   type SandboxProviderLocation,
   type SandboxResourceSnapshot,
-} from '@cap/sandbox-core';
-import type { SandboxEnvironmentSourceDescriptor } from '@cap/sandbox-environment';
+} from '@cap-console/sandbox-core';
+import type { SandboxEnvironmentSourceDescriptor } from '@cap-console/sandbox-environment';
 import { provisionSandboxRequiredCapabilities } from '../provider-center/selection.js';
 import {
   DEFAULT_CLOUD_HTTP_CAPABILITIES,

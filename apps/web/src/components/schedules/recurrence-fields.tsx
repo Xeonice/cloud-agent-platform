@@ -1,5 +1,5 @@
 import * as React from "react";
-import { SCHEDULE_MINUTE_INTERVALS } from "@cap/contracts";
+import { SCHEDULE_MINUTE_INTERVALS } from "@cap-console/contracts";
 
 import { Input } from "@/components/ui/input";
 import {

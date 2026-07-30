@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import type { SessionHistory } from "@cap/contracts";
+import type { SessionHistory } from "@cap-console/contracts";
 import { cn } from "@/utils";
 
 export interface TaskModelFactsProps {

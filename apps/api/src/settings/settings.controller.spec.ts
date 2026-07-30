@@ -31,13 +31,13 @@ import {
   Injectable,
   type INestApplication,
 } from '@nestjs/common';
-import type { McpServerSettings } from '@cap/contracts';
+import type { McpServerSettings } from '@cap-console/contracts';
 
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 
 const ADMIN_ID = 4242;
 const NON_ADMIN_ID = 7;

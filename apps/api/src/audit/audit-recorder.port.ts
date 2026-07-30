@@ -2,7 +2,7 @@ import type {
   TaskFailure,
   TaskProvisioningStage,
   TaskStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import type { ForceFailCause } from './audit-mapping';
 
 export type ProvisioningAuditFailure = Exclude<

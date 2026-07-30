@@ -20,7 +20,7 @@ import {
   type SandboxRunCleanupAuthorization,
   type SandboxRuntimePrivateFilePort,
   type SandboxSecretFilePort,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 import type { BoxLiteClient, BoxLiteExecResult } from './boxlite-client.js';
 import { boxLiteHttpStatusFromError } from './boxlite-client.js';

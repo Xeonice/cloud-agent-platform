@@ -172,7 +172,7 @@ async function loadDocker() {
     return imported.default;
   } catch (err) {
     throw new Error(
-      `AIO_PROVIDER_E2E=1 requires dockerode to be installed for @cap/sandbox-provider-aio: ${
+      `AIO_PROVIDER_E2E=1 requires dockerode to be installed for @cap-console/sandbox-provider-aio: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );

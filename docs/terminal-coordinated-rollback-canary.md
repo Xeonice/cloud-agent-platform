@@ -28,7 +28,7 @@ Prerequisites are Node 22+, pnpm, tmux, and Python 3. The integration story is
 explicitly opt-in:
 
 ```sh
-pnpm -w exec turbo run build --filter=@cap/api
+pnpm -w exec turbo run build --filter=@cap-console/api
 CAP_TERMINAL_ROLLBACK_CANARY=1 node --test scripts/terminal-coordinated-rollback-canary.test.mjs
 ```
 

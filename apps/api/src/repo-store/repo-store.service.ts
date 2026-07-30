@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, stat, readdir } from 'node:fs/promises';
 import { isAbsolute, join, normalize } from 'node:path';
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   classifyGitFailure,
   isSafeAuthHeader,

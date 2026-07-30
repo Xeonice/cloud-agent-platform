@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   TASK_PROVISIONING_DIAGNOSTICS_RESPONSE_EXAMPLES,
   type TaskProvisioningDiagnosticsResponse,
-} from "@cap/contracts";
+} from "@cap-console/contracts";
 import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

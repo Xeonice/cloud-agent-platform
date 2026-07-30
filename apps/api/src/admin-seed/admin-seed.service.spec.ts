@@ -31,7 +31,7 @@ import {
   type PasswordHasher,
 } from './admin-seed.service';
 import { AdminRevealController } from './admin-reveal.controller';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 
 // ---------------------------------------------------------------------------
 // Fakes

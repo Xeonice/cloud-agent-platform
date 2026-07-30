@@ -12,7 +12,7 @@ import { DefaultForgeRegistry } from './forge-registry';
 import { GithubForge } from './github-forge';
 import { GiteeForge } from './gitee-forge';
 import { GitlabForge } from './gitlab-forge';
-import type { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '@/prisma/prisma.service';
 
 function makeRegistry(connection: unknown = null) {
   const prisma = {

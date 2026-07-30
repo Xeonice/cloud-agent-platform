@@ -2,7 +2,7 @@ import {
   RuntimeModelErrorSchema,
   TaskModelSelectorSchema,
   type RuntimeModelCatalogQuery,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { RuntimeModelCatalogService } from './runtime-model-catalog.service';
 import type {
   RuntimeModelDomainResult,

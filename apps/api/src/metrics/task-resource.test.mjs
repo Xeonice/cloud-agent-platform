@@ -17,7 +17,7 @@
  * handler runs — same as GET /metrics — so it is covered by the existing auth
  * guard tests, not re-driven here.)
  *
- * Requires `pnpm --filter @cap/api build` (+ @cap/contracts build) first.
+ * Requires `pnpm --filter @cap-console/api build` (+ @cap-console/contracts build) first.
  * Run: `node task-resource.test.mjs`.
  */
 

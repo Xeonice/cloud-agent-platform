@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 
-import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
-import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import { UpdateStatusService } from '../update-status/update-status.service';
+import { SandboxEnvironmentsModule } from '@/sandbox-environments/sandbox-environments.module';
+import { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import { UpdateStatusService } from '@/update-status/update-status.service';
 import { SelfUpdateController } from './self-update.controller';
 import { SelfUpdateService } from './self-update.service';
 

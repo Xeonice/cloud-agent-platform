@@ -20,7 +20,7 @@
  */
 import * as React from "react";
 
-import type { CodexCredential } from "@cap/contracts";
+import type { CodexCredential } from "@cap-console/contracts";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 import { Panel, PanelHead } from "@/components/settings/panel";

@@ -1,7 +1,7 @@
 /**
  * Forge credential apiAccess schema coverage (support-url-based-forge-import).
  *
- * Runs against dist/ after `pnpm --filter @cap/contracts build`, matching the
+ * Runs against dist/ after `pnpm --filter @cap-console/contracts build`, matching the
  * existing contracts package test convention.
  */
 import { createRequire } from 'node:module';

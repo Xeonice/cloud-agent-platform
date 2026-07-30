@@ -3,7 +3,7 @@ import type {
   SandboxCommandExecutor,
   SandboxDeliverWorkspaceArgs,
   SandboxDeliverWorkspaceResult,
-} from '@cap/sandbox-core';
+} from '@cap-console/sandbox-core';
 
 export async function deliverGitWorkspaceChanges(_args: {
   readonly executor: SandboxCommandExecutor;

@@ -1,4 +1,4 @@
-# @cap/sandbox-environment
+# @cap-console/sandbox-environment
 
 Provider-neutral sandbox environment domain helpers for CAP.
 

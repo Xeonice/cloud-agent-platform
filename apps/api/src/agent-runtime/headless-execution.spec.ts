@@ -22,21 +22,20 @@ import { join } from 'node:path';
 import { CodexRuntime } from './codex-runtime';
 import { ClaudeCodeRuntime } from './claude-code-runtime';
 import {
-  transcriptFormatForRuntime,
   type LaunchContext,
 } from './agent-runtime.port';
-import { parseClaudeTranscript } from '../sandbox/claude-transcript-parser';
-import { parseTranscript } from '../sandbox/parse-transcript';
+import { parseClaudeTranscript } from '@/sandbox/claude-transcript-parser';
+import { parseTranscript } from '@/sandbox/parse-transcript';
 import {
   CODEX_PROMPT_FILE_PATH,
   headlessExitFile,
   wrapHeadlessDetachedSession,
-} from '../terminal/codex-launch';
+} from './codex-launch';
 import {
   exitCodeFromExecBody,
   selectLaunch,
   TASK_MODEL_MATERIAL_PATH,
-} from '@cap/sandbox';
+} from '@cap-console/sandbox';
 
 const CTX: LaunchContext = {
   taskId: 'task-abc',
@@ -587,16 +586,6 @@ test('transcriptArtifact: claude declares ~/.claude/projects/<slug>/<session>.js
   assert.equal(dir, '/home/gem/.claude/projects/-home-gem-workspace');
   assert.ok(filenameGlob.test(`${CTX.sessionId}.jsonl`));
   assert.equal(filenameGlob.test('other-session.jsonl'), false);
-});
-
-test('transcriptFormatForRuntime agrees with each runtime declared transcriptFormat', () => {
-  assert.equal(transcriptFormatForRuntime('codex'), new CodexRuntime().transcriptFormat);
-  assert.equal(
-    transcriptFormatForRuntime('claude-code'),
-    new ClaudeCodeRuntime().transcriptFormat,
-  );
-  // absent → codex default
-  assert.equal(transcriptFormatForRuntime(null), 'codex-rollout');
 });
 
 // ---------------------------------------------------------------------------

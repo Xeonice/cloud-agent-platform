@@ -11,15 +11,15 @@ import {
   type ApiKeyMintRequest,
   type ApiKeyMintResponse,
   type Scope,
-} from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
-import { hashSessionToken } from '../auth/session-token';
+} from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
+import { hashSessionToken } from '@/auth/session-token';
 import {
   assertTaskProvisioningDiagnosticsScopeGrantable,
   CLOSED_TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
   TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
   type TaskProvisioningDiagnosticsCapabilityGatePort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 /**
  * API-key CRUD service (api-key-machine-identity, tasks 5.1 / 5.3).

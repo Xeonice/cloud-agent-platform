@@ -199,7 +199,7 @@ function imageExistsLocally(image) {
 // The codex e2e exercises the SAME api↔cap-net↔DooD topology asserted in 6.5/6.6
 // above; if those passed, the execution plane the codex e2e depends on is intact
 // after the AgentRuntime extraction. The runtime-agnostic contract (design D1)
-// is that API provides host ports to `@cap/sandbox`, while concrete provider
+// is that API provides host ports to `@cap-console/sandbox`, while concrete provider
 // composition and runtime setup delegation stay behind the sandbox package.
 // Assert the codex seams the CodexRuntime wraps are still present, proving the
 // move was behavior-preserving without reintroducing concrete provider wiring
@@ -217,7 +217,7 @@ console.log('\n=== 7.1: codex regression — codex execution seams survive the p
       /createConfiguredSandboxProvider/.test(sandboxModule) &&
         /runtimeRegistry:\s*runtimes/.test(sandboxModule) &&
         /provisionLookup:\s*lookup/.test(sandboxModule),
-      '7.1: API binds SANDBOX_PROVIDER through the neutral @cap/sandbox host harness ports',
+      '7.1: API binds SANDBOX_PROVIDER through the neutral @cap-console/sandbox host harness ports',
     );
     assert(
       !/defineAioSandboxProvider|defineBoxLiteSandboxProvider|readBoxLiteProviderConfig/.test(sandboxModule),
@@ -227,7 +227,7 @@ console.log('\n=== 7.1: codex regression — codex execution seams survive the p
       /defineAioSandboxProviderFromDocker/.test(configuredProvider) &&
         /runtimeSetup/.test(configuredProvider) &&
         /sandboxSetupCommands/.test(configuredProvider),
-      '7.1: @cap/sandbox host harness owns local provider composition and runtime setup delegation',
+      '7.1: @cap-console/sandbox host harness owns local provider composition and runtime setup delegation',
     );
     assert(/AioSandboxProvider/.test(aioProvider) && /promptAuthInjection/.test(aioProvider),
       '7.1: codex auth/config injection seam is owned by the AIO provider package hooks');

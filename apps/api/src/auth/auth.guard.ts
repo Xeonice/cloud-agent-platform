@@ -3,16 +3,18 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import type { SessionUser } from '@cap/contracts';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { SessionUser } from '@cap-console/contracts';
 import { AuthSessionService } from './auth-session.service';
 import {
   resolveOperatorPrincipal,
-  type OperatorPrincipal,
-} from './operator-principal';
+} from '@/principal/operator-principal';
 import { SESSION_COOKIE_NAME, readCookie } from './session-token';
+import { isStateChangingMethod, isTrustedRequestOrigin } from './request-origin';
 
 /**
  * Operator session guard.
@@ -60,7 +62,17 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
+  private readonly logger = new Logger(AuthGuard.name);
+
   constructor(private readonly authSession: AuthSessionService) {}
+
+  /** First value of a possibly-repeated header, trimmed; `undefined` when empty. */
+  private static headerValue(
+    value: string | string[] | undefined,
+  ): string | undefined {
+    const raw = Array.isArray(value) ? value[0] : value;
+    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
+  }
 
   /**
    * Request paths (lower-cased, slash-normalized) exempt from operator auth
@@ -73,7 +85,7 @@ export class AuthGuard implements CanActivate {
    *     operator principal, exactly like `/health`.
    *   - `/v1/openapi.json` — the OpenAPI 3.1 document for the public `/v1`
    *     surface (public-v1-api, design D3 / task 4.3). It is read-only API
-   *     metadata generated from the `@cap/contracts` schemas; it carries no
+   *     metadata generated from the `@cap-console/contracts` schemas; it carries no
    *     secrets, so it needs no operator principal, exactly like `/version`.
    *   - `/v1/docs` — the interactive Swagger UI page that renders the document
    *     above (same rationale: read-only public API metadata, no secrets).
@@ -204,6 +216,32 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('Operator authentication required');
     }
 
+    // CROSS-SITE FORGERY chokepoint. A session principal authenticated from a
+    // COOKIE — `extractSessionToken` reads it only from the cookie header — and in
+    // the cross-origin deployment shape that cookie is `SameSite=None`, so a
+    // third-party page can make the browser attach it. CORS does not stop that: it
+    // governs whether a response may be READ, not whether a request is SENT, and a
+    // state change needs no readable response. So an unsafe method authenticated
+    // this way must declare an origin the deployment trusts.
+    //
+    // Bearer credentials (api-key / mcp / legacy) are exempt by construction:
+    // `extractBearerToken` reads them only from `Authorization`, which a browser
+    // will not attach cross-site on its own, so no forgery is possible and the
+    // rule would only break legitimate programmatic callers.
+    if (principal.kind === 'session' && isStateChangingMethod(request.method)) {
+      const origin = AuthGuard.headerValue(request.headers.origin);
+      if (!isTrustedRequestOrigin(origin, AuthGuard.headerValue(request.headers.host))) {
+        this.logger.warn(
+          `refused a state-changing ${request.method} from untrusted origin ${origin ?? '(absent)'}`,
+        );
+        throw new ForbiddenException({
+          error: 'untrusted_request_origin',
+          message:
+            'A state-changing request authenticated by session cookie must come from a trusted origin. Set WEB_ORIGIN to the console origin for a cross-origin deployment.',
+        });
+      }
+    }
+
     // mustChangePassword chokepoint (task 2.7 / D9): once a principal resolves, a
     // user with a PENDING password change is blocked from EVERY protected route.
     // The change-password endpoint and logout are already in PUBLIC_AUTH_PATHS
@@ -312,10 +350,11 @@ export class AuthGuard implements CanActivate {
   }
 }
 
-/** An Express request after the {@link AuthGuard} has attached the principal. */
-export interface AuthenticatedRequest extends Request {
-  operatorPrincipal?: OperatorPrincipal;
-}
+// `AuthenticatedRequest` moved to `@/http/authenticated-request` — sixteen
+// directories name it, and importing the GUARD to name the request type was
+// what made this file a hub. Re-exported here so existing consumers keep
+// working while they migrate.
+export type { AuthenticatedRequest } from '@/principal/authenticated-request';
 
 // Re-export for downstream consumers that only need the session-user shape.
 export type { SessionUser };

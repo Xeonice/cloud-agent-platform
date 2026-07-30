@@ -5,7 +5,7 @@
  * `skills` value is a readable value and that omission reads back empty/absent
  * (never fabricated), exactly like branch/strategy.
  *
- * Requires `pnpm --filter @cap/contracts build` first. Run: `node task-skills.test.mjs`.
+ * Requires `pnpm --filter @cap-console/contracts build` first. Run: `node task-skills.test.mjs`.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

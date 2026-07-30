@@ -25,9 +25,9 @@ import {
   OTP_RESEND_COOLDOWN_MS,
   OTP_MAX_ATTEMPTS,
 } from './email-otp.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { MailService } from '../mail/mail.service';
-import { hashSessionToken } from '../auth/session-token';
+import { PrismaService } from '@/prisma/prisma.service';
+import { MailService } from '@/mail/mail.service';
+import { hashSessionToken } from '@/auth/session-token';
 
 // ---------------------------------------------------------------------------
 // Fixtures + fakes

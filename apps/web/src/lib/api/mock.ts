@@ -1,10 +1,10 @@
 /**
  * Typed mock data-access layer (rebuild-console-tanstack-start D5.1; task 10.3).
  *
- * Every mock here returns a value shaped by `@cap/contracts` (extended with a
+ * Every mock here returns a value shaped by `@cap-console/contracts` (extended with a
  * local VIEW type only where the backend genuinely lacks a field today), so the
  * mocks can never drift off-shape from the real responses — the same risk
- * mitigation the design calls out ("mocks are typed against @cap/contracts (+
+ * mitigation the design calls out ("mocks are typed against @cap-console/contracts (+
  * view extensions) so they can't drift off-shape"). Each mock awaits a uniform
  * {@link delay} (120–420ms) to mimic the prototype's `setTimeout` cadence so the
  * console's loading/skeleton states exercise realistically on mock.
@@ -53,8 +53,8 @@ import type {
   UpdateSandboxEnvironmentParametersRequest,
   TaskProvisioningDiagnosticsResponse,
   LocalRepoImportAvailability,
-} from "@cap/contracts";
-import { LOCAL_REPO_IMPORT_ROOT_ENV } from "@cap/contracts";
+} from "@cap-console/contracts";
+import { LOCAL_REPO_IMPORT_ROOT_ENV } from "@cap-console/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
 import { forceMock } from "./capabilities";
@@ -1156,7 +1156,7 @@ export async function mockTaskContext(taskId: string): Promise<TaskContextView> 
 
 /**
  * The typed `UpdateStatus` mock (update-availability-check D4), shaped by
- * `@cap/contracts` `UpdateStatus` so it cannot drift off the real response.
+ * `@cap-console/contracts` `UpdateStatus` so it cannot drift off the real response.
  *
  * It is MODE-AWARE so the change ships INERT on the current source-build prod
  * (integration task 4.1) while still exercising the banner under the visual
@@ -1243,7 +1243,7 @@ export async function mockRuntimes(): Promise<RuntimesResponse> {
  * in normal prod this is never reached. It simply echoes "update started" for the
  * requested target so the banner's "updating… reconnecting" state is previewable
  * without performing (or faking) a real recreate. The local ack shape is owned by
- * `real.ts` (no `@cap/contracts` schema — see the tasks NOTE).
+ * `real.ts` (no `@cap-console/contracts` schema — see the tasks NOTE).
  */
 export async function mockPostSelfUpdate(
   body: SelfUpdateRequest,

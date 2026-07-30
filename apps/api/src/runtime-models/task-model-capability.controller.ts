@@ -3,7 +3,7 @@ import {
   TASK_MODEL_SELECTION_CAPABILITY,
   TaskModelSelectionCapabilityStatusSchema,
   type TaskModelSelectionCapabilityStatus,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { TaskModelCapabilityService } from './task-model-capability.service';
 
 /** Safe per-instance operational report; raw attestation/config is never exposed. */

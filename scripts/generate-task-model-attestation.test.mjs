@@ -33,11 +33,11 @@ const now = new Date('2026-07-21T00:00:00.000Z');
 // dist output is absent (CI runs this after `pnpm turbo build`, so this is a
 // no-op there).
 if (!existsSync(contractsDistModule)) {
-  const build = spawnSync('pnpm', ['--filter', '@cap/contracts', 'build'], {
+  const build = spawnSync('pnpm', ['--filter', '@cap-console/contracts', 'build'], {
     cwd: repoRoot,
     stdio: 'inherit',
   });
-  assert.equal(build.status, 0, 'could not build @cap/contracts for schema validation');
+  assert.equal(build.status, 0, 'could not build @cap-console/contracts for schema validation');
 }
 const contracts = await import(new URL(contractsDistModule, 'file://').href);
 

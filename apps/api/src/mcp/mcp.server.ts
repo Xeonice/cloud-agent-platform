@@ -23,29 +23,31 @@
  * (Track 3) attaches it; absent ⇒ no attribution (best-effort, like a scopeless
  * legacy principal on REST).
  */
+import { type IAgentRuntimeRegistry } from '@/tasks/tasks.service';
+import { RUNTIME_REGISTRY } from '@/sandbox/sandbox.module';
 import { Inject, Injectable } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SessionHistory } from '@cap/contracts';
-import { TasksService } from '../tasks/tasks.service';
-import { ReposService } from '../repos/repos.service';
-import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
-import { RuntimeModelCatalogService } from '../runtime-models/runtime-model-catalog.service';
-import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
-import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
-import { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { listRepoPage, listTaskPage } from '../v1/public-list-pages';
+import type { SessionHistory } from '@cap-console/contracts';
+import { TasksService } from '@/tasks/tasks.service';
+import { ReposService } from '@/repos/repos.service';
+import { ScheduledTasksService } from '@/scheduled-tasks/scheduled-tasks.service';
+import { RuntimeModelCatalogService } from '@/runtime-models/runtime-model-catalog.service';
+import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
+import { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
+import { TaskProvisioningDiagnosticsPublicQueryService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { listRepoPage, listTaskPage } from '@/v1/public-list-pages';
 import {
   AUDIT_TIMELINE_READER,
   TRANSCRIPT_STORE,
   readTaskTranscript,
   type AuditTimelineReader,
   type TranscriptStore,
-} from '../tasks/task-transcript-reader';
+} from '@/tasks/task-transcript-reader';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
-} from '../sandbox/sandbox-provider.port';
+} from '@/sandbox/sandbox-provider.port';
 import {
   registerMcpTools,
   type McpToolDeps,
@@ -76,6 +78,8 @@ export class McpServerFactory implements McpToolDeps {
     @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     private readonly taskProvisioningDiagnostics: TaskProvisioningDiagnosticsPublicQueryService,
+    @Inject(RUNTIME_REGISTRY)
+    private readonly runtimes: IAgentRuntimeRegistry,
   ) {}
 
   /** Create one tools-registered SDK server for one stateless HTTP request. */
@@ -206,6 +210,7 @@ export class McpServerFactory implements McpToolDeps {
         sandbox: this.sandbox,
         transcripts: this.transcripts,
         audit: this.audit,
+        runtimes: this.runtimes,
       },
       id,
     );

@@ -15,19 +15,19 @@ import {
   type PublicErrorCode,
   type TaskProvisioningDiagnosticsQuery,
   type TaskProvisioningDiagnosticsResponse,
-} from '@cap/contracts';
+} from '@cap-console/contracts';
 import { firstValueFrom, from } from 'rxjs';
 
-import type { AuthenticatedRequest } from '../auth/auth.guard';
-import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { AuthenticatedRequest } from '@/principal/authenticated-request';
+import type { OperatorPrincipal } from '@/principal/operator-principal';
 import {
   registerMcpTools,
   type McpToolDeps,
   type ToolExtra,
   type ToolRegistrar,
-} from '../mcp/mcp-tools';
-import { McpServerFactory } from '../mcp/mcp.server';
-import type { PrismaService } from '../prisma/prisma.service';
+} from '@/mcp/mcp-tools';
+import { McpServerFactory } from '@/mcp/mcp.server';
+import type { PrismaService } from '@/prisma/prisma.service';
 import { MCP_PUBLIC_ERROR_MAP } from './public-error-mappings';
 import { normalizePublicSurfaceFailure } from './public-surface-error';
 import {
@@ -36,10 +36,10 @@ import {
   publicV1RequestContext,
   type PublicV1Handler,
 } from './public-v1-operation';
-import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
-import { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
-import { TaskProvisioningDiagnosticsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.service';
-import { V1TaskProvisioningDiagnosticsController } from '../v1/v1-task-provisioning-diagnostics.controller';
+import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
+import { TaskProvisioningDiagnosticsPublicQueryService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
+import { TaskProvisioningDiagnosticsService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.service';
+import { V1TaskProvisioningDiagnosticsController } from '@/v1/v1-task-provisioning-diagnostics.controller';
 
 const OWNER_ID = '10000000-0000-4000-8000-000000000001';
 const OTHER_OWNER_ID = '10000000-0000-4000-8000-000000000002';
@@ -412,6 +412,7 @@ function fixtureSurfaces(): FixtureSurfaces {
     {} as never,
     {} as never,
     facade,
+    {} as never,
   );
   const tools = new Map<string, ToolCallback>();
   const registrar: ToolRegistrar = {

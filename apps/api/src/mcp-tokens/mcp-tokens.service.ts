@@ -4,14 +4,14 @@ import type {
   McpTokenListItem,
   McpTokenMintRequest,
   McpTokenMintResponse,
-} from '@cap/contracts';
-import { PrismaService } from '../prisma/prisma.service';
+} from '@cap-console/contracts';
+import { PrismaService } from '@/prisma/prisma.service';
 import {
   assertTaskProvisioningDiagnosticsScopeGrantable,
   CLOSED_TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
   TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
   type TaskProvisioningDiagnosticsCapabilityGatePort,
-} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 /**
  * The granted-scope element type, derived from the contract list shape so this
