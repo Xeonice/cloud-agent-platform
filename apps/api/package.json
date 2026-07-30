@@ -15,7 +15,7 @@
     "pretest": "pnpm -w exec turbo run build --filter=@cap-console/api",
     "test": "pnpm run test:compiled && pnpm run test:src && pnpm run test:suite",
     "test:compiled": "node --test --test-force-exit \"dist/**/*.spec.js\"",
-    "test:src": "node --test --test-force-exit \"src/**/*.test.mjs\"",
+    "test:src": "node ../../scripts/run-suite.mjs \"src/**/*.test.mjs\"",
     "test:suite": "node --test --test-force-exit \"test/**/*.test.mjs\"",
     "test:public-surface": "node --test --test-force-exit \"dist/public-surface/*.spec.js\" \"dist/v1/v1-operation-manifest.spec.js\" \"dist/mcp/mcp.spec.js\" \"dist/openapi/openapi.registry.spec.js\"",
     "test:e2e": "node --env-file=../../.env --test --test-force-exit test/api-e2e.mjs",
@@ -35,7 +35,8 @@
     "test:e2e:schedules": "pnpm run test:integration:schedules",
     "test:e2e:aio": "bash ../../scripts/aio-e2e.sh",
     "pretest:e2e:repo-copy-injection": "pnpm -w exec turbo run build --filter=@cap-console/sandbox",
-    "test:e2e:repo-copy-injection": "node --test --test-force-exit test/repo-copy-injection-e2e.mjs"
+    "test:e2e:repo-copy-injection": "node --test --test-force-exit test/repo-copy-injection-e2e.mjs",
+    "test:quarantined": "node ../../scripts/run-suite.mjs --only-quarantined \"src/**/*.test.mjs\""
   },
   "prisma": {
     "schema": "prisma/schema.prisma"

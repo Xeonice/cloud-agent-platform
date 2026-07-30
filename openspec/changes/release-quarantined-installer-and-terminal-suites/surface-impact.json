@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "change": "release-quarantined-installer-and-terminal-suites",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": { "status": "unchanged", "reason": "Returning three test suites to the default run touches test files and a quarantine list; no /v1 operation, schema, status code or error body is reachable from them." },
+    "mcp": { "status": "unchanged", "reason": "No MCP tool, argument, result shape, registration or transport behaviour is involved." },
+    "openapi": { "status": "unchanged", "reason": "The generated document projects the operation registry, which this change does not touch." },
+    "apiPlayground": { "status": "unchanged", "reason": "The playground reads the same unchanged registry." },
+    "internalOnly": { "status": "changed", "scope": "quarantined-suite-release", "reason": "Diagnoses and releases scripts/install-preflight.test.mjs, scripts/aio-terminal-pair-stale-sweep-canary.test.mjs and apps/api/src/terminal/readoption-history.test.mjs, emptying scripts/quarantined-suites.mjs." }
+  },
+  "protocolDifferences": [],
+  "verification": { "id": "workflow-gates", "requiresWireCompatibilityFixture": false }
+}

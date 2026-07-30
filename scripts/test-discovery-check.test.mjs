@@ -48,6 +48,14 @@ function runGate({ testScript, files, exclusions = '[]' }) {
     assert.ok(source.includes(marker), 'gate must expose a substitutable exclusion list');
     const patched = source.replace(marker, `const EXCLUSIONS = ${exclusions};`);
     mkdirSync(join(root, 'scripts'), { recursive: true });
+    // The gate imports the quarantine list, so the fixture needs one too. It is
+    // written EMPTY on purpose: these cases are about discovery, and a fixture
+    // that inherited the real quarantine would couple them to whatever happens
+    // to be excluded today.
+    writeFileSync(
+      join(root, 'scripts', 'quarantined-suites.mjs'),
+      'export const QUARANTINED_SUITES = [];\n',
+    );
     const scriptPath = join(root, 'scripts', 'check.mjs');
     writeFileSync(scriptPath, patched);
 
@@ -97,6 +105,13 @@ function runGateOnRepositoryScripts({ rootTestScript, files }) {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, body);
     }
+    // Same reason as the package fixture above: the gate imports the quarantine
+    // list, and this fixture supplies an empty one so these cases stay about
+    // repository-level discovery.
+    writeFileSync(
+      join(root, 'scripts', 'quarantined-suites.mjs'),
+      'export const QUARANTINED_SUITES = [];\n',
+    );
     const scriptPath = join(root, 'scripts', 'check.mjs');
     writeFileSync(scriptPath, readFileSync(CHECK, 'utf8'));
     try {
