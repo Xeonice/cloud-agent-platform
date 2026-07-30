@@ -396,10 +396,34 @@ test('the sentinel default is the one the contract refuses on', () => {
   assert.match(contracts, /CONSOLE_BUILD_ID_SENTINEL = 'dev'/u);
 });
 
+test('the console deploy links its target explicitly and asserts it', () => {
+  // Two failures a rehearsal found, both of which look like SUCCESS in CI:
+  //
+  //  1. VERCEL_ORG_ID/VERCEL_PROJECT_ID as env vars are not honoured by this CLI.
+  //     With `--yes` and no link, `vercel pull` CREATES a project named after the
+  //     directory and deploys there — the release goes green, `latest` moves, and
+  //     the console an operator looks at never changes.
+  //  2. The cap-web project carries `Root Directory = apps/web` server-side, so
+  //     running the CLI from inside `apps/web` resolves `apps/web/apps/web`.
+  const console_ = workflowJob('deploy-console');
+  assert.match(console_, /\.vercel\/project\.json/u, 'the link must be written, not inherited');
+  assert.match(console_, /EXPECTED_PROJECT_ID/u, 'the link must be re-asserted after pull rewrites it');
+  assert.doesNotMatch(
+    console_,
+    /working-directory: apps\/web/u,
+    'the CLI runs from the repository root; the project supplies its own root directory',
+  );
+});
+
 test('the release publishes the console, and only for a real Release', () => {
   const console_ = workflowJob('deploy-console');
   assert.match(console_, /^    needs: \[resolve-release, verify-image-set\]$/mu);
-  assert.match(console_, /^    if: github\.event_name == 'release'$/mu);
+  // A real Release always publishes it; a manual run only when asked. The
+  // rehearsal switch exists because the first version of this job could only be
+  // tested by cutting a release, and both defects it had would have surfaced
+  // mid-release with the images already pushed.
+  assert.match(console_, /github\.event_name == 'release'/u);
+  assert.match(console_, /inputs\.deploy_console == true/u);
   // The release version must reach the console build, or the console ships
   // carrying the sentinel — the exact gap this job exists to close.
   assert.match(console_, /VITE_BUILD_ID/u);
