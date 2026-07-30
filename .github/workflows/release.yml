@@ -26,13 +26,31 @@
 # `deploy-console` below replaces it. Pull-request previews are unaffected — they
 # deploy from their own branch and make no version claim.
 #
-# REQUIRED REPOSITORY SECRETS for that job. Create them BEFORE the first release
-# after this landed, or that release fails without publishing anything:
-#   gh secret set VERCEL_TOKEN      --repo Xeonice/cloud-agent-platform --body '<token>'
-#   gh secret set VERCEL_ORG_ID     --repo Xeonice/cloud-agent-platform --body '<org id>'
-#   gh secret set VERCEL_PROJECT_ID --repo Xeonice/cloud-agent-platform --body '<cap-web project id>'
-# The token comes from Vercel → Settings → Tokens; the two ids from the cap-web
-# project's settings, or from `.vercel/project.json` after a local `vercel link`.
+# REQUIRED REPOSITORY SECRETS for that job: VERCEL_TOKEN, VERCEL_ORG_ID and
+# VERCEL_PROJECT_ID. All three are set. The ids are not secret (a team id and a
+# project id); the token is.
+#
+# THE TOKEN MUST BE A USER/TEAM TOKEN, NOT A PROJECT-SCOPED ONE. Vercel's API
+# will happily mint a token scoped to one project (`POST /v3/user/tokens` with a
+# `projectId`), and that token genuinely works against the REST API — it reads
+# cap-web and 404s on every other project, which was verified. But it CANNOT
+# drive the CLI: `vercel whoami` answers "User not found", because a project
+# token has no user for the CLI to resolve, and the CLI resolves one before doing
+# anything else. Such a token was minted, tested, found unusable here, and
+# revoked. Do not re-derive that; it costs an afternoon.
+#
+# The consequence is worth stating rather than hiding: the token this job uses
+# can reach every project in the team, because the CLI path offers no narrower
+# option. If that ever matters more than the convenience of the CLI, the way out
+# is to drive the deploy through the REST API with a project-scoped token, which
+# is a different and larger job than this one.
+#
+# To rotate:
+#   curl -X POST 'https://api.vercel.com/v3/user/tokens?teamId=<team id>' \
+#     -H "Authorization: Bearer <an existing user token>" \
+#     -H 'Content-Type: application/json' -d '{"name":"cap-release-deploy-console-cli"}'
+#   gh secret set VERCEL_TOKEN --repo Xeonice/cloud-agent-platform < <file holding it>
+# then revoke the old one via DELETE /v3/user/tokens/<id>.
 #
 # Learn from `release-please.yml`: a workflow that LOOKS correct is not evidence it
 # ran. That one needed a non-`GITHUB_TOKEN` PAT and silently did not fire without
