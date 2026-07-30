@@ -9,24 +9,38 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { z } from 'zod';
-import type { AuthSessionResponse } from '@cap-console/contracts';
+import {
+  OtpRequestRequestSchema,
+  OtpRequestResponseSchema,
+  OtpVerifyRequestSchema,
+  type AuthSessionResponse,
+  type OtpRequestRequest,
+  type OtpVerifyRequest,
+} from '@cap-console/contracts';
 import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import { buildSessionCookies } from '@/auth/session-cookie';
 import { EmailOtpService } from './email-otp.service';
 import { MailService } from '@/mail/mail.service';
 
-/**
- * Request body for `POST /auth/otp/request` — just the email a code is requested
- * for. Defined locally so the mail-otp track stays buildable in isolation; the
- * integration track may swap to the shared `@cap-console/contracts` schema (task 1.4).
- */
-const OtpRequestSchema = z.object({ email: z.string().min(1) });
-type OtpRequestBody = z.infer<typeof OtpRequestSchema>;
-
-/** Request body for `POST /auth/otp/verify` — the email plus the presented code. */
-const OtpVerifySchema = z.object({ email: z.string().min(1), code: z.string().min(1) });
-type OtpVerifyBody = z.infer<typeof OtpVerifySchema>;
+// The two request bodies used to be declared here as
+// `{ email: z.string().min(1) }` and `{ email, code: z.string().min(1) }`, with a
+// note that "the integration track may swap to the shared
+// `@cap-console/contracts` schema (task 1.4)". This is that swap. The contract's
+// versions are stricter in two ways and normalising in a third:
+//
+//   email  EmailSchema is `.trim().min(1).email(...)`, so a malformed address is
+//          now a 400 rather than a silent no-op, and a stray leading/trailing
+//          space is trimmed instead of failing the account lookup.
+//   code   OtpCodeSchema is `/^\d{6}$/` against the previous `.min(1)`. The api
+//          generates the code itself, so a real one always matched; only
+//          garbage was ever accepted this far.
+//
+// Neither weakens the uniform-response property this surface depends on: a 400
+// for a malformed address does not distinguish a known account from an unknown
+// one, which is what "Request for an unknown email reveals nothing" protects.
+// Used under the contract's own names: a local alias would be the private rename
+// this package's spec forbids, and it would break the execution gate's ability to
+// attribute the parse to the schema.
 
 /**
  * Email verification-code (OTP) login surface (add-private-account-identity,
@@ -64,15 +78,17 @@ export class OtpController {
    */
   @Post('request')
   @HttpCode(HttpStatus.ACCEPTED)
-  @UsePipes(new ZodValidationPipe(OtpRequestSchema))
-  async request(@Body() body: OtpRequestBody, @Res() res: Response): Promise<void> {
+  @UsePipes(new ZodValidationPipe(OtpRequestRequestSchema))
+  async request(@Body() body: OtpRequestRequest, @Res() res: Response): Promise<void> {
     if (!(await this.mail.isConfigured())) {
       res.status(HttpStatus.NOT_FOUND).json({ error: 'OTP login is not available.' });
       return;
     }
     await this.otp.requestCode(body.email);
-    // Uniform, non-disclosing acknowledgement (same on success and unknown email).
-    res.status(HttpStatus.ACCEPTED).json({ ok: true });
+    // Uniform, non-disclosing acknowledgement (same on success and unknown email),
+    // parsed on the way out so the contract that declares it is executed rather
+    // than merely written.
+    res.status(HttpStatus.ACCEPTED).json(OtpRequestResponseSchema.parse({ ok: true }));
   }
 
   /**
@@ -84,9 +100,9 @@ export class OtpController {
    * single uniform 401 so nothing about the account or code state leaks.
    */
   @Post('verify')
-  @UsePipes(new ZodValidationPipe(OtpVerifySchema))
+  @UsePipes(new ZodValidationPipe(OtpVerifyRequestSchema))
   async verify(
-    @Body() body: OtpVerifyBody,
+    @Body() body: OtpVerifyRequest,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {

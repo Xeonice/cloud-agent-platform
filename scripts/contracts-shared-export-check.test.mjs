@@ -103,6 +103,79 @@ test('the schema/type pairing is symmetric', () => {
 
 // ---- the real tree ---------------------------------------------------------
 
+test('a schema/type pair vouching only for itself is reported dead', () => {
+  // The hole that shipped: `isComposedInto` skipped only an export's OWN
+  // declaration line, so the pair line counted as composition and marked every
+  // schema with an inferred type reachable before the pair rule was consulted.
+  // Written across three lines the way this package actually writes it, because
+  // that is why a line-level skip could not work — the reference sits on a
+  // CONTINUATION line.
+  const sources = new Map([
+    [
+      'm',
+      [
+        'export const DeadSchema = z.object({});',
+        'export type Dead = z.infer<',
+        '  typeof DeadSchema',
+        '>;',
+      ].join('\n'),
+    ],
+  ]);
+  assert.equal(
+    isComposedInto('DeadSchema', 'm', sources),
+    false,
+    'the pair line is the pair, not a use of it',
+  );
+  assert.equal(isComposedInto('Dead', 'm', sources), false);
+});
+
+test('a genuine composition is still seen across continuation lines', () => {
+  // The other direction: block-awareness must not lose a real use that spans
+  // lines, or the fix above would trade one silent hole for another.
+  const sources = new Map([
+    ['a', 'export const InnerSchema = z.string();'],
+    [
+      'b',
+      ['export const OuterSchema = z.object({', '  inner: InnerSchema,', '});'].join('\n'),
+    ],
+  ]);
+  assert.equal(isComposedInto('InnerSchema', 'a', sources), true);
+});
+
+test('comments are not code — a documented import is not an import', () => {
+  // Found the moment `scripts/` joined the consumer walk: this gate's own
+  // paragraph explaining namespace imports contains one as an example, and the
+  // gate read its own explanation and reported itself as the offender.
+  const { names, namespace } = readContractImports(
+    [
+      '// import * as everything from "@cap-console/contracts";',
+      '/** See `import { Widget } from "@cap-console/contracts"` for the shape. */',
+      'import { Real } from "@cap-console/contracts";',
+    ].join('\n'),
+  );
+  assert.equal(namespace, false, 'a commented namespace import is prose');
+  assert.deepEqual([...names], ['Real']);
+});
+
+test('an import through the built package path counts', () => {
+  // Repository scripts run without an app's workspace resolution and import
+  // `'../packages/contracts/dist/<module>.js'`. A scan matching only the package
+  // name reported their imports as non-existent, which is how an exception came
+  // to be kept on a reason a script already falsified.
+  const { names } = readContractImports(
+    "import { startsWithReservedPrefix } from '../packages/contracts/dist/credential-prefix.js';",
+  );
+  assert.ok(names.has('startsWithReservedPrefix'));
+});
+
+test('the gate sees the repository scripts directory', () => {
+  const result = scan();
+  assert.ok(
+    result.consumers.includes('scripts'),
+    `scripts/ missing from consumers: ${result.consumers.join(', ')}`,
+  );
+});
+
 test('the repository is clean under the gate', () => {
   const result = scan();
   assert.deepEqual(

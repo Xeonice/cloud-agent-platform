@@ -24,12 +24,15 @@ export const TASK_PROVISIONING_DIAGNOSTICS_REQUIRED_CAPABILITIES = [
   'task-provisioning-diagnostics-registry-v1',
   'task-provisioning-diagnostics-wire-fixture-v1',
 ] as const;
-export const TaskProvisioningDiagnosticsRequiredCapabilitySchema = z.enum(
-  TASK_PROVISIONING_DIAGNOSTICS_REQUIRED_CAPABILITIES,
-);
-export type TaskProvisioningDiagnosticsRequiredCapability = z.infer<
-  typeof TaskProvisioningDiagnosticsRequiredCapabilitySchema
->;
+// `TaskProvisioningDiagnosticsRequiredCapabilitySchema` stood here as a `z.enum`
+// over the same members as `TASK_PROVISIONING_DIAGNOSTICS_REQUIRED_CAPABILITIES`
+// above — a second derivation of a vocabulary this package's own rule says to
+// declare once and derive from. Nothing parsed it, not even a test; the rule that
+// actually runs is array membership (`.some(...)` at :314 and in
+// task-provisioning-diagnostics-capability.service.ts:139,154). The exported type
+// now derives from the array directly.
+export type TaskProvisioningDiagnosticsRequiredCapability =
+  (typeof TASK_PROVISIONING_DIAGNOSTICS_REQUIRED_CAPABILITIES)[number];
 
 /** Every serving surface must be represented by complete deployment evidence. */
 export const TaskProvisioningDiagnosticsRoleSchema = z.enum([

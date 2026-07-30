@@ -391,7 +391,12 @@ test('CRUD: list never leaks the raw token or its hash (only non-secret metadata
     user: { githubId: OWNER_GITHUB_ID, login: 'op', name: 'Operator', avatarUrl: '', allowed: true },
   };
   const listItem = {
-    id: 'tok-1',
+    // A real id, because the controller now parses its own response against
+    // `McpTokenListResponseSchema` and the contract declares `id` a uuid — which
+    // Prisma guarantees (`McpToken.id @default(uuid())`). The fixture used
+    // `'tok-1'`, a value the database cannot produce, and the test passed only
+    // while nothing executed the schema.
+    id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
     name: 'CI token',
     scopes: ['tasks:read'],
     prefix: 'mcp_',

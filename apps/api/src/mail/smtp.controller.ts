@@ -15,6 +15,7 @@ import {
   SaveSmtpConfigRequestSchema,
   SmtpConfigReadSchema,
   TestSmtpConfigRequestSchema,
+  TestSmtpConfigResponseSchema,
   type SaveSmtpConfigRequest,
   type SmtpConfigRead,
   type TestSmtpConfigRequest,
@@ -116,6 +117,16 @@ export class SmtpController {
   async test(
     @Req() req: AuthenticatedRequest,
     @Body() body: TestSmtpConfigRequest,
+  ): Promise<TestSmtpConfigResponse> {
+    // Parsed on the way out. The handler has four separate `return` statements, so
+    // the parse wraps a helper rather than one of them — a parse on one path is a
+    // parse that misses three.
+    return TestSmtpConfigResponseSchema.parse(await this.runTest(req, body));
+  }
+
+  private async runTest(
+    req: AuthenticatedRequest,
+    body: TestSmtpConfigRequest,
   ): Promise<TestSmtpConfigResponse> {
     const admin = await this.requireAdmin(req);
 

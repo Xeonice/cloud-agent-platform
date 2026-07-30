@@ -48,7 +48,7 @@ import {
 import { isAdminSession } from "@/components/shell/update-banner";
 import type { Scope } from "@cap-console/contracts";
 import type {
-  McpTokenSummary,
+  McpTokenListItem,
   MintMcpTokenResponse,
 } from "@/lib/api/real";
 import { StatusPill } from "@/components/status-pill";
@@ -113,7 +113,7 @@ function mcpEndpointUrl(): string {
 
 /** A token's lifecycle state for the row pill (revoked > expired > active). */
 function tokenLifecycle(
-  token: McpTokenSummary,
+  token: McpTokenListItem,
 ): { label: string; variant: "neutral" | "green" | "danger" | "warn" } {
   if (token.revokedAt) return { label: "已撤销", variant: "danger" };
   if (token.expiresAt && new Date(token.expiresAt).getTime() <= Date.now()) {
@@ -123,7 +123,7 @@ function tokenLifecycle(
 }
 
 /** A non-secret recognition string for a row: `mcp_…last4`. */
-function maskedToken(token: McpTokenSummary): string {
+function maskedToken(token: McpTokenListItem): string {
   return `${token.prefix}…${token.last4}`;
 }
 

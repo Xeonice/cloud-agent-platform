@@ -18,6 +18,7 @@
     "test:provider-parity": "node scripts/provider-contract-parity-check.mjs && node --test --test-force-exit scripts/provider-contract-parity-check.test.mjs",
     "test:vocabulary-parity": "node scripts/sandbox-core-vocabulary-parity.mjs && node --test --test-force-exit scripts/sandbox-core-vocabulary-parity.test.mjs",
     "test:contracts-shared": "node scripts/contracts-shared-export-check.mjs && node --test --test-force-exit scripts/contracts-shared-export-check.test.mjs",
+    "test:contracts-executed": "node scripts/contracts-executed-schema-check.mjs && node --test --test-force-exit scripts/contracts-executed-schema-check.test.mjs",
     "test:module-layout": "node scripts/api-module-layout-check.mjs && node --test --test-force-exit scripts/api-module-layout-check.test.mjs",
     "test:scripts": "node scripts/run-suite.mjs \"scripts/*.test.mjs\"",
     "verify": "turbo typecheck lint build && pnpm verify:terminal-response-profile",

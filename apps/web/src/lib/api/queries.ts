@@ -62,7 +62,7 @@ import * as mock from "./mock";
 import type { TaskContextView } from "./mock";
 import type {
   RuntimesResponse,
-  ListMcpTokensResponse,
+  McpTokenListItem,
   SendApiRequestInput,
   SendApiResult,
   SmtpConfigRead,
@@ -687,7 +687,7 @@ export function updateStatusQuery() {
  * (prefix + last4 only) — the raw token is never part of any read.
  */
 export function mcpTokensQuery() {
-  return queryOptions<ListMcpTokensResponse>({
+  return queryOptions<readonly McpTokenListItem[]>({
     queryKey: queryKeys.mcpTokens,
     queryFn: () =>
       isCapable("mcpServer") ? real.listMcpTokens() : mock.mockListMcpTokens(),

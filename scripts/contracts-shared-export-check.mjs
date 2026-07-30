@@ -71,8 +71,10 @@ const EXCEPTIONS = [
   // them would delete the only part of that SHALL that exists today. They stay,
   // named here so the unmet requirement is visible rather than inferred from an
   // unreferenced file.
-  { export: 'NotifyLevel', reason: 'agent-events-and-approvals SHALL, unimplemented' },
-  { export: 'NotifyLevelSchema', reason: 'agent-events-and-approvals SHALL, unimplemented' },
+  //
+  // `NotifyLevel` / `NotifyLevelSchema` were listed here too and are not, because
+  // `NotifyPayloadSchema` is composed from them. An exception nothing needs reads
+  // as a finding that was adjudicated when it never arose.
   { export: 'NotifyPayload', reason: 'agent-events-and-approvals SHALL, unimplemented' },
   { export: 'NotifyPayloadSchema', reason: 'agent-events-and-approvals SHALL, unimplemented' },
   { export: 'RequestDecisionPayload', reason: 'agent-events-and-approvals SHALL, unimplemented' },
@@ -97,21 +99,22 @@ const EXCEPTIONS = [
     reason: "value 'AUTH_TOKEN' read from process.env by name across both apps; converge before deleting (D3)",
   },
   {
-    export: 'AUTH_TOKEN_PUBLIC_ENV_VAR',
-    reason: "value 'NEXT_PUBLIC_AUTH_TOKEN' likewise; converge with its sibling (D3)",
-  },
-  {
     export: 'WS_AUTH_QUERY_PARAM',
     reason: "value 'token' inlined in WebSocket URL construction; converge before deleting (D3)",
   },
   {
     export: 'AuthTokenConfig',
-    reason: 'the inferred type of the auth config the four constants above describe; moves with them',
+    reason: 'the inferred type of the auth config the three constants above describe; moves with them',
   },
-  {
-    export: 'startsWithReservedPrefix',
-    reason: 'apps/api/src/auth/operator-principal.test.mjs:116 reimplements it inline and :42 rebuilds RESERVED_CREDENTIAL_PREFIXES — a test that re-derives what it should import passes even when the contract changes; converge before deleting (D3)',
-  },
+  // `startsWithReservedPrefix` stood here, kept on the stated ground that
+  // "apps/api/src/auth/operator-principal.test.mjs:116 reimplements it inline".
+  // The reason was FALSE, and false about a file the scan could not see:
+  // `scripts/legacy-token-prefix-collision.test.mjs:18` imports it properly from
+  // `packages/contracts/dist/credential-prefix.js`. Once `scripts/` joined the
+  // consumer walk the export stopped being unreachable and the exception stopped
+  // being needed. Removed rather than reworded — the reason is the whole content
+  // of an exception, and one that measurement contradicts is not a weaker
+  // exception, it is not one.
   {
     export: 'ReservedCredentialPrefix',
     reason: 'the element type of RESERVED_CREDENTIAL_PREFIXES, which apps/api/src/main.ts:108 does import; the type moves with the helper above',
@@ -131,6 +134,55 @@ const EXCEPTIONS = [
   {
     export: 'PublicRestErrorProjectorKind',
     reason: 'public-surface vocabulary with no consumer yet; belongs to the /v1 surface work, not to contracts convergence',
+  },
+
+  // ── Path-param schemas the routes deliberately do not enforce ─────────────
+  //
+  // Each is `{ id: z.string().uuid() }` for a route that takes `@Param('id')` as
+  // a raw string. Wiring them in is a one-liner and would be WRONG: today a
+  // malformed id falls through to a lookup that finds nothing and answers 404,
+  // identical to a well-formed id for a row that does not exist. Validating the
+  // param would make the two distinguishable — a 400 for "malformed" against a
+  // 404 for "absent" — which is strictly more information to an enumerating
+  // caller than the routes give now. The declaration is a description of the id
+  // space, not a rule the boundary is meant to apply.
+  { export: 'AdminAccountParams', reason: 'path-param shape; route answers by lookup, see above' },
+  { export: 'AdminAccountParamsSchema', reason: 'path-param shape; route answers by lookup, see above' },
+  { export: 'ApiKeyRevokeParams', reason: 'path-param shape; route answers by lookup, see above' },
+  { export: 'ApiKeyRevokeParamsSchema', reason: 'path-param shape; route answers by lookup, see above' },
+  { export: 'McpTokenRevokeParams', reason: 'path-param shape; route answers by lookup, see above' },
+  { export: 'McpTokenRevokeParamsSchema', reason: 'path-param shape; route answers by lookup, see above' },
+
+  // ── The inline-literal class, which this change scopes OUT ────────────────
+  //
+  // Same shape as `OPERATOR_AUTH_SCHEME` above: the value is used, the constant
+  // is not. Converging them is the follow-up change, and deleting them now would
+  // ratify the restatement, which design D3 forbids.
+  {
+    export: 'IdentityProvider',
+    reason: "value 'password' written as a literal at admin-seed.service.ts:274/298/300 and as a LOCAL constant PASSWORD_IDENTITY_PROVIDER at password.service.ts:77; converge before deleting (D3)",
+  },
+  {
+    export: 'IdentityProviderSchema',
+    reason: 'moves with IdentityProvider',
+  },
+  {
+    export: 'TaskFailureAction',
+    reason: "apps/web/src/components/runtime-credential-alert.tsx:13,20 compares against the literal 'reconnect_runtime' rather than the enum; converge before deleting (D3)",
+  },
+  {
+    export: 'TaskFailureActionSchema',
+    reason: 'moves with TaskFailureAction',
+  },
+
+  // ── A shape declared for a rollout that has not happened ──────────────────
+  {
+    export: 'TaskProvisioningDiagnosticExpectation',
+    reason: 'pins `schemaVersion` + `nextAttempt` for a diagnostics-expectation exchange nothing implements; it is the declaration half of unbuilt work, like notifications.ts above',
+  },
+  {
+    export: 'TaskProvisioningDiagnosticExpectationSchema',
+    reason: 'moves with TaskProvisioningDiagnosticExpectation',
   },
 ];
 
@@ -211,6 +263,22 @@ export function readModuleExports(source) {
 }
 
 /**
+ * Remove `//` and block comments so a documented example is not read as code.
+ *
+ * Deliberately simple: it does not track string literals, so a `//` inside a
+ * string is treated as a comment. That direction is safe here — the worst case
+ * is that an import written after such a string is missed, which reports an
+ * export dead and gets adjudicated, rather than silently marking one live.
+ */
+export function stripComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, ' ')
+    .split('\n')
+    .map((line) => line.replace(/(^|[^:])\/\/.*$/u, '$1'))
+    .join('\n');
+}
+
+/**
  * Names a source file imports from `@cap-console/contracts`.
  *
  * Returns `{ names, namespace }` — a namespace import (`import * as c from …`)
@@ -220,8 +288,20 @@ export function readModuleExports(source) {
 export function readContractImports(source, pkg = PACKAGE) {
   const names = new Set();
   let namespace = false;
+  // Prose is not code. `isComposedInto` has always skipped comments; this did
+  // not, and the omission bit immediately once `scripts/` joined the walk — the
+  // paragraph in THIS file explaining namespace imports contains one as an
+  // example, and the gate read its own explanation as a real import and reported
+  // itself as the offender.
+  source = stripComments(source);
 
-  const from = String.raw`from\s*['"]${pkg.replace('/', '\\/')}['"]`;
+  // Two ways in, and the second is why this takes a pattern rather than a
+  // literal: the package name, and a relative path into the built package.
+  // Repository scripts use the latter (`'../packages/contracts/dist/credential-prefix.js'`)
+  // because they run without the workspace resolution an app gets, and a scan
+  // that matched only the package name reported their imports as non-existent.
+  const specifier = String.raw`(?:${pkg.replace('/', '\\/')}|[^'"]*packages\/contracts\/dist\/[^'"]*)`;
+  const from = String.raw`from\s*['"]${specifier}['"]`;
   const braced = new RegExp(
     String.raw`import\s+(?:type\s+)?\{([^}]*)\}\s*${from}`,
     'gu',
@@ -240,7 +320,7 @@ export function readContractImports(source, pkg = PACKAGE) {
 
   // `require('@cap-console/contracts')` destructuring, used by the .mjs suites.
   const required = new RegExp(
-    String.raw`const\s*\{([^}]*)\}\s*=\s*require\(\s*['"]${pkg.replace('/', '\\/')}['"]`,
+    String.raw`const\s*\{([^}]*)\}\s*=\s*require\(\s*['"]${specifier}['"]`,
     'gu',
   );
   for (const match of source.matchAll(required)) {
@@ -253,41 +333,87 @@ export function readContractImports(source, pkg = PACKAGE) {
   return { names, namespace };
 }
 
+/** The other half of a schema/type pair: `X` ⇄ `XSchema`. */
+export const pairedName = (name) =>
+  name.endsWith('Schema') ? name.slice(0, -'Schema'.length) : `${name}Schema`;
+
+/** Matches a top-level declaration, exported or not. */
+const DECLARATION_LINE =
+  /^(?:export\s+)?(?:declare\s+)?(?:const|let|var|type|interface|function|async function|class|enum|abstract class)\s+([A-Za-z_$][\w$]*)/u;
+
 /**
- * Whether `name` is referenced anywhere in the package other than by its own
- * declaration — i.e. whether some other export is built out of it.
+ * Split a module into its top-level declaration blocks.
  *
- * Comment lines are skipped: this package documents heavily, and a name that
- * appears only in prose is not a use. That distinction is load-bearing —
- * counting comments would make the gate green on a genuinely dead export whose
- * doc block mentions it.
+ * Block-level, not line-level, and that is the whole point. A schema/type pair is
+ * routinely written across three lines —
+ *
+ *     export type AdminCreateAccountRequest = z.infer<
+ *       typeof AdminCreateAccountRequestSchema
+ *     >;
+ *
+ * — so the reference sits on a CONTINUATION line, not on the declaration line.
+ * A scan that skipped only the declaration line still saw the continuation and
+ * counted the pair as composition.
+ *
+ * Lines before the first declaration (imports, the file's doc block) are dropped:
+ * an import is not composition, and neither is prose.
+ */
+export function readDeclarationBlocks(source) {
+  const blocks = [];
+  let current = null;
+  for (const line of source.split('\n')) {
+    const match = DECLARATION_LINE.exec(line);
+    if (match) {
+      current = { name: match[1], lines: [line] };
+      blocks.push(current);
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+  return blocks;
+}
+
+/**
+ * Whether some OTHER export is built out of `name` — i.e. whether `name` is
+ * composed into something rather than merely mentioned.
+ *
+ * Two things deliberately do not count:
+ *
+ *   - **Its own declaration**, obviously.
+ *   - **Its schema/type twin's declaration.** `export type X = z.infer<typeof XSchema>`
+ *     is the PAIR, not a use of it. Counting it made every schema in this package
+ *     that has an inferred type read as composed, which meant the pair rule below
+ *     was never reached and the gate silently stopped checking the commonest
+ *     declaration form in the package. A probe pair that nothing anywhere used
+ *     passed with exit 0.
+ *
+ * Comment lines are skipped too: this package documents heavily, and a name that
+ * appears only in prose is not a use. Counting comments would keep a genuinely
+ * dead export alive forever on the strength of its own doc block.
  */
 export function isComposedInto(name, owner, sources) {
-  const declaration = new RegExp(
-    `^export\\s+(?:declare\\s+)?(?:const|let|var|type|interface|function|async function|class|enum|abstract class)\\s+${name}\\b`,
-    'u',
-  );
+  const twin = pairedName(name);
   const reference = new RegExp(`\\b${name}\\b`, 'u');
   for (const [module, source] of sources) {
-    for (const line of source.split('\n')) {
-      const trimmed = line.trim();
-      if (
-        trimmed.startsWith('*') ||
-        trimmed.startsWith('//') ||
-        trimmed.startsWith('/*')
-      ) {
+    for (const block of readDeclarationBlocks(source)) {
+      if (module === owner && (block.name === name || block.name === twin)) {
         continue;
       }
-      if (module === owner && declaration.test(trimmed)) continue;
-      if (reference.test(line)) return true;
+      for (const line of block.lines) {
+        const trimmed = line.trim();
+        if (
+          trimmed.startsWith('*') ||
+          trimmed.startsWith('//') ||
+          trimmed.startsWith('/*')
+        ) {
+          continue;
+        }
+        if (reference.test(line)) return true;
+      }
     }
   }
   return false;
 }
-
-/** The other half of a schema/type pair: `X` ⇄ `XSchema`. */
-export const pairedName = (name) =>
-  name.endsWith('Schema') ? name.slice(0, -'Schema'.length) : `${name}Schema`;
 
 /** Contracts modules a contracts module imports (relative `./x.js` specifiers). */
 export function readIntraPackageImports(source) {
@@ -300,9 +426,48 @@ export function readIntraPackageImports(source) {
   return out;
 }
 
+/**
+ * Directories that import the contracts package WITHOUT being a workspace
+ * package — repository-level tooling, whose dependency comes from the root
+ * manifest rather than one of its own.
+ *
+ * Sixteen files under `scripts/` reference contracts, several of them importing
+ * a deep `dist/` path. Nothing here declares a manifest dependency, so the walk
+ * below could not see any of it — and the consequence was not hypothetical: this
+ * gate shipped carrying an exception that kept `startsWithReservedPrefix` on the
+ * stated ground that "a test reimplements it inline", while
+ * `scripts/legacy-token-prefix-collision.test.mjs:18` imports it properly from
+ * `packages/contracts/dist/credential-prefix.js`. The reason was falsified by a
+ * file the scan was structurally unable to look at.
+ *
+ * Same shape as `test-discovery-check.mjs`'s `REPOSITORY_TEST_DIRS`, which exists
+ * because the identical blind spot bit the identical way there.
+ */
+const REPOSITORY_CONSUMER_DIRS = ['scripts'];
+
+/**
+ * Files inside those directories whose import-looking text is NOT an import.
+ *
+ * This gate's own test file builds fixtures out of import statements —
+ * `'import * as contracts from "@cap-console/contracts";'` is a string it hands
+ * to `readContractImports` to prove namespace detection works. Once `scripts/`
+ * joined the consumer walk, the gate read its own examples as real imports and
+ * reported itself as a namespace importer, which by its own rule makes it
+ * unable to see a dead export.
+ *
+ * A text scan cannot distinguish a fixture from an import, and any file that
+ * tests import scanning will contain both. So the exclusion is by name, with the
+ * reason attached, rather than by a heuristic that would also drop
+ * `legacy-token-prefix-collision.test.mjs` — whose imports are real, and finding
+ * them is why `scripts/` was added.
+ */
+const NOT_REALLY_IMPORTS = new Set([
+  'scripts/contracts-shared-export-check.test.mjs',
+]);
+
 /** Consumer roots: every workspace package that declares a dep on contracts. */
 function consumerRoots() {
-  const roots = [];
+  const roots = REPOSITORY_CONSUMER_DIRS.map((dir) => path.join(ROOT, dir));
   for (const group of ['apps', 'packages']) {
     const base = path.join(ROOT, group);
     let entries;
@@ -362,8 +527,15 @@ export function scan() {
   const roots = consumerRoots();
   for (const root of roots) {
     for (const file of walk(root)) {
+      if (NOT_REALLY_IMPORTS.has(path.relative(ROOT, file))) continue;
       const source = readFileSync(file, 'utf8');
-      if (!source.includes(PACKAGE)) continue;
+      // Either way in — the package name, or a relative path into its build.
+      if (
+        !source.includes(PACKAGE) &&
+        !source.includes('packages/contracts/dist')
+      ) {
+        continue;
+      }
       const { names, namespace } = readContractImports(source);
       for (const name of names) imported.add(name);
       if (namespace) namespaceImporters.push(path.relative(ROOT, file));

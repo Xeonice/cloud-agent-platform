@@ -62,8 +62,7 @@ import type {
   SelfUpdateRequest,
   SelfUpdateAck,
   RuntimesResponse,
-  ListMcpTokensResponse,
-  McpTokenSummary,
+  McpTokenListItem,
   MintMcpTokenRequest,
   MintMcpTokenResponse,
   SmtpConfigRead,
@@ -1266,7 +1265,7 @@ export async function mockPostSelfUpdate(
 // ---------------------------------------------------------------------------
 
 /** The in-memory mock MCP-token set (non-secret rows only — never a raw token). */
-let mockMcpTokenStore: McpTokenSummary[] = [];
+let mockMcpTokenStore: McpTokenListItem[] = [];
 /** The system-wide `mcpServerEnabled` flag, mocked default false (spec D5). */
 let mockMcpServerEnabledFlag = false;
 /** Monotonic counter so distinct mints get distinct ids/suffixes deterministically. */
@@ -1303,7 +1302,7 @@ function fabricateMcpToken(
 }
 
 /** `GET /mcp-tokens` (mock) — the non-secret list, newest first. */
-export async function mockListMcpTokens(): Promise<ListMcpTokensResponse> {
+export async function mockListMcpTokens(): Promise<readonly McpTokenListItem[]> {
   await delay();
   return [...mockMcpTokenStore].reverse();
 }

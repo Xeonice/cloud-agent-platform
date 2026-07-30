@@ -114,6 +114,8 @@ import {
   type LocalRepoImportAvailability,
   type TaskRepoCopyNotReadyError,
   type Scope,
+  type McpTokenListItem,
+  type McpTokenListResponse,
   type SmtpConfigRead,
   type SaveSmtpConfigRequest,
   type TestSmtpConfigRequest,
@@ -1443,28 +1445,15 @@ function parseMcpTokenScopes(value: unknown): Scope[] {
   return scopes;
 }
 
-/** A non-secret MCP-token list row — prefix + last4 only, NEVER the raw/hash. */
-export interface McpTokenSummary {
-  /** Token id (the revoke handle). */
-  id: string;
-  /** Operator-supplied label. */
-  name: string;
-  /** Granted scopes. */
-  scopes: Scope[];
-  /** The `mcp_` prefix shown to disambiguate rows (non-secret). */
-  prefix: string;
-  /** Last 4 chars of the raw token, for recognition only (non-secret). */
-  last4: string;
-  /** Last time the token authenticated, or null if never used. ISO-8601. */
-  lastUsedAt: string | null;
-  /** Expiry, or null when the token never expires. ISO-8601. */
-  expiresAt: string | null;
-  /** Revocation time, or null while the token is active. ISO-8601. */
-  revokedAt: string | null;
-}
+// A non-secret MCP-token list row was declared here as `McpTokenSummary`,
+// field-for-field identical to the contract's `McpTokenListItem`. And the
+// response was declared as a BARE ARRAY while the api sends `{ tokens }` and the
+// contract declares that envelope — two of three parties already agreed, and this
+// was the third. Same drift as `RuntimeReadiness`, with the sides swapped.
+export type { McpTokenListItem };
 
-/** `GET /mcp-tokens` response — the operator's non-secret MCP-token list. */
-export type ListMcpTokensResponse = readonly McpTokenSummary[];
+/** `GET /mcp-tokens` response — the envelope the api sends and the contract declares. */
+export type ListMcpTokensResponse = McpTokenListResponse;
 
 /** `POST /mcp-tokens` body — mint a new MCP token. */
 export interface MintMcpTokenRequest {
@@ -1479,11 +1468,11 @@ export interface MintMcpTokenRequest {
 /**
  * `POST /mcp-tokens` response — the show-once mint reply. The `token` field
  * carries the raw `mcp_…` value EXACTLY ONCE (the only time it is ever
- * transmitted); every subsequent read returns only the {@link McpTokenSummary}
+ * transmitted); every subsequent read returns only the {@link McpTokenListItem}
  * projection. The card surfaces `token` transiently in its show-once dialog and
  * never writes it to a list row.
  */
-export interface MintMcpTokenResponse extends McpTokenSummary {
+export interface MintMcpTokenResponse extends McpTokenListItem {
   /** The raw `mcp_…` token — shown ONCE, never re-fetchable. */
   token: string;
 }
@@ -1494,14 +1483,15 @@ export interface MintMcpTokenResponse extends McpTokenSummary {
  * web type — see the MCP-token types note above); a malformed entry is dropped
  * rather than crashing the card. Gated by `BACKEND_CAPABILITIES.mcpServer`.
  */
-export async function listMcpTokens(): Promise<ListMcpTokensResponse> {
+export async function listMcpTokens(): Promise<readonly McpTokenListItem[]> {
   const body = await request("/mcp-tokens");
-  const entries = Array.isArray(body)
-    ? body
-    : Array.isArray((body as { tokens?: unknown } | null)?.tokens)
-      ? (body as { tokens: unknown[] }).tokens
-      : [];
-  const out: McpTokenSummary[] = [];
+  // The envelope, and only the envelope. This used to accept a bare array too,
+  // which is how the console could carry a declaration the api never matched
+  // without anything failing.
+  const entries = Array.isArray((body as { tokens?: unknown } | null)?.tokens)
+    ? (body as { tokens: unknown[] }).tokens
+    : [];
+  const out: McpTokenListItem[] = [];
   for (const raw of entries) {
     if (!raw || typeof raw !== "object") continue;
     const e = raw as Record<string, unknown>;

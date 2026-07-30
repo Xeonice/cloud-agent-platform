@@ -4,7 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { z } from 'zod';
+
+import type { AdminCreateAccountRequest, Role } from '@cap-console/contracts';
+
 import { PrismaService } from '@/prisma/prisma.service';
 import { hashPassword } from '@/auth/argon2';
 
@@ -51,7 +53,7 @@ export class AccountsService {
    * rather than silently mutating an existing account. The plaintext password is
    * hashed here and never persisted or returned.
    */
-  async create(input: CreateAccountInput): Promise<AccountListItem> {
+  async create(input: AdminCreateAccountRequest): Promise<AccountListItem> {
     const email = normalizeEmail(input.email);
 
     if (input.initialCredential === 'password' && !input.password) {
@@ -165,7 +167,7 @@ export class AccountsService {
    * this is purely a panel-access change. Applies to all accounts alike at the
    * data layer.
    */
-  async assignRole(id: string, role: AccountRole): Promise<AccountListItem> {
+  async assignRole(id: string, role: Role): Promise<AccountListItem> {
     await this.requireAccount(id);
     const updated = await this.prisma.user.update({
       where: { id },
@@ -193,56 +195,25 @@ export class AccountsService {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Local DTOs (validated at the controller via ZodValidationPipe)
-// ---------------------------------------------------------------------------
-
-/** The two roles: `admin` gates the admin panel only; neither isolates execution. */
-export const AccountRoleSchema = z.enum(['admin', 'member']);
-export type AccountRole = z.infer<typeof AccountRoleSchema>;
+// Request DTOs live in the contract and are used under the contract's names.
+//
+// Five schemas stood here under the heading "Local DTOs", each a hand-written
+// copy of one the contract already declared. They were not merely redundant: the
+// copy of the password field was `z.string().min(8)`, dropping the contract's
+// `.max(200)`, whose comment states the bound exists "so a single field cannot be
+// used to exhaust the argon2 hasher". The contract's own
+// `AdminCreateAccountRequestSchema` and `AdminResetPasswordRequestSchema` had
+// ZERO references anywhere, so nothing could notice the two disagreeing.
+//
+// They were first replaced with local ALIASES of the contract's schemas, which
+// kept the call sites unchanged and was wrong twice over: an alias is the private
+// rename this package's own spec forbids, and it broke the execution gate's
+// attribution — production parsed `CreateAccountSchema` while the contract
+// declared `AdminCreateAccountRequestSchema`, so the schema still read as never
+// run. The call sites use the contract's names.
 
 /** A local login method an account can authenticate with, derived from its identities. */
 export type AccountLoginMethod = 'password' | 'otp';
-
-/** Minimum password length for an admin-set local credential. */
-const MIN_PASSWORD_LENGTH = 8;
-
-/**
- * Create-account body. `initialCredential` is the admin's choice between a one-time
- * password (requires `password`) and a verification-code-only account (no password
- * identity). The cross-field rule is enforced with a refinement so an invalid
- * combination is a 400 (nothing created), not a runtime surprise.
- */
-export const CreateAccountSchema = z
-  .object({
-    email: z.string().trim().email(),
-    name: z.string().trim().min(1),
-    role: AccountRoleSchema,
-    initialCredential: z.enum(['password', 'otp-only']),
-    password: z.string().min(MIN_PASSWORD_LENGTH).optional(),
-  })
-  .refine(
-    (v) => v.initialCredential !== 'password' || typeof v.password === 'string',
-    {
-      message: 'A password is required when initialCredential is "password".',
-      path: ['password'],
-    },
-  );
-export type CreateAccountInput = z.infer<typeof CreateAccountSchema>;
-
-/** Enable/disable body — flips the single runtime gate `User.allowed`. */
-export const SetEnabledSchema = z.object({ allowed: z.boolean() });
-export type SetEnabledInput = z.infer<typeof SetEnabledSchema>;
-
-/** Reset-password body — a fresh one-time local credential. */
-export const ResetPasswordSchema = z.object({
-  password: z.string().min(MIN_PASSWORD_LENGTH),
-});
-export type ResetPasswordInput = z.infer<typeof ResetPasswordSchema>;
-
-/** Assign-role body. */
-export const AssignRoleSchema = z.object({ role: AccountRoleSchema });
-export type AssignRoleInput = z.infer<typeof AssignRoleSchema>;
 
 /**
  * A non-secret account row for the admin page. `identity` is the email when
@@ -255,7 +226,7 @@ export interface AccountListItem {
   email: string | null;
   name: string;
   identity: string;
-  role: AccountRole;
+  role: Role;
   allowed: boolean;
   loginMethods: AccountLoginMethod[];
   isGithubLinked: boolean;
@@ -319,7 +290,7 @@ function toListItem(account: AccountWithIdentities): AccountListItem {
     email: account.email ?? null,
     name: account.name,
     identity,
-    role: account.role as AccountRole,
+    role: account.role as Role,
     allowed: account.allowed,
     loginMethods,
     isGithubLinked,
