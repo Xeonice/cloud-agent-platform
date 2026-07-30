@@ -10,7 +10,6 @@ const {
   ListReposResponseSchema,
   ListTasksResponseSchema,
   PUBLIC_V1_OPERATIONS,
-  ProvisioningSummarySchema,
   RepoResponseSchema,
   ScheduleLatestRunSchema,
   ScheduleResponseSchema,
@@ -96,7 +95,7 @@ test('provisioning summary has stable state/stage enums and strict safe fields',
     'complete',
   ]);
 
-  const parsed = ProvisioningSummarySchema.parse(provisioning);
+  const parsed = TaskProvisioningSummarySchema.parse(provisioning);
   assert.equal(parsed.state, 'running');
   assert.equal(parsed.stage, 'workspace_transfer');
   assert.equal(parsed.resolvedBranch, 'master');

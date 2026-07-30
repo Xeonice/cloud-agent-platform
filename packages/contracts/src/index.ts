@@ -47,9 +47,6 @@ export * from './terminal-attachment-frames.js';
 // Canonical base64 helpers for opaque terminal input/output bytes
 export * from './terminal-bytes.js';
 
-// Transitional type-only recording helpers; never accepted by live WS schemas
-export type * from './terminal-recording-internal.js';
-
 // Approval contract: decision shape + forward-event + PostToolUse report
 export * from './approvals.js';
 

@@ -194,15 +194,13 @@ export type TaskProvisioningSummary = z.infer<
   typeof TaskProvisioningSummarySchema
 >;
 
-/** Short aliases for orchestration code that already lives in a task context. */
-export const ProvisioningStateSchema = TaskProvisioningStateSchema;
-export type ProvisioningState = TaskProvisioningState;
-export const ProvisioningStageSchema = TaskProvisioningStageSchema;
-export type ProvisioningStage = TaskProvisioningStage;
-export const ProvisioningSummarySchema = TaskProvisioningSummarySchema;
-export type ProvisioningSummary = TaskProvisioningSummary;
-export const ProvisioningProgressSchema = TaskProvisioningProgressSchema;
-export type ProvisioningProgress = TaskProvisioningProgress;
+// Four `Provisioning*` / `Provisioning*Schema` aliases stood here, introduced as
+// "short aliases for orchestration code that already lives in a task context".
+// No orchestration code ever used them: every call site names the
+// `TaskProvisioning*` original, and nothing outside this file referenced the
+// short form. A second name for a shape in the package whose defining property
+// is one declaration per shape is the duplication this package exists to
+// prevent, offered from the inside.
 
 // ---------------------------------------------------------------------------
 // Per-task runtime model selector (add-task-model-selection)

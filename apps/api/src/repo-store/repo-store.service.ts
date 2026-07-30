@@ -1,3 +1,5 @@
+import type { RepoCopyStatus } from '@cap-console/contracts';
+
 import { randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, stat, readdir } from 'node:fs/promises';
 import { isAbsolute, join, normalize } from 'node:path';
@@ -30,8 +32,12 @@ export const REPO_STORE_STAGING_DIRNAME = '.staging';
 /** Ceiling for one acquisition/refresh when the caller supplies no signal. */
 export const REPO_STORE_ACQUIRE_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Closed vocabulary persisted in `Repo.copyStatus`. */
-export type RepoCopyStatus = 'missing' | 'refreshing' | 'ready' | 'failed';
+/**
+ * Closed vocabulary persisted in `Repo.copyStatus`, re-exported from the contract
+ * rather than restated. This service is the only writer, and it was the only
+ * component not reading the declaration the readers validate against.
+ */
+export type { RepoCopyStatus };
 
 export interface RepoStoreSuccess {
   readonly ok: true;

@@ -1,10 +1,9 @@
 import { Controller, Get, Req } from '@nestjs/common';
 import type { AuthenticatedRequest } from '@/principal/authenticated-request';
 
-import {
-  RuntimesService,
-  type RuntimesReadinessResponse,
-} from './runtimes.service';
+import type { RuntimeReadinessResponse } from '@cap-console/contracts';
+
+import { RuntimesService } from './runtimes.service';
 
 /**
  * Runtime-readiness endpoint (add-claude-code-runtime Track 3, task 3.3 /
@@ -29,7 +28,7 @@ export class RuntimesController {
   constructor(private readonly runtimes: RuntimesService) {}
 
   @Get('runtimes')
-  get(@Req() req: AuthenticatedRequest): Promise<RuntimesReadinessResponse> {
+  get(@Req() req: AuthenticatedRequest): Promise<RuntimeReadinessResponse> {
     return this.runtimes.getReadiness(req.operatorPrincipal?.user?.id ?? null);
   }
 }

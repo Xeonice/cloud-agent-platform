@@ -1,3 +1,16 @@
+// Type-only, and that distinction is the whole design. This package declares ZERO
+// runtime dependencies so a third party can implement the port without inheriting
+// ours; `import type` is erased at emit, so the vocabularies below stop being a
+// second declaration while the runtime graph stays empty. The runtime ARRAYS
+// (SANDBOX_EXECUTION_MODES, the diagnostics families) cannot follow — they are
+// values, and a value import would pull zod in here. Those keep their own copy,
+// reconciled by a parity gate.
+import type {
+  SandboxMode as ContractSandboxMode,
+  SandboxEnvironmentProviderFamily as ContractProviderFamily,
+  SandboxEnvironmentSourceKind as ContractSourceKind,
+} from '@cap-console/contracts';
+
 import type { SandboxProviderCapability, SandboxProviderLocation } from './capabilities.js';
 import { SandboxProviderConfigurationError } from './errors.js';
 import type { ExactHostGitCredential } from './git-credential.js';
@@ -53,10 +66,7 @@ export interface SandboxCapabilitySource {
   getProviderCapabilities?(): readonly SandboxProviderCapability[];
 }
 
-export type SandboxExecutionMode =
-  | 'read-only'
-  | 'workspace-write'
-  | 'danger-full-access';
+export type SandboxExecutionMode = ContractSandboxMode;
 
 export const SANDBOX_EXECUTION_MODES: readonly SandboxExecutionMode[] = [
   'read-only',
@@ -149,15 +159,19 @@ export interface SandboxPreflightProbeResult {
   readonly output?: string;
 }
 
+/**
+ * Open by design: a provider family this build does not know about must still be
+ * representable, because a third party can register one. The KNOWN members come
+ * from the contract so the two cannot drift; the widening is stated here rather
+ * than by re-listing them.
+ */
 export type SandboxEnvironmentProviderFamily =
-  | 'aio'
-  | 'boxlite'
-  | 'cloud-http'
+  | ContractProviderFamily
   | (string & {});
 
+/** Open for the same reason, deriving its known members the same way. */
 export type SandboxEnvironmentSourceKind =
-  | 'aio-docker-image'
-  | 'boxlite-image'
+  | ContractSourceKind
   | (string & {});
 
 export interface SandboxResolvedEnvironmentMetadata {

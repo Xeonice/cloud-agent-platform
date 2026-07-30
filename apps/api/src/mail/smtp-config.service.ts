@@ -1,4 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+
+import type { SmtpConfigRead as ContractSmtpConfigRead } from '@cap-console/contracts';
+
 import { PrismaService } from '@/prisma/prisma.service';
 import type { ResolvedSmtpConfig } from './mail.service';
 import {
@@ -57,21 +60,18 @@ export interface SaveSmtpConfigInput {
 }
 
 /**
- * The masked read projection (design D6): the non-secret host/port/user/from
- * plus a masked password indicator (`passLast4` + `hasPassword`). NEVER carries
- * the plaintext password. Mirrors `@cap-console/contracts` `SmtpConfigRead`. Null when
- * no DB config row exists.
+ * The masked read projection: the non-secret host/port/user/from plus a masked
+ * password indicator (`passLast4` + `hasPassword`), NEVER the plaintext password.
+ * Null when no DB config row exists.
+ *
+ * This was declared locally with the comment "Mirrors `@cap-console/contracts`
+ * `SmtpConfigRead`" — an admitted restatement, and the reason the two could
+ * disagree without anything failing. It is the contract's type now. Unlike
+ * {@link SaveSmtpConfigInput} above, which stays local because it carries the
+ * plaintext password and is deliberately NOT a wire shape, this projection IS
+ * the wire shape: it is what the controller returns and what the console parses.
  */
-export interface SmtpConfigRead {
-  readonly host: string;
-  readonly port: number;
-  readonly user: string;
-  readonly from: string;
-  /** Masked last-4 suffix of the stored password, or null when none is stored. */
-  readonly passLast4: string | null;
-  /** True when an (encrypted) password is stored. */
-  readonly hasPassword: boolean;
-}
+export type SmtpConfigRead = ContractSmtpConfigRead;
 
 /**
  * The fully-resolved DB SMTP transport config — the decrypted shape the mail

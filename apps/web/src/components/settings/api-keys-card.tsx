@@ -31,7 +31,7 @@
  * explicit click (an event, never during render).
  */
 import * as React from "react";
-import type { Scope } from "@cap-console/contracts";
+import type { ApiKeyListItem, Scope } from "@cap-console/contracts";
 
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
@@ -80,21 +80,7 @@ export const DEFAULT_API_KEY_SCOPES: readonly ApiKeyScope[] = ["tasks:read"];
  * carries the raw key value or the stored hash — only the display `prefix`,
  * `last4`, and lifecycle timestamps.
  */
-export interface ApiKeyListItem {
-  id: string;
-  name: string;
-  scopes: ApiKeyScope[];
-  /** The reserved display prefix (`cap_sk_`). */
-  prefix: string;
-  /** The last 4 characters of the raw key, for disambiguation only. */
-  last4: string;
-  /** ISO timestamp of last successful resolution, or null if never used. */
-  lastUsedAt: string | null;
-  /** Absolute expiry, or null for no expiry. */
-  expiresAt: string | null;
-  /** Revocation timestamp, or null while live. */
-  revokedAt: string | null;
-}
+export type { ApiKeyListItem };
 
 /** The mint-request payload the card hands to the page's mint handler. */
 export interface MintApiKeyRequest {

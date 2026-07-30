@@ -71,7 +71,8 @@ import {
   type TaskProvisioningDiagnosticsResponse,
   type ListReposResponse,
   type RepoResponse,
-  type CreateTaskRequest,
+  type CreateTaskBody,
+  type RuntimeReadiness as ContractRuntimeReadiness,
   type AuthSession,
   type AuthSessionResponse,
   type MetricsResponse,
@@ -113,6 +114,10 @@ import {
   type LocalRepoImportAvailability,
   type TaskRepoCopyNotReadyError,
   type Scope,
+  type SmtpConfigRead,
+  type SaveSmtpConfigRequest,
+  type TestSmtpConfigRequest,
+  type TestSmtpConfigResponse,
 } from "@cap-console/contracts";
 import { createParser } from "eventsource-parser";
 import {
@@ -156,31 +161,41 @@ import { getIncomingCookieHeader } from "../server-cookie";
 /** The agent runtime a task runs under. Default `codex` (omitted ⇒ codex). */
 export type RuntimeId = AgentRuntimeId;
 
-/** Readiness of a single runtime (booleans only — never a secret). */
-export interface RuntimeReadiness {
-  /**
-   * The runtime id this readiness describes.
-   *
-   * Deliberately a `string`, not {@link RuntimeId}: this is a value the BACKEND
-   * reports, and a console pinned to the two ids it happened to ship with would
-   * silently discard a runtime a newer api offers. Narrowing belongs at the
-   * points that act on the id, not at the point that receives it.
-   */
+/**
+ * Readiness of a single runtime (booleans only — never a secret).
+ *
+ * Derived from the contract's shape with **one** widening, stated here rather
+ * than by restating the whole interface: `id` is a `string`, not the contract's
+ * closed `Runtime` enum. That asymmetry is deliberate and is the robustness
+ * principle in its usual form — the api is the producer and validates the closed
+ * vocabulary it emits (`RuntimeReadinessResponseSchema.parse` in
+ * `runtimes.service.ts`), while a console pinned to the ids it happened to ship
+ * with would silently discard a runtime a newer api offers. Narrowing belongs at
+ * the points that act on the id, not at the point that receives it.
+ *
+ * Deriving rather than re-declaring means a field added to the contract arrives
+ * here, and the widening stays visible as the single deliberate difference.
+ */
+export type RuntimeReadiness = Omit<ContractRuntimeReadiness, "id"> & {
   id: string;
-  /** Whether the runtime is configured/ready to run a task right now. */
-  ready: boolean;
-}
+};
 
 /** `GET /runtimes` response — per-runtime readiness, no secrets. */
 export type RuntimesResponse = readonly RuntimeReadiness[];
 
 /**
- * The create-task body extended with the optional `runtime` selector. Sent on
- * `POST /repos/:repoId/tasks`; omitted ⇒ the api defaults to `codex`. Typed as a
- * local intersection so the web compiles ahead of the contracts-track enum
- * landing on `CreateTaskRequest` (at which point this alias collapses onto it).
+ * The create-task body. Sent on `POST /repos/:repoId/tasks`; `runtime` omitted ⇒
+ * the api defaults to `codex`.
+ *
+ * This was a local intersection — `CreateTaskRequest & { runtime?: RuntimeId }` —
+ * written so the web could compile ahead of the runtime enum landing on
+ * `CreateTaskRequest`, with a comment promising it would collapse onto the
+ * contract once it did. It did: `CreateTaskRequestSchema` carries
+ * `runtime: RuntimeSchema.optional()`, and `RuntimeSchema` is `z.enum(AGENT_RUNTIME_IDS)`,
+ * the same source `RuntimeId` derives from. The intersection had become a no-op
+ * that only looked like a difference.
  */
-export type CreateTaskBody = CreateTaskRequest & { runtime?: RuntimeId };
+export type { CreateTaskBody };
 
 /** A REST error carrying the HTTP status so callers can branch on 401/404/etc. */
 export class ApiError extends Error {
@@ -773,13 +788,14 @@ export async function createTask(
  */
 export async function getRuntimes(): Promise<RuntimesResponse> {
   const body = await request("/runtimes");
-  // The api wraps the list as `{ runtimes: [...] }` (runtimes.service.ts); tolerate
-  // a bare array too so the dialog never silently reads `[]` on a shape change.
-  const entries = Array.isArray(body)
-    ? body
-    : Array.isArray((body as { runtimes?: unknown } | null)?.runtimes)
-      ? (body as { runtimes: unknown[] }).runtimes
-      : [];
+  // A bare array, which is what `RuntimeReadinessResponseSchema` has always
+  // declared and what the api now sends and validates on the way out. This used
+  // to accept `{ runtimes: [...] }` as well, because that is what the api sent
+  // from the day the endpoint was written — the contract, the api and this
+  // tolerance all landed in `f050ab0`, one of the three disagreeing with the
+  // other two. Keeping the tolerance would preserve the ambiguity rather than
+  // record that it is resolved (design D7).
+  const entries = Array.isArray(body) ? body : [];
   const out: RuntimeReadiness[] = [];
   for (const raw of entries) {
     if (!raw || typeof raw !== "object") continue;
@@ -1413,12 +1429,13 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
 // show-once discipline the spec mandates. The web app never fabricates it.
 // ---------------------------------------------------------------------------
 
-/** A scope an MCP token may carry (validated against the shared enum server-side). */
-export type McpTokenScope = Scope;
-
-function parseMcpTokenScopes(value: unknown): McpTokenScope[] {
+// `McpTokenScope` used to be declared here as `= Scope`, a private rename that
+// the name-matching re-declaration scan could not see through. The alias is gone;
+// a scope an MCP token may carry IS a `Scope`, and the sibling
+// `components/api/catalog.ts` had already been importing that name directly.
+function parseMcpTokenScopes(value: unknown): Scope[] {
   if (!Array.isArray(value)) return [];
-  const scopes: McpTokenScope[] = [];
+  const scopes: Scope[] = [];
   for (const candidate of value) {
     const parsed = ScopeSchema.safeParse(candidate);
     if (parsed.success && !scopes.includes(parsed.data)) scopes.push(parsed.data);
@@ -1433,7 +1450,7 @@ export interface McpTokenSummary {
   /** Operator-supplied label. */
   name: string;
   /** Granted scopes. */
-  scopes: McpTokenScope[];
+  scopes: Scope[];
   /** The `mcp_` prefix shown to disambiguate rows (non-secret). */
   prefix: string;
   /** Last 4 chars of the raw token, for recognition only (non-secret). */
@@ -1454,7 +1471,7 @@ export interface MintMcpTokenRequest {
   /** Operator-supplied label. */
   name: string;
   /** Scopes to grant the token. */
-  scopes: McpTokenScope[];
+  scopes: Scope[];
   /** Optional expiry (ISO-8601); omit for a non-expiring token. */
   expiresAt?: string | null;
 }
@@ -1753,20 +1770,7 @@ export async function postSelfUpdate(
  * non-secret host/port/user/from plus a `passLast4` suffix + a `hasPassword`
  * flag; NEVER the plaintext password (`pass` is write-only).
  */
-export interface SmtpConfigRead {
-  /** SMTP host (the fixed `smtp.resend.com` for Resend). */
-  host: string;
-  /** SMTP port (the fixed `465` for Resend implicit-TLS). */
-  port: number;
-  /** SMTP username (the fixed literal `resend` for Resend). */
-  user: string;
-  /** Sender (from) address, e.g. `no-reply@auth.example.com`. */
-  from: string;
-  /** The masked last-4 of the stored password, or null when none is stored. */
-  passLast4: string | null;
-  /** Whether a password (API Key) is stored — drives the "已配置" status. */
-  hasPassword: boolean;
-}
+export type { SmtpConfigRead };
 
 /**
  * `PUT /settings/smtp` body — save the SMTP config. The `pass` (= the Resend API
@@ -1775,21 +1779,14 @@ export interface SmtpConfigRead {
  * are the fixed Resend tuple; the card always submits them so the stored row
  * carries the full tuple.
  */
-export interface SaveSmtpConfigRequest {
-  host: string;
-  port: number;
-  user: string;
-  from: string;
-  /** The plaintext API Key (SMTP password). Omit/empty to keep the existing one. */
-  pass?: string;
-}
+export type { SaveSmtpConfigRequest };
 
 /**
  * `POST /settings/smtp/test` body — the candidate config to verify. Like the
  * save, `pass` is omitted/empty to test the already-saved key; otherwise the
  * submitted key is used WITHOUT persisting (the probe never writes on failure).
  */
-export type TestSmtpConfigRequest = SaveSmtpConfigRequest;
+export type { TestSmtpConfigRequest };
 
 /**
  * `POST /settings/smtp/test` response — the discriminated test-send outcome.
@@ -1797,12 +1794,7 @@ export type TestSmtpConfigRequest = SaveSmtpConfigRequest;
  * email; `message` is a human-readable success/failure detail. NEVER carries the
  * password.
  */
-export interface TestSmtpConfigResponse {
-  /** Whether the test email was sent successfully. */
-  ok: boolean;
-  /** A human-readable success/failure message (never the password). */
-  message: string;
-}
+export type { TestSmtpConfigResponse };
 
 /**
  * Structurally validate a `GET /settings/smtp` body into {@link SmtpConfigRead}

@@ -46,8 +46,8 @@ import {
   setMcpServerEnabledMutation,
 } from "@/lib/api/mutations";
 import { isAdminSession } from "@/components/shell/update-banner";
+import type { Scope } from "@cap-console/contracts";
 import type {
-  McpTokenScope,
   McpTokenSummary,
   MintMcpTokenResponse,
 } from "@/lib/api/real";
@@ -69,7 +69,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 /** The MCP-token scopes the mint dialog offers, with a human-readable label. */
 export const MCP_TOKEN_SCOPE_OPTIONS: readonly {
-  scope: McpTokenScope;
+  scope: Scope;
   label: string;
   warning?: string;
 }[] = [
@@ -84,7 +84,7 @@ export const MCP_TOKEN_SCOPE_OPTIONS: readonly {
 ];
 
 /** The default scope selection for a fresh mint (read-only, least privilege). */
-export const DEFAULT_MCP_TOKEN_SCOPES: readonly McpTokenScope[] = [
+export const DEFAULT_MCP_TOKEN_SCOPES: readonly Scope[] = [
   "tasks:read",
   "repos:read",
 ];
@@ -142,12 +142,12 @@ function MintDialog({
   onOpenChange: (open: boolean) => void;
   minting: boolean;
   /** Mint with the chosen name + scopes; the parent owns the server call. */
-  onMint: (name: string, scopes: McpTokenScope[]) => void;
+  onMint: (name: string, scopes: Scope[]) => void;
   /** The show-once mint reply (raw token present), or null before a mint. */
   minted: MintMcpTokenResponse | null;
 }) {
   const [name, setName] = React.useState<string>("");
-  const [scopes, setScopes] = React.useState<McpTokenScope[]>([
+  const [scopes, setScopes] = React.useState<Scope[]>([
     ...DEFAULT_MCP_TOKEN_SCOPES,
   ]);
   const [copied, setCopied] = React.useState<boolean>(false);
@@ -161,7 +161,7 @@ function MintDialog({
     }
   }, [open]);
 
-  function toggleScope(scope: McpTokenScope) {
+  function toggleScope(scope: Scope) {
     setScopes((prev) =>
       prev.includes(scope)
         ? prev.filter((s) => s !== scope)
@@ -371,7 +371,7 @@ export function McpServerCard() {
     if (!open) setMinted(null);
   }
 
-  function handleMint(name: string, scopes: McpTokenScope[]) {
+  function handleMint(name: string, scopes: Scope[]) {
     mintToken.mutate(
       { name, scopes },
       {

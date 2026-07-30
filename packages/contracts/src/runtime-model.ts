@@ -340,5 +340,9 @@ export const RuntimeModelErrorSchema = z.discriminatedUnion('code', [
 ]);
 export type RuntimeModelError = z.infer<typeof RuntimeModelErrorSchema>;
 
-export const RuntimeModelPreflightErrorSchema = RuntimeModelErrorSchema;
-export type RuntimeModelPreflightError = RuntimeModelError;
+// `RuntimeModelPreflightErrorSchema` / `RuntimeModelPreflightError` were declared
+// here as bare aliases of the two above, and nothing ever imported either. The
+// name collided with `apps/api`'s `RuntimeModelPreflightError` — a real Error
+// subclass the api throws and its HTTP filter catches — which is an unrelated
+// concept that happens to share the name. Keeping a dead alias whose name shadows
+// a live class in the other subtree is how a search for one lands on the other.
