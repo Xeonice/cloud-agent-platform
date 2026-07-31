@@ -515,10 +515,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # `vercel build` runs the PROJECT'S OWN install command on THIS runner, and
+      # cap-web's is `cd ../.. && pnpm install --frozen-lockfile`. Vercel's build
+      # infrastructure supplies pnpm; a GitHub runner does not, so without this the
+      # build dies with `sh: 1: pnpm: not found` (exit 127).
+      #
+      # Found by rehearsal, and it is the reason the rehearsal switch was worth
+      # building: without it this would first have run during a real release, after
+      # all four images were pushed, leaving the images shipped and the console not.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
 
       - name: Fail early when the deploy credentials are absent
         env:

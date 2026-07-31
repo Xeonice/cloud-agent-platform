@@ -463,6 +463,20 @@ test('the release publishes the console, and only for a real Release', () => {
   }
 });
 
+test('the console job can run the toolchain the Vercel project asks for', () => {
+  // `vercel build` runs the PROJECT'S install command on this runner, and cap-web's
+  // is `cd ../.. && pnpm install --frozen-lockfile`. Vercel's own build machines
+  // ship pnpm; a GitHub runner does not. The first rehearsal died on
+  // `sh: 1: pnpm: not found` — which, without the rehearsal switch, would first have
+  // happened during a real release with all four images already pushed.
+  const code = jobCode('deploy-console');
+  assert.match(code, /uses: pnpm\/action-setup@v4/u, 'the console job needs pnpm');
+  const pnpmAt = code.indexOf('pnpm/action-setup');
+  const vercelAt = code.indexOf('vercel@latest');
+  assert.ok(pnpmAt >= 0 && vercelAt >= 0 && pnpmAt < vercelAt,
+    'pnpm must be installed before the Vercel CLI runs the project install command');
+});
+
 test('a rehearsal never promotes latest', () => {
   // `latest` moving is the promise at the top of this workflow: one Release is one
   // mutually-compatible set, and `latest` advances only once the whole set exists.
