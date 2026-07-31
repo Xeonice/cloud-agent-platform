@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
 const sandbox = await import(new URL('../dist/index.js', import.meta.url).href);
+// AIO terminal helpers are provider-package surface, not facade surface (R6).
+const aio = await import('@cap-console/sandbox-provider-aio');
 
 /**
  * Adapt this legacy-heavy test file to the strict combined launch-context
@@ -67,7 +69,7 @@ class TestSandboxTerminalSession extends sandbox.SandboxTerminalSession {
       onRuntimeSetupFailure,
       signal,
       beforeAgentLaunch,
-      sandbox.createAioTerminalExitStatusResolver({ baseUrl }),
+      aio.createAioTerminalExitStatusResolver({ baseUrl }),
     );
   }
 }

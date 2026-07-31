@@ -7,6 +7,12 @@
  * that fires on a runtime's own implementation would be suppressed within a week,
  * and a suppressed gate is no gate.
  *
+ * The scan is a COMPLEMENT — everything in scope minus an explicit exemption
+ * list — so these cases pin the semantics that make the complement safe: an
+ * unlisted new file is covered with no registration, a malformed exemption
+ * fails the audit, and a scan that resolves to nothing fails rather than
+ * passing vacuously.
+ *
  * Run: node --test scripts/agent-identity-branch-check.test.mjs
  */
 
@@ -19,7 +25,7 @@ import { join, dirname } from 'node:path';
 import { findAgentIdentityBranches } from './agent-identity-branch-check.mjs';
 
 /** Build a throwaway tree and scan it with the real implementation. */
-function scan({ files, scaffolding, exempt = [] }) {
+function scan({ files, scanRoots, exemptions = [] }) {
   const root = mkdtempSync(join(tmpdir(), 'identity-gate-'));
   try {
     for (const [rel, body] of Object.entries(files)) {
@@ -27,50 +33,95 @@ function scan({ files, scaffolding, exempt = [] }) {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, body);
     }
-    return findAgentIdentityBranches({ root, scaffolding, exempt });
+    return findAgentIdentityBranches({ root, scanRoots, exemptions });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-test('an identity branch in shared scaffolding is reported with its location', () => {
+const exemption = (file) => ({
+  file,
+  reason: 'a runtime implementation necessarily names its own id',
+  change: 'fail-loud-on-unknown-runtime',
+});
+
+test('an identity branch in an unlisted file is reported with its location', () => {
+  // The complement's core promise: a NEW file is covered the moment it exists,
+  // with no list to remember to extend.
   const found = scan({
     files: {
-      'shared/wiring.ts': [
+      'shared/brand-new-wiring.ts': [
         'export function pick(runtime: string) {',
         "  if (runtime === 'codex') return codexThing;",
         '  return other;',
         '}',
       ].join('\n'),
     },
-    scaffolding: ['shared/wiring.ts'],
+    scanRoots: ['shared'],
   });
   assert.equal(found.length, 1, 'the branch must be reported');
-  assert.equal(found[0].file, 'shared/wiring.ts');
+  assert.equal(found[0].kind, 'identity-branch');
+  assert.equal(found[0].file, 'shared/brand-new-wiring.ts');
   assert.equal(found[0].line, 2, 'the line must be precise enough to act on');
   assert.match(found[0].text, /runtime === 'codex'/);
 });
 
-test('a runtime implementation naming its own id is not reported', () => {
+test('an exempt runtime implementation naming its own id is not reported', () => {
   // This is the case that would force suppressions if it fired.
   const found = scan({
     files: {
       'shared/codex-runtime.ts': "export const id = 'codex';\nif (x === 'codex') {}\n",
+      'shared/other.ts': 'export const ok = true;\n',
     },
-    scaffolding: ['shared/codex-runtime.ts'],
-    exempt: ['shared/codex-runtime.ts'],
+    scanRoots: ['shared'],
+    exemptions: [exemption('shared/codex-runtime.ts')],
   });
   assert.deepEqual(found, [], 'an exempt implementation must stay silent');
 });
 
-test('a directory entry covers its subtree', () => {
+test('an exemption entry missing a field fails the audit naming the entry', () => {
+  const found = scan({
+    files: {
+      'shared/clean.ts': 'export const ok = true;\n',
+      'shared/keeps-scan-nonempty.ts': 'export const also = true;\n',
+    },
+    scanRoots: ['shared'],
+    exemptions: [{ file: 'shared/clean.ts', reason: 'no owning change recorded' }],
+  });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, 'malformed-exemption');
+  assert.equal(found[0].file, 'shared/clean.ts');
+  assert.match(found[0].detail, /change/);
+});
+
+test('an exemption naming a file that does not exist is stale and fails', () => {
+  const found = scan({
+    files: { 'shared/clean.ts': 'export const ok = true;\n' },
+    scanRoots: ['shared'],
+    exemptions: [exemption('shared/deleted-runtime.ts')],
+  });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, 'stale-exemption');
+  assert.equal(found[0].file, 'shared/deleted-runtime.ts');
+});
+
+test('a scan that resolves to zero files fails instead of passing vacuously', () => {
+  const found = scan({
+    files: { 'elsewhere/untouched.ts': "if (r === 'codex') {}\n" },
+    scanRoots: ['moved-or-mistyped'],
+  });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, 'empty-scan');
+});
+
+test('a directory root covers its whole subtree', () => {
   const found = scan({
     files: {
       'shared/a.ts': "if (r === 'claude-code') {}\n",
       'shared/nested/b.ts': "if (r !== 'codex') {}\n",
       'shared/nested/c.ts': 'const fine = true;\n',
     },
-    scaffolding: ['shared'],
+    scanRoots: ['shared'],
   });
   assert.equal(found.length, 2);
   assert.deepEqual(
@@ -94,15 +145,19 @@ test('prose naming a runtime does not trip the scan', () => {
         'export const ok = true;',
       ].join('\n'),
     },
-    scaffolding: ['shared/doc.ts'],
+    scanRoots: ['shared'],
   });
   assert.deepEqual(found, [], 'comments and messages are not branches');
 });
 
-test('a test file may name a runtime freely', () => {
+test('test files and test directories stay out of the branch scan', () => {
   const found = scan({
-    files: { 'shared/thing.spec.ts': "assert(r === 'codex');\n" },
-    scaffolding: ['shared'],
+    files: {
+      'shared/thing.spec.ts': "assert(r === 'codex');\n",
+      'shared/test/helper.mjs': "if (r === 'claude-code') {}\n",
+      'shared/keeps-scan-nonempty.ts': 'export const ok = true;\n',
+    },
+    scanRoots: ['shared'],
   });
   assert.deepEqual(found, []);
 });
@@ -116,7 +171,7 @@ test('both comparison operators and both quote styles are caught', () => {
         'if (c === "claude") {}',
       ].join('\n'),
     },
-    scaffolding: ['shared/x.ts'],
+    scanRoots: ['shared'],
   });
   assert.equal(found.length, 3, 'no operator or quote style may slip through');
 });
@@ -124,7 +179,14 @@ test('both comparison operators and both quote styles are caught', () => {
 test('a clean scaffolding tree reports nothing', () => {
   const found = scan({
     files: { 'shared/clean.ts': 'export const value = runtime.terminalStartup;\n' },
-    scaffolding: ['shared'],
+    scanRoots: ['shared'],
   });
   assert.deepEqual(found, []);
+});
+
+test('the real tree is green through the committed exemptions', () => {
+  // The complement scan with its committed data must hold on the actual
+  // repository: every current hit is either removed or carried by a
+  // three-field exemption, and the scan is provably non-empty.
+  assert.deepEqual(findAgentIdentityBranches(), []);
 });

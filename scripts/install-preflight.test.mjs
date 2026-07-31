@@ -1,4 +1,11 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,8 +15,90 @@ const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const installScript = resolve(repoRoot, 'apps/www/public/install.sh');
 const preflightLib = resolve(repoRoot, 'scripts/install-preflight.sh');
 
+/**
+ * Hermetic tool PATH.
+ *
+ * Every case here fakes the tools whose PRESENCE it is testing (docker, brew,
+ * apt-get, colima, …) and assumes everything it did not fake is ABSENT. The
+ * harness used to run cases with `PATH=<fakes>:/usr/bin:/bin`, which made that
+ * assumption environment-dependent: on the GitHub runner /usr/bin carries a
+ * REAL, usable Docker CLI (compose plugin + running daemon), so every
+ * "Docker is absent → install it" case silently short-circuited to
+ * "usable; leaving Docker untouched" — 17/48 failures, exactly the install
+ * paths, in CI runs 30469396910 / 30469877742 / 30476017939 (2026-07-29).
+ * macOS (docker outside /usr/bin), node:22-slim (no docker), and the
+ * /usr/local/bin plant all passed, which is why the four earlier hypotheses
+ * (platform, missing curl, Homebrew probing, CI branch) all came back negative.
+ *
+ * The fix: cases run with `PATH=<fakes>:<hermetic dir>` where the hermetic dir
+ * holds symlinks to ONLY the neutral utilities the installer legitimately
+ * needs. A tool the case did not fake is now absent by construction, on every
+ * machine.
+ */
+const HERMETIC_TOOL_WHITELIST = [
+  'sh', 'bash', 'awk', 'cat', 'chmod', 'cp', 'curl', 'date', 'dirname',
+  'echo', 'env', 'grep', 'head', 'id', 'ln', 'ls', 'mkdir', 'mktemp', 'mv',
+  'openssl', 'printf', 'rm', 'rmdir', 'sed', 'sleep', 'tail', 'touch', 'tr',
+  'uname', 'wc',
+];
+/** Tools the suite treats as absent unless a case fakes them. */
+const ABSENT_UNLESS_FAKED = [
+  'docker', 'brew', 'colima', 'apt-get', 'dnf', 'yum', 'zypper', 'apk',
+  'pacman', 'systemctl', 'service', 'rc-service', 'sudo', 'open',
+];
+const AMBIENT_SYSTEM_DIRS = ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+
+function buildHermeticToolDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'cap-preflight-tools-'));
+  const missing = [];
+  for (const tool of HERMETIC_TOOL_WHITELIST) {
+    const source = AMBIENT_SYSTEM_DIRS.map((d) => join(d, tool)).find((p) =>
+      existsSync(p),
+    );
+    if (!source) {
+      missing.push(tool);
+      continue;
+    }
+    symlinkSync(source, join(dir, tool));
+  }
+  return { dir, missing };
+}
+
+const HERMETIC = buildHermeticToolDir();
+
+function resolveOnPath(tool, pathValue) {
+  const probe = spawnSync('/bin/sh', ['-c', `command -v -- "$1" || true`, 'sh', tool], {
+    env: { PATH: pathValue },
+    encoding: 'utf8',
+  });
+  const found = (probe.stdout ?? '').trim();
+  return found.length > 0 ? found : null;
+}
+
 let passed = 0;
 let failed = 0;
+
+/**
+ * The invocation behind the assertions currently being made. On the first
+ * failed assertion of a case this is dumped in full — exit status, signal,
+ * stdout, stderr, and the fake-binary command log — because the suite's bare
+ * PASS/FAIL lines are what turned four investigations into four rejected
+ * hypotheses and no answer.
+ */
+let lastInvocation = null;
+
+function describeInvocation(invocation) {
+  const { result, testCase } = invocation;
+  const log = readLog(testCase);
+  console.error('  ---- failing case diagnostics ----');
+  console.error(`  exit status : ${result.status === null ? 'null (killed/spawn failure)' : result.status}`);
+  console.error(`  signal      : ${result.signal ?? 'none'}`);
+  if (result.error) console.error(`  spawn error : ${result.error.message}`);
+  console.error(`  stdout      : ${JSON.stringify(result.stdout ?? '')}`);
+  console.error(`  stderr      : ${JSON.stringify(result.stderr ?? '')}`);
+  console.error(`  command log : ${JSON.stringify(log)}`);
+  console.error('  ----------------------------------');
+}
 
 function assert(cond, label) {
   if (cond) {
@@ -17,6 +106,10 @@ function assert(cond, label) {
     passed++;
   } else {
     console.error(`  FAIL  ${label}`);
+    if (lastInvocation && !lastInvocation.reported) {
+      lastInvocation.reported = true;
+      describeInvocation(lastInvocation);
+    }
     failed++;
   }
 }
@@ -37,11 +130,11 @@ function makeCase() {
 }
 
 function runInstall(testCase, env = {}) {
-  return spawnSync('sh', [installScript], {
+  const result = spawnSync('sh', [installScript], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PATH: `${testCase.bin}:/usr/bin:/bin`,
+      PATH: `${testCase.bin}:${HERMETIC.dir}`,
       CAP_INSTALL_PREFLIGHT_LIB_PATH: preflightLib,
       CAP_INSTALL_PREFLIGHT_ONLY: '1',
       CAP_TEST_ASSUME_ROOT: '1',
@@ -54,14 +147,16 @@ function runInstall(testCase, env = {}) {
     },
     encoding: 'utf8',
   });
+  lastInvocation = { testCase, result, reported: false };
+  return result;
 }
 
 function runPreflightSnippet(testCase, script, env = {}) {
-  return spawnSync('sh', ['-c', script], {
+  const result = spawnSync('sh', ['-c', script], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PATH: `${testCase.bin}:/usr/bin:/bin`,
+      PATH: `${testCase.bin}:${HERMETIC.dir}`,
       CAP_INSTALL_PREFLIGHT_LIB_PATH: preflightLib,
       CAP_TEST_ASSUME_ROOT: '1',
       CAP_TEST_LOG: testCase.log,
@@ -73,6 +168,8 @@ function runPreflightSnippet(testCase, script, env = {}) {
     },
     encoding: 'utf8',
   });
+  lastInvocation = { testCase, result, reported: false };
+  return result;
 }
 
 function readLog(testCase) {
@@ -84,6 +181,42 @@ function readLog(testCase) {
 }
 
 console.log('\n=== install-preflight ===\n');
+
+// Environment probe. Printed every run so a runner-only failure carries its
+// environment with it instead of demanding another blind reproduction round.
+{
+  console.log(`  node ${process.version} on ${process.platform}/${process.arch}`);
+  console.log(`  hermetic tool dir: ${HERMETIC.dir}`);
+  const ambient = ABSENT_UNLESS_FAKED.map((tool) => ({
+    tool,
+    at: resolveOnPath(tool, AMBIENT_SYSTEM_DIRS.join(':')),
+  })).filter((probe) => probe.at !== null);
+  if (ambient.length > 0) {
+    console.log(
+      `  ambient tools this host carries (hidden from cases by the hermetic PATH): ${ambient
+        .map((probe) => probe.at)
+        .join(', ')}`,
+    );
+  } else {
+    console.log('  ambient tools this host carries: none of the faked set');
+  }
+  assert(
+    HERMETIC.missing.length === 0,
+    `hermetic tool dir carries every whitelisted utility${
+      HERMETIC.missing.length > 0 ? ` (missing: ${HERMETIC.missing.join(', ')})` : ''
+    }`,
+  );
+  const leaked = ABSENT_UNLESS_FAKED.map((tool) =>
+    resolveOnPath(tool, HERMETIC.dir),
+  ).filter((at) => at !== null);
+  assert(
+    leaked.length === 0,
+    `no absent-by-assumption tool resolves through the hermetic PATH${
+      leaked.length > 0 ? ` (leaked: ${leaked.join(', ')})` : ''
+    }`,
+  );
+  console.log('');
+}
 
 {
   const tc = makeCase();

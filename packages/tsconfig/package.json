@@ -2,11 +2,12 @@
   "name": "@cap-console/tsconfig",
   "version": "0.0.0",
   "private": true,
-  "description": "Shared TypeScript base + per-target (node/library/next) tsconfig presets. Base enables strict: true.",
+  "description": "Shared TypeScript base + per-target (node/library/next/nest) tsconfig presets. Base enables strict: true. The nest preset is standalone (commonjs + decorator emission) and deliberately does not extend base.json: Nest apps do not yet compile under the base's stricter flags, and hooking them up must not change behavior.",
   "files": [
     "base.json",
     "node.json",
     "library.json",
-    "next.json"
+    "next.json",
+    "nest.json"
   ]
 }

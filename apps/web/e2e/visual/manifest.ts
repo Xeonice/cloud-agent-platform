@@ -37,6 +37,13 @@
  * When the suite starts covering a NEW page, add it to BOTH the OD file list in
  * `sync-design-baseline.mjs` AND the `PAGES` array below.
  *
+ * PINNED ENVIRONMENT (close-gate-blindspots-and-ci-hygiene 7.1): steps 3–5 MUST
+ * run inside the pinned Playwright Docker image
+ * `mcr.microsoft.com/playwright:v1.60.0-noble` — thresholds are only valid
+ * against the rendering environment they were measured in, and Mac-measured
+ * ratios do not transfer to the Linux CI runner. Full procedure + validation
+ * record: `e2e/visual-baseline-regeneration.md`.
+ *
  * ── Threshold semantics (task 8.2) ─────────────────────────────────────────
  * The app intentionally renders DIFFERENT DATA than the prototype's sample
  * copy (typed mock fixtures vs hand-written sample text), so thresholds are
@@ -104,6 +111,38 @@
  * `/login` screenshot is unchanged: login re-measured at EXACTLY 0.0180 / 0.0241 —
  * identical to the recorded thresholds (0.030 / 0.040), unchanged. All login
  * comparisons stay green.
+ *
+ * In-pin recalibration (close-gate-blindspots-and-ci-hygiene 7.1, VV_MEASURE=1,
+ * 2026-07-31, INSIDE `mcr.microsoft.com/playwright:v1.60.0-noble`, chromium
+ * 1.60, linux/arm64 variant of the multi-arch pin). First measurement inside the
+ * pinned Linux image; `sync-design-baseline.mjs --check` = 0 drift (baseline ==
+ * OD). Measured (pixels ÷ viewport; desktop 1 296 000, mobile 967 600):
+ *
+ *   page          desktop              mobile             recorded
+ *   landing       0.0131               0.0586             0.025 / 0.080
+ *   login         0.0183               0.0244             0.030 / 0.040
+ *   dashboard     0.0529               0.0458             0.075 / 0.070
+ *   tasks-new     (route error)        (route error)      0.150 / 0.065  ⚠
+ *   session       0.5318 ⚠             0.6667 ⚠           0.090 / 0.055  ⚠
+ *   repositories  0.0229               0.0277             0.035 / 0.060
+ *   history       0.0487               0.0582             0.065 / 0.090
+ *   settings      0.0241               0.0364             0.040 / 0.055
+ *   accounts      0.0266               0.0347             0.045 / 0.055
+ *   transcript    0.0290               0.0533             0.040 / 0.075
+ *   api           0.0303               0.0480             0.040 / 0.065 (raised)
+ *
+ * 18/22 comparisons sit inside their Mac-recorded thresholds unchanged — the
+ * Linux pin shifts rendering by at most a few 1e-3. ONE pin-attributable
+ * recalibration: api@mobile measured 0.0480 vs the Mac-recorded 0.045 → raised
+ * to 0.065 (measured + ~35% headroom, the suite's convention). The other two
+ * pages fail for PRE-EXISTING, pin-independent reasons, recorded (not absorbed —
+ * inflating session to 0.54+ would gut the tripwire): session drifted
+ * structurally (the app grew view tabs, the per-task resource strip, and the
+ * 定时任务/镜像管理 nav after the 2026-06-23 OD snapshot — the OD design was
+ * never updated, so re-sync cannot fix it), and tasks-new renders the route
+ * error boundary in backend-less mode (`schedulesQuery()` has no mock seam; its
+ * SSR loader `real.listSchedules()` fetch fails → 出错了/fetch failed). Full
+ * triage + validation record: `e2e/visual-baseline-regeneration.md`.
  */
 
 export interface Breakpoint {
@@ -141,6 +180,22 @@ export interface VisualPage {
   designMask?: string[];
   /** Selector that must be visible before the app capture (data rendered). */
   readySelector?: string;
+  /**
+   * Reviewable exception data (close-gate-blindspots 7.2/7.4 — gate canon:
+   * per-entry reason + owning follow-up, empty-is-healthy). A breakpoint listed
+   * here is a TRIAGED, pre-existing failure the CI lane runs as an EXPECTED
+   * failure (`test.fail()`): still executed every run, never screenshot-updated,
+   * and the lane goes RED the moment the comparison unexpectedly PASSES — which
+   * forces this entry's removal in the same PR as the fix. Absent for healthy
+   * pages; deliberately NOT a threshold inflation (absorbing session's 0.53+
+   * drift into the threshold would gut the tripwire).
+   */
+  knownFailure?: Partial<
+    Record<
+      keyof VisualPage["maxDiffPixelRatio"],
+      { reason: string; followUp: string }
+    >
+  >;
 }
 
 /**
@@ -218,6 +273,25 @@ export const PAGES: readonly VisualPage[] = [
     // queue.html `.field` rhythm, then re-lower the desktop threshold.
     maxDiffPixelRatio: ratio(0.15, 0.065),
     readySelector: "form",
+    // 7.1 in-pin triage (see header): backend-less mode renders the route error
+    // boundary — `schedulesQuery()` has no mock seam, so the SSR loader's
+    // `real.listSchedules()` fetch fails (出错了/fetch failed) before the form
+    // exists. PRODUCT DEFECT (missing mock seam), pre-existing and
+    // pin-independent; both breakpoints fail identically.
+    knownFailure: {
+      desktop: {
+        reason:
+          "route error boundary in backend-less mode: schedulesQuery() has no mock seam, SSR loader fetch fails",
+        followUp:
+          "add a schedules mock seam in lib/api/capabilities (registered follow-up of close-gate-blindspots-and-ci-hygiene 7.4)",
+      },
+      mobile: {
+        reason:
+          "route error boundary in backend-less mode: schedulesQuery() has no mock seam, SSR loader fetch fails",
+        followUp:
+          "add a schedules mock seam in lib/api/capabilities (registered follow-up of close-gate-blindspots-and-ci-hygiene 7.4)",
+      },
+    },
   },
   {
     id: "session",
@@ -234,6 +308,26 @@ export const PAGES: readonly VisualPage[] = [
     appMask: ["article.bg-terminal-bg"],
     designMask: ["section.terminal-shell"],
     readySelector: "article.bg-terminal-bg",
+    // 7.1 in-pin triage (see header): measured 0.5318/0.6667 vs 0.09/0.055 —
+    // STALE DESIGN BASELINE, not a rendering regression: the app grew view
+    // tabs, the per-task resource strip, and the 定时任务/镜像管理 nav after
+    // the 2026-06-23 OD snapshot, and the OD design was never updated, so
+    // re-sync cannot fix it. Threshold NOT inflated (0.54+ would gut the
+    // tripwire); pin-independent; both breakpoints fail identically.
+    knownFailure: {
+      desktop: {
+        reason:
+          "stale design baseline: app grew view tabs / resource strip / 定时任务+镜像管理 nav after the 2026-06-23 OD snapshot; OD design never updated",
+        followUp:
+          "update the OD session design + re-sync via sync-design-baseline.mjs, then re-measure (registered follow-up of close-gate-blindspots-and-ci-hygiene 7.4)",
+      },
+      mobile: {
+        reason:
+          "stale design baseline: app grew view tabs / resource strip / 定时任务+镜像管理 nav after the 2026-06-23 OD snapshot; OD design never updated",
+        followUp:
+          "update the OD session design + re-sync via sync-design-baseline.mjs, then re-measure (registered follow-up of close-gate-blindspots-and-ci-hygiene 7.4)",
+      },
+    },
   },
   {
     id: "repositories",
@@ -321,7 +415,10 @@ export const PAGES: readonly VisualPage[] = [
     // full-sweep run (add-api-playground Track 5): `api @ desktop` diffs at
     // ratio 0.03 (the documented empty-vs-filled response-card delta), well
     // under 0.06; both breakpoints pass green at 0.06 (measured + ~2× headroom).
-    maxDiffPixelRatio: ratio(0.04, 0.045),
+    // Mobile RE-RECORDED inside the pinned image (7.1 in-pin recalibration, see
+    // header): Linux-measured 0.0480 exceeded the Mac-recorded 0.045 → 0.065
+    // (measured + ~35% headroom).
+    maxDiffPixelRatio: ratio(0.04, 0.065),
     // Timing/size meta is dynamic (the app's empty render has no meta at all);
     // mask it on the design baseline so it never drives the diff.
     designMask: [".api-res-meta"],

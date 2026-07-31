@@ -21,7 +21,7 @@
     "test:contracts-executed": "node scripts/contracts-executed-schema-check.mjs && node --test --test-force-exit scripts/contracts-executed-schema-check.test.mjs",
     "test:module-layout": "node scripts/api-module-layout-check.mjs && node --test --test-force-exit scripts/api-module-layout-check.test.mjs",
     "test:cors-headers": "node scripts/console-request-header-cors-check.mjs && node --test --test-force-exit scripts/console-request-header-cors-check.test.mjs",
-    "test:scripts": "node scripts/run-suite.mjs \"scripts/*.test.mjs\"",
+    "test:scripts": "node scripts/run-suite.mjs \"scripts/*.test.mjs\" \"scripts/ratchets/*.test.mjs\"",
     "verify": "turbo typecheck lint build && pnpm verify:terminal-response-profile",
     "verify:terminal-response-profile": "node scripts/terminal-response-profile-source-conformance.mjs && node --test scripts/terminal-response-profile-source-conformance.test.mjs",
     "test:terminal-coordinated-rollback": "pnpm -w exec turbo run build --filter=@cap-console/api && CAP_TERMINAL_ROLLBACK_CANARY=1 node --test scripts/terminal-coordinated-rollback-canary.test.mjs",
@@ -36,7 +36,6 @@
     "test:e2e:task-model-real-credential": "pnpm --filter @cap-console/api test:e2e:task-model-real-credential",
     "test:e2e:schedules:local": "bash scripts/scheduled-tasks-live-e2e.sh",
     "test:web:provider-terminal-story": "pnpm --filter @cap-console/web test:provider-terminal-story",
-    "coverage:sandbox": "pnpm --filter @cap-console/sandbox-core coverage && pnpm --filter @cap-console/sandbox-cloud-http coverage && pnpm --filter @cap-console/sandbox-provider-aio coverage && pnpm --filter @cap-console/sandbox-provider-boxlite coverage && pnpm --filter @cap-console/sandbox coverage",
     "prepare": "husky",
     "test:quarantined": "node scripts/run-suite.mjs --only-quarantined \"scripts/*.test.mjs\" && pnpm --filter @cap-console/api test:quarantined"
   },

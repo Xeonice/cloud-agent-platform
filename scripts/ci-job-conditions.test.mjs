@@ -21,11 +21,18 @@ import { REPO_ROOT } from './public-surface-tests.mjs';
  * Run: node --test scripts/ci-job-conditions.test.mjs
  */
 
-const CONDITIONED = [
-  'task-model-n-minus-one-compat',
-  'task-admission-migration-compatibility',
-  'boot-smoke',
-];
+// Conditioned jobs, grouped by the filter output they gate on. Each family
+// must use the IDENTICAL expression — a per-job variant is how they drift.
+const CONDITIONED_FAMILIES = {
+  backend: [
+    'task-model-n-minus-one-compat',
+    'task-admission-migration-compatibility',
+    'boot-smoke',
+    'boot-smoke-stateful',
+  ],
+  web: ['web-visual', 'web-terminal-stories'],
+};
+const CONDITIONED = Object.values(CONDITIONED_FAMILIES).flat();
 
 /** Required status checks on `main`. Skipping one of these blocks every merge. */
 const MUST_ALWAYS_RUN = ['public-surface-parity', 'typecheck-lint'];
@@ -63,20 +70,27 @@ test('a required status check is never conditioned', () => {
 });
 
 test('every conditioned job gates on the shared path filter', () => {
-  for (const key of CONDITIONED) {
-    const job = workflowJob(workflow, key);
-    assert.match(job, /^    needs: changes$/mu, `${key} must depend on the filter job`);
-    assert.match(
-      job,
-      /^    if: needs\.changes\.outputs\.backend == 'true'$/mu,
-      `${key} must gate on the same expression as its siblings; a per-job variant is how they drift`,
+  for (const [output, keys] of Object.entries(CONDITIONED_FAMILIES)) {
+    const expression = new RegExp(
+      `^    if: needs\\.changes\\.outputs\\.${output} == 'true'$`,
+      'mu',
     );
+    for (const key of keys) {
+      const job = workflowJob(workflow, key);
+      assert.match(job, /^    needs: changes$/mu, `${key} must depend on the filter job`);
+      assert.match(
+        job,
+        expression,
+        `${key} must gate on the same '${output}' expression as its family siblings; a per-job variant is how they drift`,
+      );
+    }
   }
 });
 
-test('the filter job publishes the output its consumers read', () => {
+test('the filter job publishes the outputs its consumers read', () => {
   const job = workflowJob(workflow, 'changes');
   assert.match(job, /^      backend: \$\{\{ steps\.filter\.outputs\.backend \}\}$/mu);
+  assert.match(job, /^      web: \$\{\{ steps\.filter\.outputs\.web \}\}$/mu);
   assert.match(
     job,
     /^          fetch-depth: 0$/mu,
@@ -96,6 +110,11 @@ test('an unusable base ref fails open rather than skipping every gate', () => {
     fallback.slice(0, 200),
     /backend=true/u,
     'with no base to diff against the filter must run the gates, not skip them',
+  );
+  assert.match(
+    fallback.slice(0, 200),
+    /web=true/u,
+    'the web output must fail open on an unusable base ref exactly like backend',
   );
 });
 
@@ -124,11 +143,21 @@ test('the match itself fails open: only a definite no-match lowers the flag', ()
   );
 });
 
+function filterMatchers(job) {
+  const patterns = [...job.matchAll(/grep -qE '\^\((.+?)\)'/gu)].map(
+    (match) => new RegExp(`^(${match[1].replaceAll('\\\\', '\\')})`, 'u'),
+  );
+  assert.equal(
+    patterns.length,
+    2,
+    'the filter must carry exactly two readable alternations: backend first, web second',
+  );
+  return { backend: patterns[0], web: patterns[1] };
+}
+
 test('the path filter treats package and tooling edits as backend-affecting', () => {
   const job = workflowJob(workflow, 'changes');
-  const pattern = job.match(/grep -qE '\^\((.+?)\)'/u)?.[1];
-  assert.ok(pattern, 'the filter must use a single readable alternation');
-  const matcher = new RegExp(`^(${pattern.replaceAll('\\\\', '\\')})`, 'u');
+  const matcher = filterMatchers(job).backend;
 
   for (const affecting of [
     'apps/api/src/main.ts',
@@ -154,6 +183,43 @@ test('the path filter treats package and tooling edits as backend-affecting', ()
       inert,
       matcher,
       `${inert} cannot reach the api; running the api gates for it is the waste this filter removes`,
+    );
+  }
+});
+
+test('the web filter treats console, package, and tooling edits as web-affecting', () => {
+  const job = workflowJob(workflow, 'changes');
+  const matcher = filterMatchers(job).web;
+
+  for (const affecting of [
+    'apps/web/src/routes/index.tsx',
+    'apps/web/e2e/visual/manifest.ts',
+    'apps/web/playwright.terminal-stories.config.ts',
+    'packages/ui/src/terminal.tsx',
+    'packages/contracts/src/task.ts',
+    '.github/workflows/ci.yml',
+    'pnpm-lock.yaml',
+    'package.json',
+  ]) {
+    assert.match(
+      affecting,
+      matcher,
+      `${affecting} can reach the console and must run the web lanes`,
+    );
+  }
+
+  for (const inert of [
+    'docs/product-layout.md',
+    'README.md',
+    'apps/api/src/main.ts',
+    'apps/www/src/page.tsx',
+    'scripts/boot-smoke.sh',
+    'openspec/specs/guardrails/spec.md',
+  ]) {
+    assert.doesNotMatch(
+      inert,
+      matcher,
+      `${inert} cannot reach the console; running the web lanes for it is the waste this filter removes`,
     );
   }
 });

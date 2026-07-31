@@ -43,14 +43,18 @@ import {
 import {
   AioSandboxContainerController,
   BoxLiteRestClient,
-  createBoxLiteCommandExecutor,
   createAioRuntimePrivateFilePort,
   createBoxLiteWorkspaceSecurityAdapter,
   deleteBoxLiteSandboxAndConfirm,
-  extractFilesFromTar,
   openSandboxTerminalPty,
   terminalSessionIdForTask,
 } from '../packages/sandbox/dist/index.js';
+// Provider-internal symbols: scripts canaries are not ratcheted apps/api
+// consumers, so the reviewed facade whitelist (close-gate-blindspots 2.3) does
+// not carry them — import them from the provider package dists directly, like
+// aio-terminal-pair-stale-sweep-canary.mjs does.
+import { createBoxLiteCommandExecutor } from '../packages/sandbox-provider-boxlite/dist/index.js';
+import { extractFilesFromTar } from '../packages/sandbox-provider-aio/dist/index.js';
 
 const requireFromApi = createRequire(
   new URL('../apps/api/package.json', import.meta.url),

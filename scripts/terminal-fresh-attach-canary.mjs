@@ -1965,9 +1965,22 @@ function assertBrowserLines(actualLines, expectedLines, label) {
 }
 
 async function loadSandboxProductTerminalModule() {
-  sandboxProductModulePromise ??= import(
-    new URL('../packages/sandbox/dist/index.js', import.meta.url)
-  ).then((module) => {
+  // The viewer surface comes from the product facade dist; the AIO transport
+  // factory is provider-internal and no longer rides the reviewed facade
+  // whitelist (close-gate-blindspots 2.3 — scripts canaries are not ratcheted
+  // apps/api consumers), so it loads from the provider package dist directly,
+  // like aio-terminal-pair-stale-sweep-canary.mjs does.
+  sandboxProductModulePromise ??= Promise.all([
+    import(new URL('../packages/sandbox/dist/index.js', import.meta.url)),
+    import(
+      new URL('../packages/sandbox-provider-aio/dist/index.js', import.meta.url)
+    ),
+  ]).then(([facadeModule, aioModule]) => {
+    const module = {
+      ...facadeModule,
+      createAioTerminalTransportFactory:
+        aioModule.createAioTerminalTransportFactory,
+    };
     for (const exportName of [
       'createAioTerminalTransportFactory',
       'createAioHttpCommandExecutor',

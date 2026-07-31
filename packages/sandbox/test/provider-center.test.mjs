@@ -5114,11 +5114,17 @@ await test('terminal registry resolves descriptors and fails closed on unknown p
   );
 });
 
-await test('compatibility aggregate exports adapter package surfaces', () => {
+await test('facade exposes the reviewed surface; provider entry points stay on provider packages', async () => {
   assert.equal(typeof mod.SandboxProviderRouter, 'function');
-  assert.equal(typeof mod.defineAioLocalSandboxProvider, 'function');
-  assert.equal(typeof mod.defineHttpCloudSandboxProvider, 'function');
+  // phase-7a tolerated provider internal, still reachable through the facade
   assert.equal(typeof mod.AioSandboxContainerController, 'function');
+  // provider define* entry points are provider-package surface, not facade surface (R6)
+  const aio = await import('@cap-console/sandbox-provider-aio');
+  const cloudHttp = await import('@cap-console/sandbox-cloud-http');
+  assert.equal(typeof aio.defineAioLocalSandboxProvider, 'function');
+  assert.equal(typeof cloudHttp.defineHttpCloudSandboxProvider, 'function');
+  assert.equal(mod.defineAioLocalSandboxProvider, undefined);
+  assert.equal(mod.defineHttpCloudSandboxProvider, undefined);
 });
 
 await test('credentialed delivery fencing uses the persisted exact owner and settles it removed', async () => {
