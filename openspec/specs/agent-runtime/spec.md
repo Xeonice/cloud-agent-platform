@@ -350,7 +350,15 @@ warning log is not a gate, and an unrecognised runtime that keeps executing is a
 answer delivered quietly.
 
 The absence of agent-identity branching SHALL be enforced by an executable check rather
-than by review.
+than by review, and the check SHALL scan the COMPLEMENT: every production source in its
+scope is scanned EXCEPT an explicit exemption list containing only the runtime
+implementations themselves (currently two entries: the codex runtime and the
+claude-code runtime). The check SHALL NOT enumerate the scaffolding files it scans — an
+enumerated scanned-file list silently exempts every file nobody remembers to add. A
+complement scan that matches ZERO files SHALL exit non-zero. A new hit SHALL be
+resolved either by removing the branch or by adding a three-field exemption (file,
+reason, owning change); an exemption entry missing a field SHALL fail the check's
+audit. Test files remain out of the branch scan's scope.
 
 #### Scenario: Mechanism reads policy, not identity
 - **WHEN** the pty client decides whether to reply to the startup DSR or inject a
@@ -378,6 +386,24 @@ than by review.
 #### Scenario: The rule is enforced mechanically
 - **WHEN** an agent-identity branch is introduced into shared scaffolding
 - **THEN** a repository check fails and names the offending location
+
+#### Scenario: Enforcement scans everything except an explicit exemption list
+- **WHEN** the branch check computes its scanned set
+- **THEN** the set is the complement — all in-scope production sources minus the exemption list — not an enumerated allowlist of scaffolding files
+- **AND** the exemption list contains only the runtime implementations, each entry carrying file, reason, and owning change
+
+#### Scenario: An empty complement scan is a failure
+- **WHEN** the complement scan resolves to zero files (e.g. a root moved or a glob broke)
+- **THEN** the check exits non-zero instead of passing on nothing scanned
+
+#### Scenario: A new scaffolding file is covered with no registration
+- **WHEN** a new shared-scaffolding source containing an agent-identity branch is added, and no list is edited
+- **THEN** the check fails naming that file
+- **AND** the failure is resolved only by removing the branch or adding a three-field exemption
+
+#### Scenario: A malformed exemption fails the audit
+- **WHEN** an exemption entry lacks file, reason, or owning change
+- **THEN** the check's self-audit exits non-zero naming the entry
 
 ### Requirement: A single AgentRuntime interface with no translation adapter
 There SHALL be exactly ONE `AgentRuntime` interface that consumers depend on directly;
@@ -882,3 +908,4 @@ SHALL be identical to its shape before this requirement was introduced.
 - **WHEN** the existing suites run against the derived vocabulary
 - **THEN** every test SHALL pass without being rewritten, and the accepted and
   rejected identifier sets SHALL be identical to before
+

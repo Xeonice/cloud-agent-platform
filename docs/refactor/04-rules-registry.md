@@ -156,3 +156,16 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
 - **处置**：留痕后重跑验证（记录在案的重跑不是 retry-to-hide）。修复方向
   与 F.2 同批：可注入时钟或分离"预算耗尽"与"wall-clock 超时"的触发方式，
   归后续 flake 专项 change。
+
+### F.4 private-git fixture EPIPE 竞态（PR #191 首现，三分法留痕，不修）
+
+- **现象**：public-surface-parity（required）在 openspec-only PR #191 上红：
+  `private-git-secret-canary.story.spec` 的 test 39 以 uncaughtException
+  `write EPIPE` 失败，栈在 `packages/sandbox-conformance` 的
+  `generated-private-git-fixture` `runGitHttpBackend`（socket.end 写入时
+  对端已断连）。该 PR 仅动 openspec/docs，spec 亦不引用 openspec 路径。
+- **三分法分类**：**environment-dependent**——git http-backend 客户端提前
+  断连是正常协议行为，fixture 未捕获对已关 socket 的写错误，慢 runner 上
+  竞态窗口更宽。非 product defect、非 stale harness。
+- **处置**：留痕后重跑（记录在案）。修复方向：fixture 的 socket 写路径
+  容忍 EPIPE/ECONNRESET（三五行 catch），与 F.2/F.3 同批归 flake 专项 change。

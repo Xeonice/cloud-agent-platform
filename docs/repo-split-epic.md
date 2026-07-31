@@ -375,6 +375,11 @@ cap  （上游总仓 —— 治理 + 验证 + 钉版，不含可编辑代码）
 
 #### 1d. 新增一条机械闸门
 
+> **对账注记（2026-08-01）**：本条已落地——`scripts/contracts-shared-export-check.mjs`
+> 存在且在 CI required job 内执行，其历史注释引用的正是 §2.4b 审计数字。
+> 见 `docs/refactor/05-repo-split-reconciliation.md` §C.1（PR #189 对账发现，
+> epic 侧过期条目之一）。
+
 - **`packages/contracts` 中零 importer 的导出应当使构建失败。** 这条规则字面上
   就是「contracts 里的一切都真正共享」。审计证明现有闸门（`turbo typecheck lint`、
   contracts 单测、package-boundary 测试、`provider-contract-parity-check.mjs`）
