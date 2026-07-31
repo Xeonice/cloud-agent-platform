@@ -463,6 +463,25 @@ test('the release publishes the console, and only for a real Release', () => {
   }
 });
 
+test('a rehearsal never promotes latest', () => {
+  // `latest` moving is the promise at the top of this workflow: one Release is one
+  // mutually-compatible set, and `latest` advances only once the whole set exists.
+  // A rehearsal builds images under whatever tag was typed and deploys its console
+  // to a preview — promoting that would point every `latest` at a build nobody
+  // released. An ordinary dispatch WITHOUT the rehearsal flag still promotes, since
+  // re-pushing a real tag is exactly what it is for.
+  const code = jobCode('promote-latest');
+  assert.match(
+    code,
+    /github\.event_name == 'release' \|\| inputs\.deploy_console != true/u,
+    'a dispatch asking for the console rehearsal must not reach the promotion',
+  );
+  // The console still gates it: a console FAILURE blocks the promote, a legitimate
+  // skip does not. Losing this would let images promote past a dead console.
+  assert.match(code, /needs\.deploy-console\.result == 'success'/u);
+  assert.match(code, /needs\.deploy-console\.result == 'skipped'/u);
+});
+
 test('a rehearsal deploys a preview; only a Release moves production', () => {
   // The rehearsal switch was added so this job could be exercised without cutting a
   // release, and it deployed `--prod`. That is not a rehearsal — it is a release of

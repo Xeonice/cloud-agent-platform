@@ -344,10 +344,19 @@ jobs:
     # by the coupling itself. So: promote when the image set verified AND the
     # console either published or was legitimately not attempted. A console FAILURE
     # still blocks the promote, which is the whole point.
+    #
+    # A REHEARSAL NEVER PROMOTES. `deploy_console: true` on a dispatch means "prove
+    # this job works", and its console goes to a preview. Letting it also move
+    # `latest` would point every `latest` tag at a rehearsal build — contradicting
+    # the invariant stated at the top of this file, that `latest` moves only for a
+    # complete Release. An ordinary dispatch WITHOUT the rehearsal flag still
+    # promotes, because that is what re-pushing a real tag is for; only the
+    # rehearsal is excluded, and it is excluded by the same flag that identifies it.
     if: |
       always() &&
       needs.verify-image-set.result == 'success' &&
-      (needs.deploy-console.result == 'success' || needs.deploy-console.result == 'skipped')
+      (needs.deploy-console.result == 'success' || needs.deploy-console.result == 'skipped') &&
+      (github.event_name == 'release' || inputs.deploy_console != true)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
