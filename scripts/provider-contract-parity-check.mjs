@@ -19,6 +19,16 @@
  *      provider test that builds conformance suites without one has opted out of
  *      the mechanism, which is exactly what the mechanism exists to prevent.
  *
+ * The set of packages this runs against is DISCOVERED, never hand-maintained:
+ * a package participates when its sources build a conformance suite. The
+ * previous shape was a hardcoded three-directory list, which is exactly how
+ * `packages/sandbox-cloud-http` would have been silently dropped had it not
+ * been remembered — and how the next provider package WILL be dropped, because
+ * nobody edits a list they do not know exists. Discovery is recursive over the
+ * workspace (no directory list, no name glob encoding today's package names),
+ * and a scan that discovers ZERO participants exits non-zero instead of
+ * passing on an empty set.
+ *
  * Like the discovery and agent-identity gates, the lists here are reviewable
  * DATA rather than inline suppressions, and the gate self-tests so one that
  * stopped being able to fail would itself fail.
@@ -36,15 +46,18 @@ const ROOT = path.resolve(HERE, '..');
 /** Where the capability vocabulary is declared. */
 const CAPABILITY_VOCABULARY = 'packages/sandbox-core/src/capabilities.ts';
 
-/**
- * Directories holding provider packages. A provider test that builds
- * conformance suites must consult the participation ledger.
- */
-const PROVIDER_TEST_DIRS = [
-  'packages/sandbox-provider-aio/test',
-  'packages/sandbox-provider-boxlite/test',
-  'packages/sandbox-cloud-http/test',
-];
+/** Directory names never descended into while discovering packages. */
+const SKIP_DIRS = new Set([
+  'node_modules',
+  'dist',
+  '.git',
+  '.next',
+  '.turbo',
+  'coverage',
+]);
+
+/** File extensions a conformance-building source can have. */
+const SOURCE_EXTENSIONS = ['.mjs', '.ts', '.tsx'];
 
 /** Builds a conformance suite. */
 const BUILDS_CONFORMANCE = /conformance\.create\w*ConformanceScenarios\s*\(/;
@@ -62,6 +75,33 @@ const USES_LEDGER = /createConformanceParticipationLedger\s*\(/;
  * is that they ARE one capability.
  */
 const KNOWN_DISTINCT_PAIRS = [];
+
+/**
+ * Conformance-building files that legitimately run WITHOUT a participation
+ * ledger: the shared implementation's own conformance run. The ledger derives
+ * required families from a PROVIDER's declared capabilities; a suite exercising
+ * the shared implementation that providers delegate to has no provider
+ * declaration to derive from — the spec calls this stated indirect coverage
+ * ("exercised by a shared implementation ... stated explicitly as the coverage
+ * for that capability").
+ *
+ * Three fields each — file, reason, change — so every entry is owned debt or
+ * owned coverage, never an anonymous suppression. A malformed entry fails the
+ * gate's audit.
+ *
+ * @type {ReadonlyArray<{ file: string, reason: string, change: string }>}
+ */
+const SHARED_COVERAGE = [
+  {
+    file: 'packages/sandbox/test/provider-conformance.test.mjs',
+    reason:
+      'runs the workspace-git conformance scenarios against the SHARED staged ' +
+      'materialize/deliver/classify implementation that providers delegate to; ' +
+      'there is no provider declaration to derive a ledger from, and this run ' +
+      'IS the stated indirect coverage for the workspace.git.* families',
+    change: 'close-gate-blindspots-and-ci-hygiene',
+  },
+];
 
 function isKnownDistinct(a, b, pairs) {
   return pairs.some(
@@ -97,24 +137,101 @@ function readCapabilityNames(root) {
   return [...new Set(names)];
 }
 
-function listTestFiles(root, dir) {
-  const abs = path.join(root, dir);
-  try {
-    if (!statSync(abs).isDirectory()) return [];
-  } catch {
-    return [];
+function isSourceFile(name) {
+  return SOURCE_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+/**
+ * Recursively walk the workspace and return every package directory — a
+ * directory carrying a `package.json` — below `root` (the workspace root's own
+ * manifest is not a package). Files belong to their NEAREST enclosing package,
+ * so a nested package's sources are never attributed to its parent.
+ *
+ * @returns {Array<{ dir: string, files: string[] }>} package dirs and their
+ *   source files, both relative to `root`.
+ */
+function discoverPackages(root) {
+  const packages = [];
+
+  const walk = (dirAbs, pkg) => {
+    let entries;
+    try {
+      entries = readdirSync(dirAbs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    let current = pkg;
+    const isPackageDir =
+      dirAbs !== root && entries.some((e) => e.isFile() && e.name === 'package.json');
+    if (isPackageDir) {
+      current = { dir: path.relative(root, dirAbs), files: [] };
+      packages.push(current);
+    }
+    for (const entry of entries) {
+      const abs = path.join(dirAbs, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(abs, current);
+      } else if (current && isSourceFile(entry.name)) {
+        current.files.push(path.relative(root, abs));
+      }
+    }
+  };
+
+  walk(root, null);
+  return packages;
+}
+
+/**
+ * The packages the parity check runs against: DISCOVERED as the packages whose
+ * sources build a conformance suite. A new provider package enters on its
+ * first conformance test with no registration step, and no rename or move can
+ * silently drop one — there is no list to forget.
+ *
+ * @returns {string[]} participating package dirs, relative to `root`, sorted.
+ */
+export function discoverConformanceParticipants({ root = ROOT } = {}) {
+  return collectParticipants(root).map((pkg) => pkg.dir).sort();
+}
+
+function collectParticipants(root) {
+  const participants = [];
+  for (const pkg of discoverPackages(root)) {
+    const building = [];
+    for (const rel of pkg.files) {
+      let source;
+      try {
+        source = readFileSync(path.join(root, rel), 'utf8');
+      } catch {
+        continue;
+      }
+      if (BUILDS_CONFORMANCE.test(source)) building.push({ rel, source });
+    }
+    if (building.length > 0) participants.push({ dir: pkg.dir, building });
   }
-  return readdirSync(abs)
-    .filter((name) => name.endsWith('.mjs') || name.endsWith('.ts'))
-    .map((name) => path.join(dir, name));
+  return participants;
 }
 
 export function findProviderContractViolations({
   root = ROOT,
-  providerTestDirs = PROVIDER_TEST_DIRS,
   knownDistinctPairs = KNOWN_DISTINCT_PAIRS,
+  sharedCoverage = SHARED_COVERAGE,
 } = {}) {
   const violations = [];
+
+  for (const entry of sharedCoverage) {
+    const missing = ['file', 'reason', 'change'].filter(
+      (field) => typeof entry[field] !== 'string' || entry[field].trim() === '',
+    );
+    if (missing.length > 0) {
+      violations.push({
+        kind: 'malformed-shared-coverage',
+        detail: `shared-coverage entry ${JSON.stringify(
+          entry.file ?? entry,
+        )} is missing: ${missing.join(', ')} — every entry carries file, reason, change`,
+        file: typeof entry.file === 'string' ? entry.file : '(no file)',
+      });
+    }
+  }
 
   const names = readCapabilityNames(root);
   for (let i = 0; i < names.length; i += 1) {
@@ -129,21 +246,30 @@ export function findProviderContractViolations({
     }
   }
 
-  for (const dir of providerTestDirs) {
-    for (const rel of listTestFiles(root, dir)) {
-      let source;
-      try {
-        source = readFileSync(path.join(root, rel), 'utf8');
-      } catch {
-        continue;
-      }
-      if (!BUILDS_CONFORMANCE.test(source)) continue;
+  const participants = collectParticipants(root);
+  if (participants.length === 0) {
+    violations.push({
+      kind: 'no-participants',
+      detail:
+        'discovery found ZERO packages whose sources build a conformance suite — ' +
+        'a glob typo or directory move would look exactly like this, so an empty ' +
+        'set fails instead of passing vacuously',
+      file: '(workspace)',
+    });
+    return violations;
+  }
+
+  const coveredFiles = new Set(sharedCoverage.map((entry) => entry.file));
+  for (const pkg of participants) {
+    for (const { rel, source } of pkg.building) {
       if (USES_LEDGER.test(source)) continue;
+      if (coveredFiles.has(rel)) continue;
       violations.push({
         kind: 'unledgered-conformance',
         detail:
-          'builds conformance suites without a participation ledger, so what it ' +
-          'runs is chosen by this file rather than derived from what the provider declares',
+          `package ${pkg.dir} builds conformance suites without a participation ledger, ` +
+          'so what it runs is chosen by this file rather than derived from what the ' +
+          'provider declares',
         file: rel,
       });
     }
@@ -153,11 +279,13 @@ export function findProviderContractViolations({
 }
 
 function main() {
+  const participants = discoverConformanceParticipants();
   const violations = findProviderContractViolations();
   if (violations.length === 0) {
     console.log(
-      'provider-contract-parity: one spelling per capability, and every provider suite is ledgered',
+      `provider-contract-parity: one spelling per capability, and every provider suite is ledgered (${participants.length} discovered participant(s))`,
     );
+    for (const dir of participants) console.log(`  ${dir}`);
     return;
   }
   console.error(`provider-contract-parity: ${violations.length} violation(s):\n`);

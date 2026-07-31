@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { HttpException } from '@nestjs/common';
 import type { ModuleRef } from '@nestjs/core';
-import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox/testing';
+import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox-conformance';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import { DefaultForgeRegistry } from '@/forge/forge-registry';
 import type { ForgeTarget } from '@/forge/forge.port';

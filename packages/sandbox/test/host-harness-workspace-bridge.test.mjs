@@ -1,4 +1,7 @@
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+// Provider internals are no longer re-exported through the facade (R6); the
+// AIO exec helpers under test come from the provider package directly.
+const aio = await import('@cap-console/sandbox-provider-aio');
 
 let passed = 0;
 let failed = 0;
@@ -152,16 +155,16 @@ assert(
   'clone command quotes adversarial URL and workspace inputs',
 );
 
-const nested = mod.parseAioExecResult({
+const nested = aio.parseAioExecResult({
   data: { exit_code: '7', stderr: 'boom' },
 });
 assert(nested.exitCode === 7 && nested.output === 'boom', 'nested AIO exec result parses exit code + stderr');
 assert(
-  Number.isNaN(mod.parseAioExecResult({ data: { output: 'missing code' } }).exitCode),
+  Number.isNaN(aio.parseAioExecResult({ data: { output: 'missing code' } }).exitCode),
   'missing AIO exit code stays NaN (fail-closed)',
 );
 assert(
-  mod.scrubAioExecSecrets('https://u:p@example.com/x Authorization: Basic secret') ===
+  aio.scrubAioExecSecrets('https://u:p@example.com/x Authorization: Basic secret') ===
     'https://***:***@example.com/x Authorization: Basic ***',
   'AIO exec output scrubber redacts URL userinfo and Basic auth',
 );

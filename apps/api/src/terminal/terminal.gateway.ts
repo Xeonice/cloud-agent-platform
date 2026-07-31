@@ -36,8 +36,8 @@
  *     one-shot approval `decision`s are accepted independently of the lease.
  */
 import path from 'node:path';
-import { statSync } from 'node:fs';
-import { appendFile, mkdir, open } from 'node:fs/promises';
+import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
+import { appendFile, mkdir } from 'node:fs/promises';
 import {
   Inject,
   Logger,
@@ -2817,58 +2817,54 @@ export class TerminalGateway
     if (!this.terminalRecordingPolicy.sessionCast.enabled) return;
     if (this.sessionCasts.has(taskId)) return;
     const castPath = path.join(workspaceDir, SESSION_CAST_FILENAME);
-    const existingBytes = existingFileSize(castPath);
-    const initialHeader = buildCastHeaderLine(
-      cols,
-      rows,
-      Math.floor(Date.now() / 1000),
-    );
+    // Resume state MUST be settled synchronously, before the entry becomes
+    // visible: appendCastEvent stamps each event's time against startMs at
+    // CALL time, so a resume correction applied later on the tail chain lets
+    // an append that lands in between compute its time from the uncorrected
+    // base — an event time BELOW the file's last recorded event, which
+    // parseCast (by design) treats as a corruption boundary and truncates at.
+    // Observed on the GitHub runner as "one cast event where two were
+    // written" (readoption-history, CI run 30470607486, 2026-07-29).
+    const resume = inspectCastResumeState(castPath);
+    const now = Date.now();
+    const initialHeader = buildCastHeaderLine(cols, rows, Math.floor(now / 1000));
     const entry: SessionCastState = {
       castPath,
       tail: Promise.resolve(),
-      startMs: Date.now(),
-      ready: false,
-      // Reserve a prospective header before any event can queue. The init tail
-      // writes it first; existing files already include their one header.
+      startMs: resume.hasHeader ? now - resume.lastTimeSec * 1000 : now,
+      ready: resume.hasHeader,
+      // Existing files already include their one header; a fresh file reserves
+      // the prospective header before any event can queue.
       reservedBytes:
-        existingBytes > 0
-          ? existingBytes
+        resume.sizeBytes > 0
+          ? resume.sizeBytes
           : Buffer.byteLength(initialHeader, 'utf8'),
       maxBytes: this.terminalRecordingPolicy.sessionCast.maxBytes,
       pendingWrites: 1,
       maxPendingWrites: this.terminalRecordingPolicy.maxPendingWrites,
       truncated: false,
     };
+    if (resume.sizeBytes > entry.maxBytes) {
+      entry.truncated = true;
+      entry.ready = false;
+      this.logger.warn(
+        `task ${taskId}: existing session.cast exceeds the configured ${entry.maxBytes}-byte budget; recording remains stopped`,
+      );
+    } else if (!resume.hasHeader && resume.hasBytes) {
+      entry.truncated = true;
+      this.logger.warn(
+        `task ${taskId}: existing session.cast has no valid header; not appending a second header`,
+      );
+    }
     this.sessionCasts.set(taskId, entry);
     entry.tail = entry.tail
       .then(async () => {
+        // Only a fresh, empty file still needs its header written; resumed
+        // files were classified synchronously above.
+        if (entry.truncated || entry.ready) return;
         try {
           await mkdir(path.dirname(castPath), { recursive: true });
-          const resume = await inspectCastResumeState(castPath);
-          entry.reservedBytes = Math.max(entry.reservedBytes, resume.sizeBytes);
-          const now = Date.now();
-          if (resume.sizeBytes > entry.maxBytes) {
-            entry.truncated = true;
-            this.logger.warn(
-              `task ${taskId}: existing session.cast exceeds the configured ${entry.maxBytes}-byte budget; recording remains stopped`,
-            );
-            return;
-          }
-          if (resume.hasHeader) {
-            entry.startMs = now - resume.lastTimeSec * 1000;
-            entry.ready = true;
-            return;
-          }
-          entry.startMs = now;
-          if (resume.hasBytes) {
-            entry.truncated = true;
-            this.logger.warn(
-              `task ${taskId}: existing session.cast has no valid header; not appending a second header`,
-            );
-            return;
-          }
-          const header = initialHeader;
-          const headerBytes = Buffer.byteLength(header, 'utf8');
+          const headerBytes = Buffer.byteLength(initialHeader, 'utf8');
           if (headerBytes > entry.maxBytes) {
             entry.truncated = true;
             this.logger.warn(
@@ -2876,7 +2872,7 @@ export class TerminalGateway
             );
             return;
           }
-          await appendFile(castPath, header);
+          await appendFile(castPath, initialHeader);
           entry.ready = true;
         } catch (err) {
           entry.truncated = true;
@@ -3398,12 +3394,16 @@ function terminalQueryParameters(
   }
 }
 
-async function inspectCastResumeState(
-  castPath: string,
-): Promise<CastResumeState> {
-  let handle: Awaited<ReturnType<typeof open>>;
+/**
+ * Synchronous on purpose: armCast must settle `startMs`/`ready`/`truncated`
+ * BEFORE the sessionCasts entry becomes visible, because appendCastEvent
+ * stamps event times at call time. The reads are bounded (head ≤ 4 KiB, tail
+ * ≤ 1 MiB) and happen once per task arm.
+ */
+function inspectCastResumeState(castPath: string): CastResumeState {
+  let fd: number;
   try {
-    handle = await open(castPath, 'r');
+    fd = openSync(castPath, 'r');
   } catch {
     return {
       hasHeader: false,
@@ -3414,7 +3414,7 @@ async function inspectCastResumeState(
   }
 
   try {
-    const { size } = await handle.stat();
+    const { size } = fstatSync(fd);
     if (size === 0) {
       return {
         hasHeader: false,
@@ -3426,7 +3426,7 @@ async function inspectCastResumeState(
 
     const headLength = Math.min(size, CAST_RESUME_HEAD_BYTES);
     const head = Buffer.alloc(headLength);
-    await handle.read(head, 0, headLength, 0);
+    readSync(fd, head, 0, headLength, 0);
     const firstLine = firstNonBlankLine(head.toString('utf8'));
     const hasHeader = firstLine
       ? parseAsciicastHeader(firstLine) !== null
@@ -3443,7 +3443,7 @@ async function inspectCastResumeState(
     const tailStart = Math.max(0, size - CAST_RESUME_TAIL_BYTES);
     const tailLength = size - tailStart;
     const tail = Buffer.alloc(tailLength);
-    await handle.read(tail, 0, tailLength, tailStart);
+    readSync(fd, tail, 0, tailLength, tailStart);
     return {
       hasHeader: true,
       hasBytes: true,
@@ -3451,7 +3451,7 @@ async function inspectCastResumeState(
       sizeBytes: size,
     };
   } finally {
-    await handle.close();
+    closeSync(fd);
   }
 }
 

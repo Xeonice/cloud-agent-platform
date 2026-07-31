@@ -1,32 +1,13 @@
 {
+  "extends": "../../packages/tsconfig/nest.json",
   "compilerOptions": {
-    "module": "commonjs",
-    "target": "ES2021",
-    "lib": [
-      "ES2021"
-    ],
-    "moduleResolution": "node",
-    "declaration": true,
-    "removeComments": true,
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "sourceMap": true,
     "outDir": "./dist",
     "baseUrl": "./",
     "paths": {
       "@/*": [
         "./src/*"
       ]
-    },
-    "incremental": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "strictNullChecks": true,
-    "noImplicitAny": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    }
   },
   "include": [
     "src/**/*.ts"

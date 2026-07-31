@@ -7,25 +7,12 @@
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "typesVersions": {
-    "*": {
-      "testing": [
-        "dist/testing.d.ts"
-      ]
-    }
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
-    },
-    "./testing": {
-      "types": "./dist/testing.d.ts",
-      "import": "./dist/testing.js",
-      "require": "./dist/testing.js",
-      "default": "./dist/testing.js"
     }
   },
   "files": [
@@ -37,7 +24,7 @@
     "build": "pnpm --filter @cap-console/contracts build && pnpm --filter @cap-console/sandbox-core build && pnpm --filter @cap-console/sandbox-environment build && pnpm --filter @cap-console/sandbox-cloud-http build && pnpm --filter @cap-console/sandbox-provider-aio build && pnpm --filter @cap-console/sandbox-provider-boxlite build && pnpm --filter @cap-console/sandbox-conformance build && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm -w exec turbo run build --filter=@cap-console/sandbox",
-    "test": "node --test --test-force-exit \"test/**/*.test.mjs\"",
+    "test": "node test/facade-surface.gate.mjs && node --test --test-force-exit \"test/**/*.test.mjs\"",
     "coverage": "c8 --100 --include=dist/**/*.js --reporter=text node --test --test-force-exit \"test/**/*.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },

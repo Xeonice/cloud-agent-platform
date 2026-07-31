@@ -347,6 +347,8 @@ async function main() {
   const sandboxModule = await import(
     new URL('../dist/index.js', import.meta.url).href,
   );
+  // AIO terminal helpers are provider-package surface, not facade surface (R6).
+  const aioModule = await import('@cap-console/sandbox-provider-aio');
   class TestSandboxTerminalSession extends sandboxModule.SandboxTerminalSession {
     constructor(
       taskId,
@@ -397,7 +399,7 @@ async function main() {
         resolveTaskLaunchContext,
         transportFactory ??
           withConfirmedFakeProviderCleanup(
-            sandboxModule.createAioTerminalTransportFactory({
+            aioModule.createAioTerminalTransportFactory({
               taskId,
               wsUrl,
               baseUrl,
@@ -409,7 +411,7 @@ async function main() {
         undefined,
         undefined,
         undefined,
-        sandboxModule.createAioTerminalExitStatusResolver({ baseUrl }),
+        aioModule.createAioTerminalExitStatusResolver({ baseUrl }),
       );
     }
   }

@@ -51,7 +51,7 @@
   - requirements: ["monorepo-foundation/ci-jobs-shall-run-when-a-change-can-affect-them"]
   - surfaces: ["ci"]
   - verify: "workflow-gates"
-- [ ] 3.4 **Deferred — needs a pull request, not just a push.** `ci.yml` triggers on
+- [x] 3.4 **Deferred — needs a pull request, not just a push.** `ci.yml` triggers on
   - requirements: ["monorepo-foundation/ci-jobs-shall-run-when-a-change-can-affect-them"]
   - surfaces: ["ci"]
   - verify: "workflow-gates"
@@ -75,6 +75,12 @@
 
   Until 1–3 are observed the conditions are wired but unproven. `scripts/ci-job-conditions.test.mjs`
   guards the wiring; it cannot guard GitHub's semantics.
+
+  > 观察完成（2026-08-01，close-gate-blindspots task 8.12 为载体）：
+  > ① run 侧 = PR #189（触及 apps/api+packages）：boot-smoke 1m47s / admission-compat 54s / N-1 1m0s 全 run 且绿；
+  > ② skip 侧 = PR #190（docs-only）：三 job 全 skipping；
+  > ③ 两个 required（public-surface-parity、typecheck + lint + test）在两侧均出真实 pass conclusion，未被 skip；
+  > ④ runner-minutes：skip 省下 ≈3.7min（按 run 侧实测时长），对 facts.md §3 预测 3.4min 偏差 +9%。
 
 ## 4. Track: verification (depends: scoping, ci-conditions)
 

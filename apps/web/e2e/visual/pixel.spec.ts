@@ -60,6 +60,18 @@ const SEED_MOCK_SESSION = `
 for (const breakpoint of BREAKPOINTS) {
   for (const visualPage of PAGES) {
     test(`${visualPage.id} @ ${breakpoint.id}`, async ({ page }) => {
+      // Triaged, pre-existing failures ride the manifest's reviewable
+      // `knownFailure` exception data (per-entry reason + owning follow-up),
+      // and run as EXPECTED failures: still executed every run, and the lane
+      // goes RED when the comparison unexpectedly passes — forcing the entry's
+      // removal in the same PR as the fix (close-gate-blindspots 7.2/7.4).
+      const knownFailure = visualPage.knownFailure?.[breakpoint.id];
+      if (knownFailure) {
+        test.fail(
+          true,
+          `${knownFailure.reason} — follow-up: ${knownFailure.followUp}`,
+        );
+      }
       if (visualPage.authed) {
         await page.addInitScript(SEED_MOCK_SESSION);
       }

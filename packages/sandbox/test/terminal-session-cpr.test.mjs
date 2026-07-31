@@ -107,7 +107,10 @@ async function main() {
     'private-mode DSR query is the distinct sequence 1b 5b 3f 36 6e',
   );
 
-  const { SandboxTerminalSession, createAioTerminalTransportFactory } = await import(
+  const { createAioTerminalTransportFactory } = await import(
+    '@cap-console/sandbox-provider-aio'
+  );
+  const { SandboxTerminalSession } = await import(
     new URL('../dist/index.js', import.meta.url).href,
   );
 

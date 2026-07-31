@@ -1,0 +1,41 @@
+{
+  "apps/api/src/metrics/resource-sampler.service.ts": {
+    "count": 1,
+    "samples": [
+      "resource-sampler.service.ts:3 import Docker from 'dockerode'"
+    ],
+    "change": "阶段 7a 端口化根治"
+  },
+  "apps/api/src/runtime-models/configured-runtime-model-taskless-probe.ts": {
+    "count": 2,
+    "samples": [
+      "configured-runtime-model-taskless-probe.ts:2 import Docker from 'dockerode'",
+      "configured-runtime-model-taskless-probe.ts:18 readBoxLiteProviderConfig imported through the facade leak"
+    ],
+    "change": "阶段 7a 端口化根治"
+  },
+  "apps/api/src/sandbox-environments/sandbox-environments.validator.ts": {
+    "count": 2,
+    "samples": [
+      "sandbox-environments.validator.ts:1 import Docker from 'dockerode'",
+      "sandbox-environments.validator.ts:15 AIO_SANDBOX_WORKSPACE_DIR imported through the facade leak"
+    ],
+    "change": "阶段 7a 端口化根治"
+  },
+  "apps/api/src/self-update/self-update.service.ts": {
+    "count": 2,
+    "samples": [
+      "self-update.service.ts:3 import Docker from 'dockerode'",
+      "self-update.service.ts:65 export const BOXLITE_ROOTFS_PATH_ENV = 'BOXLITE_ROOTFS_PATH'"
+    ],
+    "change": "阶段 7a 端口化根治"
+  },
+  "apps/api/src/settings/docker-codex-device-login-runner.ts": {
+    "count": 2,
+    "samples": [
+      "docker-codex-device-login-runner.ts:3 import Docker from 'dockerode'",
+      "docker-codex-device-login-runner.ts:144 process.env.AIO_SANDBOX_IMAGE fallback read"
+    ],
+    "change": "阶段 7a 端口化根治"
+  }
+}

@@ -43,6 +43,16 @@
 #   BOOT_SMOKE_ADMIN_EMAIL  email the seed keys the default admin on
 #                           (default boot-smoke-admin@example.com). The throwaway
 #                           DB is wiped with the runner, so this is inert.
+#   BOOT_SMOKE_STATEFUL Non-empty enables the STATEFUL variant
+#                       (close-gate-blindspots-and-ci-hygiene 6.1): pre-seed an
+#                       in-flight `running` task with live durable-admission
+#                       ownership into the throwaway DB BEFORE boot, then assert
+#                       AFTER boot that the restarted process RE-ADOPTED it —
+#                       still `running`, still owned — rather than failing,
+#                       orphaning, or disowning it. Restart-with-work-in-flight
+#                       is the survive-api-redeploy bug class that clean-boot
+#                       liveness and unit fakes both provably missed. Default:
+#                       off — the clean-boot smoke is byte-identical without it.
 #
 # Exit status: 0 only when `/health` returns a 2xx AND the seed/argon2 reveal
 # succeeds within the timeout; non-zero (and the captured app log dumped to
@@ -105,6 +115,75 @@ if ! node node_modules/prisma/build/index.js migrate deploy >>"${LOG_FILE}" 2>&1
   fail "prisma migrate deploy failed"
 fi
 
+# 1b) [BOOT_SMOKE_STATEFUL only] Pre-seed an in-flight `running` task BEFORE the
+#     app boots, so startup recovery runs against real work-in-flight instead of
+#     the zero task rows the clean-boot smoke exercises.
+#
+#     Seed shape — durable-admission ownership, deliberately: a Task row in
+#     status `running` whose TaskAdmissionWork row is state `running` with a
+#     LIVE lease (owner token + expiry an hour out). The legacy re-adoption
+#     path (provider reattach to a surviving sandbox + detached session) cannot
+#     be exercised on a CI runner — there is no sandbox to survive — but the
+#     durable-protection path is exactly the survive-api-redeploy property
+#     under test: bootstrap must snapshot unfinished durable work and keep its
+#     hands off it (not force-fail it as a legacy orphan, not drop its lease).
+#     A recovery regression of the 042c8ea split-brain class turns this seeded
+#     task `failed` at boot, and the step-3b assertion below goes red.
+#
+#     The lease expiry is 1h out so the admission worker's expired-lease claim
+#     branch never fires inside the smoke window; the row stays owned by its
+#     (gone) pre-restart worker, exactly like a real redeploy mid-provision.
+SMOKE_TASK_ID=""
+SMOKE_LEASE_OWNER="boot-smoke-stateful-preseed"
+if [[ -n "${BOOT_SMOKE_STATEFUL:-}" ]]; then
+  echo "boot-smoke: pre-seeding an in-flight running task (stateful variant)..."
+  # CWD is API_DIR, so `require('@prisma/client')` resolves the client the build
+  # step generated — the same client the booted app uses, so the seed tracks
+  # schema changes instead of hardcoding column SQL.
+  SMOKE_TASK_ID="$(
+    SMOKE_LEASE_OWNER="${SMOKE_LEASE_OWNER}" node - <<'NODE' 2>>"${LOG_FILE}"
+const { PrismaClient } = require('@prisma/client');
+(async () => {
+  const prisma = new PrismaClient();
+  try {
+    const task = await prisma.task.create({
+      data: {
+        prompt: 'boot-smoke stateful pre-seed: in-flight running task',
+        status: 'running',
+        repo: {
+          create: {
+            name: 'boot-smoke-stateful',
+            gitSource: 'https://boot-smoke.invalid/preseed.git',
+          },
+        },
+        admissionWork: {
+          create: {
+            state: 'running',
+            attempt: 1,
+            stage: 'agent_launch',
+            leaseOwner: process.env.SMOKE_LEASE_OWNER,
+            leaseUntil: new Date(Date.now() + 60 * 60 * 1000),
+          },
+        },
+      },
+      select: { id: true },
+    });
+    process.stdout.write(task.id);
+  } finally {
+    await prisma.$disconnect();
+  }
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+NODE
+  )" || fail "stateful pre-seed failed (could not insert the running task row)"
+  if [[ -z "${SMOKE_TASK_ID}" ]]; then
+    fail "stateful pre-seed returned an empty task id"
+  fi
+  echo "boot-smoke: pre-seeded running task ${SMOKE_TASK_ID}."
+fi
+
 # 2) Boot the BUILT app. OAuth-first: legacy token path OFF so no AUTH_TOKEN is
 #    required; PORT pins the listen port we probe below. ADMIN_EMAIL is set so the
 #    default-admin seed (argon2 hash + admin/IdentityLink write) actually RUNS —
@@ -137,6 +216,78 @@ while true; do
   fi
   sleep 1
 done
+
+# 3b) [BOOT_SMOKE_STATEFUL only] Assert the restarted process RE-ADOPTED the
+#     pre-seeded in-flight task. Nest serves `/health` only after `listen()`,
+#     which runs after every `onApplicationBootstrap` hook — so by the time the
+#     health probe above succeeded, startup recovery (durable-protection
+#     snapshot, legacy re-adoption phase 0, orphan reclaim phase 1) has fully
+#     run. Re-adoption is asserted as: the task is NOT failed (status still
+#     `running`), NOT orphaned (its admission work still in an unfinished
+#     state), and NOT unowned (the seeded lease owner still holds it).
+if [[ -n "${BOOT_SMOKE_STATEFUL:-}" ]]; then
+  echo "boot-smoke: asserting the pre-seeded running task was re-adopted..."
+  READOPT_STATUS=0
+  SMOKE_TASK_ID="${SMOKE_TASK_ID}" SMOKE_LEASE_OWNER="${SMOKE_LEASE_OWNER}" \
+    node - <<'NODE' >>"${LOG_FILE}" 2>&1 || READOPT_STATUS=$?
+const { PrismaClient } = require('@prisma/client');
+(async () => {
+  const prisma = new PrismaClient();
+  try {
+    const task = await prisma.task.findUnique({
+      where: { id: process.env.SMOKE_TASK_ID },
+      select: {
+        status: true,
+        failureCode: true,
+        admissionWork: { select: { state: true, leaseOwner: true } },
+      },
+    });
+    const problems = [];
+    if (!task) {
+      problems.push('the pre-seeded task row is GONE');
+    } else {
+      if (task.status !== 'running') {
+        problems.push(
+          `task status is '${task.status}' — startup recovery failed/orphaned the in-flight task instead of re-adopting it`,
+        );
+      }
+      if (task.failureCode) {
+        problems.push(`task carries failureCode '${task.failureCode}'`);
+      }
+      if (!task.admissionWork) {
+        problems.push('the admission-work row is GONE (the task is unowned)');
+      } else {
+        if (task.admissionWork.state !== 'running') {
+          problems.push(
+            `admission work state is '${task.admissionWork.state}' (expected the live 'running' lease to survive the restart)`,
+          );
+        }
+        if (task.admissionWork.leaseOwner !== process.env.SMOKE_LEASE_OWNER) {
+          problems.push(
+            `admission lease owner is '${task.admissionWork.leaseOwner}' (expected the seeded owner — the task became unowned)`,
+          );
+        }
+      }
+    }
+    if (problems.length > 0) {
+      console.error(
+        `stateful re-adoption assertion FAILED: ${problems.join('; ')}`,
+      );
+      process.exit(1);
+    }
+  } finally {
+    await prisma.$disconnect();
+  }
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+NODE
+  if [[ "${READOPT_STATUS}" -ne 0 ]]; then
+    fail "restarted process did NOT re-adopt the pre-seeded running task (assertion details in the captured log)"
+  fi
+  echo "boot-smoke: pre-seeded running task re-adopted (still running, still owned)."
+fi
 
 # 4) Seed + argon2 probe: the one-time admin reveal returns the GENERATED
 #    credential exactly once. A non-empty `email` in the response proves the seed

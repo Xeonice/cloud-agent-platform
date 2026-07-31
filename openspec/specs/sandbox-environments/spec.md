@@ -5,85 +5,110 @@ TBD - created by archiving change add-sandbox-environments. Update Purpose after
 ## Requirements
 ### Requirement: Admin-managed sandbox environment registry
 
-The system SHALL provide an admin-only registry of sandbox environments backed by existing registry image references. Each environment SHALL have a stable id, display name, source descriptor, provider family compatibility, runtime compatibility, lifecycle status, default marker, creation/update timestamps, non-secret validation metadata, and optional image runtime parameters. Environment records SHALL NOT store provider API tokens, registry credentials, forge tokens, model credentials, or other task secrets except encrypted image secret parameters explicitly configured by an admin for that environment. Environment read APIs SHALL NOT return plaintext image secret parameter values. Environment records SHALL NOT represent uploaded artifacts, local rootfs paths, already-loaded provider images, or CAP-built images.
+The system SHALL provide an admin-only registry of sandbox environments. Each
+environment SHALL have a stable id, display name, source descriptor, provider
+family compatibility, runtime compatibility, lifecycle status, default marker,
+creation/update timestamps, and non-secret validation metadata. Environment
+records SHALL NOT store provider API tokens, forge tokens, model credentials, or
+other task secrets. Managed environment creation SHALL support only AIO image
+sources and BoxLite image sources; loaded Docker image sources, BoxLite rootfs
+sources, provider-template sources, and other delivery-specific source kinds
+SHALL be rejected for managed custom images.
 
-#### Scenario: Admin registers an existing image reference
+#### Scenario: Admin creates an environment from a supported image source
 
-- **WHEN** an admin registers a sandbox environment with a supported registry image source kind
-- **THEN** the system stores the environment with a stable id and an initial non-ready status
-- **AND** the source descriptor contains only non-secret image reference metadata
-- **AND** CAP does not build, upload, or push an image as part of registration
+- **WHEN** an admin registers a sandbox environment with provider `aio` or
+  `boxlite` and a non-empty pinned image reference
+- **THEN** the system stores the environment with a stable id and an initial
+  non-ready status
+- **AND** the source descriptor contains no provider credentials or task secrets
 
-#### Scenario: Admin registers image parameters
+#### Scenario: Removed source kinds are rejected
 
-- **WHEN** an admin registers a sandbox environment with plain and secret image parameters
-- **THEN** the system stores plain parameter values in readable form
-- **AND** stores secret parameter values encrypted at rest
-- **AND** environment reads expose secret parameter names without plaintext values
+- **WHEN** an admin attempts to create a managed environment from
+  `aio-loaded-docker-image`, `boxlite-rootfs`, or `provider-template`
+- **THEN** the request is rejected
+- **AND** no environment registry state changes
+
+#### Scenario: Non-admin cannot manage environments
+
+- **WHEN** a non-admin operator attempts to create, edit, validate, delete, or set
+  a default sandbox environment
+- **THEN** the request is rejected
+- **AND** no environment registry state changes
 
 ### Requirement: Sandbox environment source descriptors are provider-aware
 
-The system SHALL model sandbox environment sources explicitly. Supported managed
-source kinds SHALL be limited to AIO registry Docker image references and
-BoxLite registry image references. A source SHALL declare the provider family or
-families that can consume it. Unsupported local, uploaded, already-loaded, or
-rootfs source descriptors SHALL fail validation rather than being guessed or
-converted.
+The system SHALL model managed sandbox environment sources explicitly while
+keeping only one custom image source per provider family. Supported managed
+source kinds SHALL include AIO Docker image and BoxLite image. A source SHALL
+declare the provider family that can consume it. A source that is ambiguous or
+not one of the supported managed image kinds SHALL fail validation rather than
+being guessed.
 
-#### Scenario: AIO image source maps to AIO
+#### Scenario: AIO image source is AIO-only
 
-- **WHEN** an environment source kind is `aio-docker-image`
-- **THEN** its compatibility includes the AIO provider family
-- **AND** its source descriptor stores a non-secret registry image reference
+- **WHEN** an environment source is an AIO Docker image reference
+- **THEN** its compatibility includes AIO provisioning
+- **AND** a BoxLite task cannot select that environment
 
-#### Scenario: BoxLite image source maps to BoxLite
+#### Scenario: BoxLite image source is BoxLite-only
 
-- **WHEN** an environment source kind is `boxlite-image`
-- **THEN** its compatibility includes the BoxLite provider family
-- **AND** its source descriptor stores a non-secret registry image reference
+- **WHEN** an environment source is a BoxLite image reference
+- **THEN** its compatibility includes BoxLite provisioning
+- **AND** an AIO task cannot select that environment
 
-#### Scenario: Unsupported source fails closed
+#### Scenario: Delivery-specific source kinds fail closed
 
-- **WHEN** an environment source uses a rootfs path, a local loaded-image name,
-  an upload artifact, or another unsupported source kind
-- **THEN** registration or validation fails with an unsupported-source error
+- **WHEN** an environment source kind represents a local loaded Docker image,
+  local rootfs path, release asset, or provider template
+- **THEN** managed environment creation and validation reject that source kind
 - **AND** the environment is not selectable for tasks
 
 ### Requirement: Environment validation gates task selection
 
-The system SHALL validate sandbox environments before they can be selected by a task. Validation SHALL record status, checked timestamp, provider family, runtime compatibility, resolved image digest when available, probe output summary, builder-declared sandbox metadata, and failure reason. Validation SHALL start a probe sandbox and require valid `/etc/cap/sandbox-metadata.json` before marking a newly built image ready. Only environments with a ready status, valid metadata, and compatible runtime/provider family SHALL be selectable.
+The system SHALL validate sandbox environments before they can be selected by a
+task. Validation SHALL record status, checked timestamp, provider family,
+runtime compatibility, resolved image digest when available, probe output
+summary, and failure reason. Only environments with a ready status and compatible
+runtime/provider family SHALL be selectable. A validation SHALL NOT pass merely
+because the source descriptor parses; it SHALL prove the selected provider can
+start the image and pass the runtime/tool probes.
 
 #### Scenario: Successful validation makes environment selectable
 
-- **WHEN** validation proves the provider host can pull or resolve the image, start a sandbox, read valid builder-declared metadata, and pass the required runtime/tool probes
+- **WHEN** validation proves the image source can start a sandbox or container
+  and pass the required runtime/tool probes
 - **THEN** the environment status becomes ready
-- **AND** the parsed sandbox version and dependency map are retained with the validation
 - **AND** compatible task creation surfaces can select it
 
 #### Scenario: Failed validation blocks selection
 
-- **WHEN** validation fails because the image is missing, unreachable, unauthorized, architecture-incompatible, lacks required runtime tools, or has missing or invalid sandbox metadata
+- **WHEN** validation fails because the image is missing, unreachable,
+  incompatible, or lacks required runtime tools
 - **THEN** the environment status becomes failed
 - **AND** task creation rejects that environment before sandbox provisioning
 
+#### Scenario: Descriptor-only validation is not sufficient
+
+- **WHEN** a source descriptor parses but the provider-backed probe has not
+  started and checked the image
+- **THEN** the environment does not become ready
+- **AND** task creation cannot select it
+
 #### Scenario: Stale validation blocks new tasks
 
-- **WHEN** an environment is marked stale because the CAP sandbox or sandbox-metadata contract changed
+- **WHEN** an environment is marked stale because the CAP sandbox contract changed
 - **THEN** new task creation cannot select it until validation passes again
-- **AND** already-running tasks that used the prior validation are not stopped by this state change
-
-#### Scenario: Validation retains only declared dependencies
-
-- **WHEN** a custom image metadata file declares two dependencies while the image contains additional undeclared packages
-- **THEN** validation retains and exposes only the two declared dependency versions
-- **AND** CAP does not scan the image for additional packages
+- **AND** already-running tasks that used the prior validation are not stopped by
+  this state change
 
 ### Requirement: Environment resolution produces immutable provisioning metadata
 
 Before sandbox provisioning, the system SHALL resolve the requested or default
 sandbox environment into immutable non-secret provisioning metadata. The resolved
 metadata SHALL include environment id when present, source kind, provider family,
-runtime id, image reference, resolved image digest when available, and validation
+runtime id, resolved image reference or digest when available, and validation
 id/version.
 
 #### Scenario: Explicit environment resolves for a task
@@ -106,24 +131,22 @@ id/version.
 
 The system SHALL persist non-secret environment metadata with each sandbox run so
 operators can diagnose which sandbox base was used. Persisted metadata SHALL NOT
-include provider credentials, registry credentials, forge tokens, model
-credentials, raw task secrets, uploaded image artifacts, or local rootfs
-contents.
+include provider credentials, forge tokens, model credentials, or raw task
+secrets.
 
 #### Scenario: Sandbox run records environment metadata
 
-- **WHEN** a task provisions a sandbox with a resolved managed environment
+- **WHEN** a task provisions a sandbox with a resolved environment
 - **THEN** the sandbox run owner metadata records environment id, source kind,
-  runtime id, provider family, image reference, and resolved digest metadata when
-  available
+  runtime id, provider family, and resolved image reference or digest metadata
 - **AND** the metadata is sufficient to distinguish two different validated
   versions of the same display environment
 
 #### Scenario: Secrets are not persisted in run metadata
 
 - **WHEN** sandbox run metadata is inspected after provisioning
-- **THEN** it does not contain provider API tokens, registry credentials, forge
-  tokens, model credentials, or task prompt contents
+- **THEN** it does not contain provider API tokens, forge tokens, model
+  credentials, or task prompt contents
 
 ### Requirement: Admin can retire sandbox environment records
 
@@ -214,3 +237,4 @@ injected into the guest as runtime parameters or exposed with provider secrets.
 - **WHEN** a task uses an environment with a disk-size resource and separate image parameters
 - **THEN** the provider receives the disk-size resource before sandbox creation
 - **AND** only the declared image parameters follow the existing guest materialization path
+

@@ -8,6 +8,7 @@ import {
   QUARANTINED_SUITES,
   QUARANTINED_FILES,
   auditQuarantine,
+  auditQuarantineEntries,
 } from './quarantined-suites.mjs';
 
 /**
@@ -34,23 +35,70 @@ test('every entry names a real file, a reason, evidence, and a tracking change',
   );
 });
 
+test('an empty list is the healthy state, and the mechanism survives it', () => {
+  // The list emptied on 2026-07-31 (close-gate-blindspots-and-ci-hygiene).
+  // This does NOT forbid future entries — it proves the machinery keeps
+  // working with nothing in it, which is how forty invisible skips began.
+  assert.deepEqual(
+    auditQuarantineEntries([], () => false),
+    [],
+    'zero entries must audit clean without touching the filesystem',
+  );
+  assert.deepEqual(
+    auditQuarantine(() => true),
+    [],
+    'the live list must pass its own audit',
+  );
+});
+
 test('the audit rejects the shapes an entry decays into', () => {
   const always = () => true;
   const never = () => false;
+  const honest = {
+    file: 'scripts/example.test.mjs',
+    reason: 'fails on the runner in a way the fixture describes fully',
+    evidence: 'four runner logs captured and compared across reruns',
+    change: 'some-accountable-openspec-change',
+  };
+
+  assert.deepEqual(
+    auditQuarantineEntries([honest], always),
+    [],
+    'a fully attributed entry naming a real file must pass',
+  );
 
   assert.notEqual(
-    auditQuarantine(never).length,
+    auditQuarantineEntries([honest], never).length,
     0,
     'a listed file that no longer exists must be reported, not silently ignored',
   );
 
-  const original = QUARANTINED_SUITES.length;
-  assert.ok(original >= 0);
-  assert.deepEqual(
-    auditQuarantine(always),
-    [],
-    'the current list must pass its own audit',
+  assert.notEqual(
+    auditQuarantineEntries([honest, { ...honest }], always).length,
+    0,
+    'the same file listed twice would let one reason hide behind another',
   );
+
+  assert.notEqual(
+    auditQuarantineEntries([{ ...honest, file: '' }], always).length,
+    0,
+    'an entry without a file is an unattributed skip',
+  );
+
+  // A FUTURE entry must carry all three attribution fields; each missing or
+  // vacuous field must be named individually.
+  for (const field of ['reason', 'evidence', 'change']) {
+    for (const value of [undefined, '', 'too short']) {
+      const problems = auditQuarantineEntries(
+        [{ ...honest, [field]: value }],
+        always,
+      );
+      assert.ok(
+        problems.some((problem) => problem.includes(field)),
+        `an entry with ${field}=${JSON.stringify(value)} must fail the audit naming "${field}"`,
+      );
+    }
+  }
 });
 
 test('the runner refuses to run when the list is dishonest', () => {

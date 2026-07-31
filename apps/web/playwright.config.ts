@@ -24,6 +24,19 @@
  * both sides. `VITE_WS_URL` is blanked so the session socket resolves to the
  * PERMANENT config-error state (stable pill) instead of a reconnect loop —
  * regardless of whether a local api happens to be running.
+ *
+ * ── Pinned rendering environment (close-gate-blindspots-and-ci-hygiene 7.1) ──
+ * In CI this suite MUST run inside the pinned Playwright Docker image
+ *
+ *   mcr.microsoft.com/playwright:v1.60.0-noble
+ *
+ * (the `playwright-image-pin`). The image tag version MUST equal the resolved
+ * `@playwright/test` version in `pnpm-lock.yaml` (currently 1.60.0) — bump the
+ * two together, then re-validate the baselines inside the new image. Baselines
+ * generated on a different OS (macOS-rendered vs Linux runners) guarantee
+ * font-rendering flake, so threshold calibration is only valid against this
+ * pin. Regeneration/recalibration procedure: `e2e/visual-baseline-regeneration.md`
+ * (colocated with this pin).
  */
 import { defineConfig } from "@playwright/test";
 

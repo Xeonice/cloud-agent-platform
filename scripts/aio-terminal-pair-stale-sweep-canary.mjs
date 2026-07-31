@@ -2,9 +2,9 @@
 
 import { fork } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import WebSocket from 'ws';
 import {
   AioTerminalTransport,
   createAioHttpCommandExecutor,
@@ -14,6 +14,18 @@ import {
   sweepAioStaleTerminalSessions,
 } from '../packages/sandbox-provider-aio/dist/index.js';
 import { deleteAioShellSessionExact } from '../packages/sandbox-provider-aio/dist/aio-shell-exec.js';
+
+/**
+ * `ws` is a dependency of the aio provider package, not of the repository
+ * root, so a bare `import WebSocket from 'ws'` resolved only through
+ * accidental hoisting on developer machines and failed deterministically on a
+ * fresh `pnpm install --frozen-lockfile` (ERR_MODULE_NOT_FOUND on the GitHub
+ * runner, CI runs 30469396910 / 30469877742 / 30476017939, 2026-07-29).
+ * Resolve it from the package that declares it.
+ */
+const WebSocket = createRequire(
+  new URL('../packages/sandbox-provider-aio/package.json', import.meta.url),
+)('ws');
 
 const ENDPOINT_ENV = 'CAP_AIO_PAIR_CANARY_ENDPOINT';
 const SCOPE_ENV = 'CAP_AIO_PAIR_CANARY_SCOPE';

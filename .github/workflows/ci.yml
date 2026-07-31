@@ -13,8 +13,8 @@ name: CI
 # cross-provider DI / onApplicationBootstrap ordering break — the failure class
 # that build + unit tests provably MISS (it manifests only at DI-graph
 # instantiation) and that caused a multi-hour production outage — fails CI here
-# instead of in production. It runs independently of typecheck+lint (its own job)
-# and MUST be made a required status check BEFORE the epic introduces a new module.
+# instead of in production. It runs independently of typecheck+lint (its own job);
+# its required-check status is stated once, truthfully, at the job itself.
 on:
   pull_request:
   push:
@@ -45,6 +45,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,14 +55,20 @@ jobs:
       # workspace package it builds on, or the dependency graph itself. It is
       # deliberately broad: a false negative silently skips a gate, while a false
       # positive only costs the minutes the job would have taken anyway.
+      #
+      # `web` (close-gate-blindspots 7.2/7.3) is the same construction for the
+      # console: true when a change can reach apps/web, a workspace package it
+      # builds on, or the toolchain. Same fail-open shape, same broadness
+      # rationale.
       - id: filter
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
           if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
-            echo "no usable base ref; treating as backend-affecting" >&2
+            echo "no usable base ref; treating as backend- and web-affecting" >&2
             echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "web=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           CHANGED="$(git diff --name-only "${BASE_SHA}" HEAD)"
@@ -88,6 +95,18 @@ jobs:
           fi
           echo "grep exit ${MATCH_STATUS} -> backend=${BACKEND}" >&2
           echo "backend=${BACKEND}" >> "$GITHUB_OUTPUT"
+          # Same fail-open construction for the web lanes: WEB starts true and
+          # only a definite no-match (grep exit 1) lowers it.
+          WEB=true
+          set +e
+          grep -qE '^(apps/web/|packages/|\.github/workflows/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json)' <<<"${CHANGED}"
+          WEB_MATCH_STATUS=$?
+          set -e
+          if [[ "${WEB_MATCH_STATUS}" -eq 1 ]]; then
+            WEB=false
+          fi
+          echo "grep exit ${WEB_MATCH_STATUS} -> web=${WEB}" >&2
+          echo "web=${WEB}" >> "$GITHUB_OUTPUT"
 
   # Stable merge-gating context for the shared Public V1/MCP contract. Branch
   # protection must require the exact context `public-surface-parity` after this
@@ -319,6 +338,15 @@ jobs:
       - name: API module layout gate
         run: pnpm test:module-layout
 
+      # Console request-header ↔ CORS allowlist consistency (G8). Until
+      # close-gate-blindspots 5.3 this gate ran only by riding the
+      # `test:scripts` glob below, where its failure was attributable solely by
+      # reading suite output — a named step makes it a visible check like its
+      # sibling gates above. The glob still mounts it; this direct invocation is
+      # the visible, attributable one.
+      - name: Console CORS-header gate
+        run: pnpm test:cors-headers
+
       # App suites through the task graph. Previously three hand-named `pnpm
       # --filter` steps, which is the same allowlist failure mode one level up —
       # a new app owning tests would simply not run here. The directory filter
@@ -398,19 +426,15 @@ jobs:
   # binary or a broken seed fails CI here, not in production. No extra step is
   # needed — the script self-provides a throwaway `ADMIN_EMAIL` default.
   #
-  # REQUIRED STATUS CHECK (task 1.2): this job's `name:` ("boot-smoke") is the
-  # status-check CONTEXT to add to the `main` branch-protection rule alongside the
-  # existing "typecheck + lint" context, so a red boot-smoke BLOCKS merge. GitHub
-  # only lets a context be marked required AFTER it has reported once, so this must
-  # be done after the workflow first runs on a PR. Add it with (run once landed):
-  #   gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_checks \
-  #     -f 'contexts[]=typecheck + lint' -f 'contexts[]=boot-smoke'
-  # This MUST be in place before the epic introduces a new application module
-  # (api-key-machine-identity Track 5), the failure class this gate guards.
   boot-smoke:
     name: boot-smoke
     # Subject is boots the built api against a database; unreachable from a docs- or console-only change.
-    # Not a required status check, so a skip cannot block a merge.
+    # NOT a required status check, and it cannot be marked one as-is: the job is
+    # conditioned via `needs: changes`, and a required check that is SKIPPED
+    # rather than reported blocks a merge permanently (close-gate-blindspots 5.1
+    # resolved the contradictory claim that used to sit here in favor of this
+    # reality). Making it required means unconditioning it first — in the same
+    # change that flips branch protection.
     needs: changes
     if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
@@ -485,6 +509,156 @@ jobs:
       # controller, service and database write/read path remains production code.
       - name: Task model cross-surface integration
         run: pnpm test:integration:task-model-surfaces
+
+  # STATEFUL boot smoke (close-gate-blindspots-and-ci-hygiene 6.2, monorepo-
+  # foundation "CI boots the built application and probes liveness"): the job
+  # above boots against an EMPTY database, which is precisely the state
+  # production never restarts in. This SECOND job pre-seeds an in-flight
+  # `running` task row (live durable-admission lease) into its own throwaway
+  # Postgres BEFORE boot, then asserts the restarted process RE-ADOPTED it —
+  # still running, still owned, not force-failed as an orphan. That is the
+  # survive-api-redeploy failure class (the 042c8ea split-brain regression) that
+  # clean-boot liveness and unit fakes both provably missed.
+  #
+  # A separate job, not a step in `boot-smoke`: the clean-boot job stays
+  # byte-identical (no context change), and this one carries a stable `name:`
+  # ("boot-smoke-stateful") so it can later be marked a required status check
+  # without a rename — after unconditioning it, since a conditioned required
+  # check that skips blocks merges permanently (see boot-smoke above).
+  boot-smoke-stateful:
+    name: boot-smoke-stateful
+    # Subject boots the built api against a database; unreachable from a docs-
+    # or console-only change. Not a required status check, so a skip cannot
+    # block a merge.
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+
+    # Same throwaway-Postgres service pattern as the clean-boot job: wiped with
+    # the runner, never persisted.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cap
+          POSTGRES_PASSWORD: cap
+          POSTGRES_DB: cap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cap -d cap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://cap:cap@localhost:5432/cap?schema=public
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (@cap-console/api + deps)
+        run: pnpm turbo build --filter=@cap-console/api
+
+      # Migrate, pre-seed the in-flight running task, boot the BUILT app, probe
+      # /health, then assert re-adoption (not failed / orphaned / unowned).
+      # The flag is the only delta from the clean-boot invocation; with it unset
+      # scripts/boot-smoke.sh is byte-identical to what the job above runs.
+      - name: Boot smoke with work in flight (re-adoption)
+        env:
+          BOOT_SMOKE_STATEFUL: "1"
+        run: bash scripts/boot-smoke.sh
+
+  # Console visual regression (close-gate-blindspots 7.2, test-suite-discovery
+  # "visual lanes pin their rendering environment and review their baselines").
+  # Runs INSIDE the pinned Playwright image — the exact environment the manifest
+  # thresholds were measured in (apps/web/e2e/visual/manifest.ts header; the
+  # image tag MUST equal the resolved @playwright/test version in pnpm-lock.yaml,
+  # bump the two together per apps/web/e2e/visual-baseline-regeneration.md).
+  # Mac-rendered thresholds do not transfer to Linux; the pin is what makes the
+  # committed thresholds meaningful here.
+  #
+  # The gate compares the app against the COMMITTED design baseline
+  # (apps/web/e2e/design-baseline/, screenshotted fresh into a gitignored dir at
+  # the start of every run) using the manifest's per-page thresholds. Nothing in
+  # this job regenerates or writes the committed baseline: regeneration is the
+  # reviewed, developer-side procedure (`sync-design-baseline.mjs`, which needs
+  # the local OD workspace and is deliberately NOT a CI step; its `--check`
+  # guards drift at regeneration time).
+  web-visual:
+    name: web visual regression
+    # Subject is the rendered console; unreachable from an api- or docs-only
+    # change. Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      # playwright-image-pin — keep equal to @playwright/test in pnpm-lock.yaml.
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web dependencies
+        run: pnpm turbo build --filter=@cap-console/web^...
+
+      - name: Visual regression (manifest thresholds, in-pin)
+        run: pnpm --filter @cap-console/web test:visual
+
+  # Terminal stories lane (close-gate-blindspots 7.3, test-suite-discovery "a
+  # declared suite runs in some CI lane or is deleted"). A DISTINCT lane with
+  # its own config (playwright.terminal-stories.config.ts): the visual lane
+  # masks live terminal content to keep pixel thresholds meaningful, which is
+  # exactly what this suite must never do — it asserts the terminal's actual
+  # rendered frames. Same pin, same reasoning as web-visual.
+  web-terminal-stories:
+    name: web terminal stories
+    # Subject is the rendered console terminal; unreachable from an api- or
+    # docs-only change. Not a required status check, so a skip cannot block a merge.
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      # playwright-image-pin — keep equal to @playwright/test in pnpm-lock.yaml.
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web dependencies
+        run: pnpm turbo build --filter=@cap-console/web^...
+
+      - name: Terminal stories (in-pin)
+        run: pnpm --filter @cap-console/web test:terminal-stories
 
   # Full owner-authenticated schedule story. Unlike the fast Postgres integration
   # above, this boots the real AppModule and console, drives them through a browser,

@@ -17,11 +17,15 @@ Every implementation package has a `coverage` script using `c8 --100`.
 - `@cap-console/sandbox-provider-boxlite`
 - `@cap-console/sandbox` provider center
 
-Run all sandbox coverage gates with:
+Run a package's coverage gate with:
 
 ```sh
-pnpm coverage:sandbox
+pnpm --filter <package> coverage
 ```
+
+(The repo-level `coverage:sandbox` aggregate was deleted by
+close-gate-blindspots 5.4 — no CI lane consumed it and it was measured red at
+change time, so per 总则 4 it was removed rather than left declared-but-unrun.)
 
 Run the package unit suites without coverage with:
 

@@ -1076,13 +1076,16 @@ test('diff-aware migration validates touched changes without bulk-failing legacy
       ),
       [],
     );
-    assert.throws(
-      () =>
-        validateChangedOpenSpecChanges(
-          [`openspec/changes/${fixture.change}/tasks.md`],
-          { repoRoot: fixture.root, registryInventory: undefined },
-        ),
-      /tasks\.md is required/u,
+    // A change whose active directory is gone with NO archive counterpart was
+    // retired outright (总则4 废弃删除). There is nothing left to validate —
+    // demanding sidecar/tasks files for a deleted directory was the misfire
+    // registered as docs/refactor/04-rules-registry.md F.1b.
+    assert.deepEqual(
+      validateChangedOpenSpecChanges(
+        [`openspec/changes/${fixture.change}/tasks.md`],
+        { repoRoot: fixture.root, registryInventory: undefined },
+      ),
+      [],
     );
   } finally {
     fixture.cleanup();

@@ -39,7 +39,7 @@ import {
   type SandboxGitStageExecution,
   type SandboxWorkspaceProgressEvent,
 } from '@cap-console/sandbox';
-import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox/testing';
+import { createGeneratedPrivateGitFixture } from '@cap-console/sandbox-conformance';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { AuditService } from '@/audit/audit.service';

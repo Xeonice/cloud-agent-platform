@@ -18,7 +18,25 @@
  *      passing is a suite to release, and the tracking change is where that gets
  *      decided.
  *
- * An empty array is the healthy state. It was empty before 2026-07-29.
+ * An empty array is the healthy state. It was empty before 2026-07-29, and it
+ * is empty again since 2026-07-31: the three entries quarantined on 2026-07-29
+ * were diagnosed from the GitHub-runner logs and fixed at their root causes by
+ * change `close-gate-blindspots-and-ci-hygiene`
+ * (see its tasks.md track "quarantine-clearing" for the run-level evidence):
+ *
+ *   - scripts/install-preflight.test.mjs — the harness PATH tail
+ *     (`/usr/bin:/bin`) leaked the runner's REAL usable Docker into every
+ *     "Docker absent" case; the harness now runs cases against a hermetic
+ *     whitelisted tool dir and prints per-case diagnostics on failure.
+ *   - scripts/aio-terminal-pair-stale-sweep-canary.test.mjs — the canary
+ *     imported bare `ws`, which no root manifest declares; it resolved through
+ *     an accidental ancestor node_modules locally and ERR_MODULE_NOT_FOUND'd
+ *     on a fresh runner install. It now resolves `ws` from
+ *     packages/sandbox-provider-aio, the package that declares it.
+ *   - apps/api/src/terminal/readoption-history.test.mjs — a real product race:
+ *     cast resume corrected `startMs` asynchronously, so an append landing in
+ *     the window stamped a regressed event time and parseCast truncated at it;
+ *     armCast now settles resume state synchronously.
  */
 
 /**
@@ -31,32 +49,7 @@
  */
 
 /** @type {ReadonlyArray<QuarantinedSuite>} */
-export const QUARANTINED_SUITES = [
-  {
-    file: 'scripts/install-preflight.test.mjs',
-    reason:
-      'Seventeen of forty-eight cases fail on the GitHub runner, all of them in the paths where the installer actually installs something — Homebrew bootstrap, apt-get, Colima. The other thirty-one pass.',
-    evidence:
-      'Passes 48/48 on macOS, 48/48 in node:22-slim with curl, and 48/48 in that container with real tools planted in /usr/local/bin. Four hypotheses were tested and all rejected: platform, missing curl, Homebrew probing of /usr/local/bin, and a CI-specific branch (the scripts contain none). The suite prints only PASS/FAIL, so the failing cases carry no diagnostic — which is itself part of what has to be fixed.',
-    change: 'release-quarantined-installer-and-terminal-suites',
-  },
-  {
-    file: 'scripts/aio-terminal-pair-stale-sweep-canary.test.mjs',
-    reason:
-      'Fails on the GitHub runner in three of four observed runs, alongside install-preflight and never independently of it.',
-    evidence:
-      'Passes locally. Newly mounted by 43aca22 and absent from main, so this is its first exposure to CI rather than a regression. Its correlation with install-preflight across runs suggests one shared cause, which the tracking change should establish before either is fixed.',
-    change: 'release-quarantined-installer-and-terminal-suites',
-  },
-  {
-    file: 'apps/api/src/terminal/readoption-history.test.mjs',
-    reason:
-      'One case — "session.cast resume preserves one header and monotonic event time" — intermittently observes a single cast event where two were written.',
-    evidence:
-      'Failed in one of four CI runs. Passes 5/5 standalone on macOS, 6/6 standalone on Linux, and inside the full 300-case suite. Unlike the two above it runs on main as well, so the flakiness predates this branch; the heavier suite that 9d43e75 mounted is the likely aggravator rather than the cause.',
-    change: 'release-quarantined-installer-and-terminal-suites',
-  },
-];
+export const QUARANTINED_SUITES = [];
 
 /** @type {ReadonlySet<string>} */
 export const QUARANTINED_FILES = new Set(
@@ -64,15 +57,19 @@ export const QUARANTINED_FILES = new Set(
 );
 
 /**
- * Fails loudly on an entry that has decayed into an unexplained skip.
+ * Audits any prospective quarantine list: every entry must name a real file
+ * once, and carry a substantive reason, evidence, and owning change. Split
+ * from {@link auditQuarantine} so the paired self-test can prove the
+ * rejection shapes on fixtures even while the live list is (healthily) empty.
  *
+ * @param {ReadonlyArray<QuarantinedSuite>} suites
  * @param {(relativePath: string) => boolean} fileExists
  * @returns {string[]} problems, empty when the list is honest
  */
-export function auditQuarantine(fileExists) {
+export function auditQuarantineEntries(suites, fileExists) {
   const problems = [];
   const seen = new Set();
-  for (const suite of QUARANTINED_SUITES) {
+  for (const suite of suites) {
     const where = suite.file || '<missing file>';
     if (!suite.file) problems.push('an entry has no file');
     else if (seen.has(suite.file)) problems.push(`${where}: listed twice`);
@@ -90,4 +87,14 @@ export function auditQuarantine(fileExists) {
     }
   }
   return problems;
+}
+
+/**
+ * Fails loudly on an entry that has decayed into an unexplained skip.
+ *
+ * @param {(relativePath: string) => boolean} fileExists
+ * @returns {string[]} problems, empty when the list is honest
+ */
+export function auditQuarantine(fileExists) {
+  return auditQuarantineEntries(QUARANTINED_SUITES, fileExists);
 }

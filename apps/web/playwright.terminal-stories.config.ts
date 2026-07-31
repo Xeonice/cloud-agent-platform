@@ -4,6 +4,16 @@
  * This suite is deliberately separate from `playwright.config.ts`: the visual
  * baseline masks live terminal content, while these checks inspect xterm
  * geometry, scrollback, UTF-8 rendering, and resize behavior directly.
+ *
+ * ── Pinned rendering environment (close-gate-blindspots-and-ci-hygiene 7.1) ──
+ * In CI this suite runs inside the SAME pinned Playwright Docker image as the
+ * visual lane (in its own distinct lane, per the deliberately separate config):
+ *
+ *   mcr.microsoft.com/playwright:v1.60.0-noble
+ *
+ * The image tag version MUST equal the resolved `@playwright/test` version in
+ * `pnpm-lock.yaml` (currently 1.60.0) — bump the two together. See
+ * `e2e/visual-baseline-regeneration.md` for the pin's regeneration procedure.
  */
 import { defineConfig } from "@playwright/test";
 

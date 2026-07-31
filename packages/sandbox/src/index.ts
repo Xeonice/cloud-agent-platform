@@ -1,19 +1,758 @@
-export * from '@cap-console/sandbox-core';
-export * from '@cap-console/sandbox-environment';
-export * from './provider-center/index.js';
-export * from './host-harness/index.js';
-export * from './terminal/backpressure.js';
-export * from './terminal/cleanup.js';
-export * from './terminal/runtime.js';
-export * from './terminal/select-launch.js';
-export * from './terminal/session-commands.js';
-export * from './terminal/session-engine.js';
-export * from './terminal/snapshot.js';
-export * from './terminal/transport.js';
-export * from './terminal/viewer-attachment.js';
-export * from './lifecycle/settle-plan.js';
-export * from './workspace/git.js';
-export * from './workspace/repo-archive.js';
-export * from '@cap-console/sandbox-cloud-http';
-export * from '@cap-console/sandbox-provider-aio';
-export * from '@cap-console/sandbox-provider-boxlite';
+/**
+ * Facade entry of `@cap-console/sandbox` — this file IS the reviewed export
+ * whitelist (R6).
+ *
+ * Every export is enumerated by NAME. Wildcard re-export (`export *`) is
+ * banned from this module: it leaks every provider internal through the
+ * center boundary. The surface below is enforced by the surface gate
+ * (`test/facade-surface.gate.mjs`) against committed reviewed data
+ * (`test/expected-facade-surface.json`); changing the surface requires
+ * updating that data in the same PR.
+ */
+
+export {
+  ARCHIVE_WORKSPACE_SANDBOX_FEATURE_CAPABILITIES,
+  DEFAULT_SANDBOX_DETACHED_JOB_ABSOLUTE_CAP_MS,
+  DEFAULT_SANDBOX_DETACHED_JOB_HEARTBEAT_WINDOW_MS,
+  DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
+  DELIVERY_SANDBOX_FEATURE_CAPABILITIES,
+  DELIVERY_SANDBOX_REQUIRED_CAPABILITIES,
+  INTERACTIVE_SANDBOX_FEATURE_CAPABILITIES,
+  INTERACTIVE_SANDBOX_REQUIRED_CAPABILITIES,
+  MATERIALIZED_WORKSPACE_SANDBOX_REQUIRED_CAPABILITIES,
+  READOPTION_SANDBOX_FEATURE_CAPABILITIES,
+  READOPTION_SANDBOX_REQUIRED_CAPABILITIES,
+  RETAINED_TRANSCRIPT_SANDBOX_FEATURE_CAPABILITIES,
+  RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES,
+  SANDBOX_CLEANUP_ATTEMPT_MAX,
+  SANDBOX_DETACHED_JOBS_ROOT,
+  SANDBOX_DETACHED_JOB_ABSOLUTE_CAP_MS_MAX,
+  SANDBOX_DETACHED_JOB_ABSOLUTE_CAP_MS_MIN,
+  SANDBOX_DETACHED_JOB_HEARTBEAT_WINDOW_MS_MAX,
+  SANDBOX_DETACHED_JOB_HEARTBEAT_WINDOW_MS_MIN,
+  SANDBOX_DETACHED_JOB_MARKER_FILES,
+  SANDBOX_DISK_SIZE_CAPABILITY,
+  SANDBOX_DISK_SIZE_GB_MAX,
+  SANDBOX_DISK_SIZE_GB_MIN,
+  SANDBOX_EXECUTION_MODES,
+  SANDBOX_GIT_COMMAND_STAGES,
+  SANDBOX_PHYSICAL_CLEANUP_OUTCOMES,
+  SANDBOX_PHYSICAL_CLEANUP_PROOFS,
+  SANDBOX_PROVIDER_CAPABILITIES,
+  SANDBOX_PROVIDER_FEATURE_CAPABILITIES,
+  SANDBOX_PROVIDER_KNOWN_CAPABILITIES,
+  SANDBOX_PROVIDER_LOCATIONS,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_ADMISSION_MODES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_ANOMALIES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_CAUSES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_CHANNELS,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_COMMAND_KINDS,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_HTTP_STATUS_CLASSES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_NATIVE_STATES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_OPERATIONS,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_OUTCOMES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_PROVIDER_FAMILIES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_REPLAY_KEYS,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_SAFE_TEXT_MAX_LENGTH,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_STAGES,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS,
+  SANDBOX_REDACTED_VALUE,
+  SANDBOX_REPO_SOURCE_MOUNT_DIR,
+  SANDBOX_RUNTIME_PREFLIGHT_COMMAND_KINDS,
+  SANDBOX_RUNTIME_SETUP_COMMAND_KINDS,
+  SANDBOX_SECRET_FILE_MODE,
+  SANDBOX_WORKSPACE_FAILURE_CAUSES,
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN,
+  SANDBOX_WORKSPACE_MATERIALIZATION_STAGES,
+  SandboxCleanupCoordinationPendingError,
+  SandboxCleanupPendingError,
+  SandboxCleanupResultValidationError,
+  SandboxCommandClassificationError,
+  SandboxCommandOutputSettlementError,
+  SandboxCommandSettlementError,
+  SandboxCoreError,
+  SandboxProviderCapabilityError,
+  SandboxProviderConfigurationError,
+  SandboxProviderSelectionError,
+  SandboxProvisioningCapacityError,
+  SandboxProvisioningDiagnosticValidationError,
+  SandboxProvisioningStageError,
+  SandboxRuntimeCommandExecutionError,
+  SandboxRuntimeModelSetupError,
+  SandboxSecretFileOperationError,
+  SandboxWorkspaceMaterializationError,
+  SandboxWorkspaceTransferDetachedSignal,
+  TASK_MODEL_MATERIAL_PATH,
+  WORKSPACE_SOURCE_CAPABILITY_BY_KIND,
+  WORKSPACE_SOURCE_KINDS,
+  assertSandboxProviderSupportsResources,
+  assertSandboxProviderSupportsWorkspaceSource,
+  buildSandboxCommandLine,
+  buildSandboxDetachedJobKillCommand,
+  buildSandboxDetachedJobLaunchCommand,
+  buildSandboxDetachedJobProbeCommand,
+  classifySandboxCommandExecutionRejection,
+  classifySandboxCommandExecutionResult,
+  classifySandboxPhysicalCleanupRejection,
+  classifySandboxRuntimeCommandExecution,
+  createExactHostGitCredential,
+  createNonPersistingSandboxProvisioningDiagnosticObserver,
+  createRedactedSecret,
+  createSandboxCommandExecutor,
+  createSandboxMode0600FileArchive,
+  createSandboxProvisioningDiagnosticEmitter,
+  createSandboxRuntimePrivateFile,
+  createSandboxRuntimePrivateFilePort,
+  createSandboxSecretFilePort,
+  createSandboxWorkspaceCommandExecutor,
+  defineCloudSandboxProvider,
+  defineLocalSandboxProvider,
+  describeSandboxProvider,
+  exactHostGitCredentialMatchesRepository,
+  hasAllCapabilities,
+  hasSandboxWorkspaceMaterialization,
+  isArchiveWorkspaceSource,
+  isExactHostGitCredential,
+  isGitWorkspaceSource,
+  isSandboxCleanupCoordinationPendingError,
+  isSandboxLegacyDeliverWorkspaceArgs,
+  isSandboxProvisioningCapacityError,
+  isSandboxProvisioningStageError,
+  isSandboxRuntimeCommandExecutionError,
+  isSandboxRuntimeModelSetupError,
+  isSandboxWorkspaceMaterializationError,
+  isSandboxWorkspaceTransferDetachedSignal,
+  isTerminalSandboxDetachedJobSettlement,
+  isVolumeWorkspaceSource,
+  latchSandboxExternalBoundaryGuard,
+  missingCapabilities,
+  normalizeSandboxCommandResult,
+  normalizeSandboxPhysicalCleanupResult,
+  preserveSandboxPrimaryWithCleanup,
+  reconcileSandboxDetachedJobSettlement,
+  redactSandboxProvisioningStageFailure,
+  reportSandboxProvisioningProgress,
+  reportSandboxWorkspaceProgress,
+  resolveSandboxDetachedJobLivenessPolicy,
+  resolveSandboxResources,
+  resourcesForSandboxProvision,
+  runSandboxExternalBoundary,
+  runSandboxPhysicalCleanup,
+  sandboxCleanupAttemptEvidence,
+  sandboxCleanupAttemptPlaceholder,
+  sandboxCommandExecutionDiagnosticFields,
+  sandboxDetachedJobMarkerPaths,
+  sandboxPhysicalCleanupResultFromEvidence,
+  sandboxResourceRequiredCapabilities,
+  scrubSandboxCommandOutput,
+  settleSandboxDetachedJobTriage,
+  snapshotSandboxDetachedJobLivenessPolicy,
+  snapshotSandboxProvisionContext,
+  snapshotSandboxProvisioningPolicy,
+  snapshotSandboxResources,
+  snapshotSandboxWorkspacePlan,
+  snapshotSandboxWorkspaceTransferProgress,
+  snapshotWorkspaceSource,
+  supportsWorkspaceSource,
+  taskModelLaunchMaterial,
+  triageSandboxDetachedJobProbeOutput,
+  validateSandboxCleanupAttemptEvidence,
+  validateSandboxCleanupAttemptId,
+  validateSandboxDetachedJobId,
+  validateSandboxPhysicalCleanupResult,
+  validateSandboxProvisioningDiagnosticAttemptContext,
+  validateSandboxProvisioningDiagnosticFact,
+  validateSandboxRuntimeCommandDescriptor,
+  validateSandboxRuntimePreflightCommandDescriptor,
+  validateSandboxRuntimeSetupCommandDescriptor,
+  workspaceSourceCapability,
+  workspaceSourceRequiredCapabilities,
+} from '@cap-console/sandbox-core';
+export type {
+  AcquireSandboxRunOwnerArgs,
+  AcquireSandboxRunOwnerResult,
+  AgentTerminalDataListener,
+  AgentTerminalLaunchOutcome,
+  AgentTerminalOutputMeta,
+  AgentTerminalPty,
+  ArchiveWorkspaceSource,
+  BeginSandboxCleanupAttemptResult,
+  BeginSandboxRunCleanupResult,
+  BeginSandboxRunCreateArgs,
+  ClaimSandboxRunCleanupResult,
+  CloseLegacySandboxRunCreateFenceArgs,
+  ConfirmSandboxRunCleanupOrphanArgs,
+  ConfirmSandboxRunCleanupOrphanResult,
+  CreateSandboxRuntimePrivateFilePortOptions,
+  CreateSandboxSecretFilePortOptions,
+  ExactHostGitCredential,
+  FailSandboxRunCleanupByTerminalPolicyResult,
+  GitCloneSpec,
+  GitWorkspaceSource,
+  JoinSandboxRunCleanupArgs,
+  JoinSandboxRunCleanupResult,
+  LegacySandboxTeardownProof,
+  NonPersistingSandboxProvisioningDiagnosticObserver,
+  NonPersistingSandboxProvisioningDiagnosticObserverOptions,
+  NormalizeSandboxCommandResultOptions,
+  ObserveSandboxRunCreateArgs,
+  OpenTerminalViewerAttachmentArgs,
+  PausablePty,
+  RecordSandboxCleanupAttemptResult,
+  RecordSandboxRunOwnerArgs,
+  RedactedSecret,
+  RunSandboxExternalBoundaryArgs,
+  RuntimeModelSetupFailurePhase,
+  SandboxCapabilitySource,
+  SandboxCleanupAttemptEvidence,
+  SandboxCleanupOwnershipClaim,
+  SandboxCommandDescriptorPort,
+  SandboxCommandEndpointDescriptor,
+  SandboxCommandExecutionClassification,
+  SandboxCommandExecutionDiagnosticFields,
+  SandboxCommandExecutionRequest,
+  SandboxCommandExecutionResult,
+  SandboxCommandExecutor,
+  SandboxCommandOutputSettlementFailure,
+  SandboxCommandProtocol,
+  SandboxCommandRunner,
+  SandboxCommandSettlementKind,
+  SandboxConnection,
+  SandboxCreateObservation,
+  SandboxCredentialedDeliverWorkspaceArgs,
+  SandboxDeliverWorkspaceArgs,
+  SandboxDeliverWorkspaceResult,
+  SandboxDescriptorMetadata,
+  SandboxDetachedJobLaunchPlan,
+  SandboxDetachedJobLivenessPolicySnapshot,
+  SandboxDetachedJobMarkerFile,
+  SandboxDetachedJobMarkerPaths,
+  SandboxDetachedJobProgressStat,
+  SandboxDetachedJobPublishPlan,
+  SandboxDetachedJobSettlement,
+  SandboxDetachedJobTriage,
+  SandboxDetachedTransferOptions,
+  SandboxDetachedWorkspaceTransferJob,
+  SandboxDetachedWorkspaceTransferObservation,
+  SandboxDetachedWorkspaceTransferProbe,
+  SandboxDetachedWorkspaceTransferTriage,
+  SandboxEnvironmentProviderFamily,
+  SandboxEnvironmentSourceKind,
+  SandboxExecutionMode,
+  SandboxExternalBoundaryAction,
+  SandboxExternalBoundaryEvent,
+  SandboxExternalBoundaryGuard,
+  SandboxGitCommandStage,
+  SandboxGitDeliveryPlan,
+  SandboxGitDeliveryResult,
+  SandboxGitHttpScheme,
+  SandboxGitStageExecution,
+  SandboxGitStageExecutor,
+  SandboxInventoryReconcileCandidate,
+  SandboxInventoryReconcileInput,
+  SandboxInventoryReconcileResult,
+  SandboxLegacyDeliverWorkspaceArgs,
+  SandboxOwnershipFence,
+  SandboxPhysicalCleanupOutcome,
+  SandboxPhysicalCleanupProof,
+  SandboxPhysicalCleanupResult,
+  SandboxPreflightProbeResult,
+  SandboxPreflightResult,
+  SandboxProviderCapability,
+  SandboxProviderCapabilityClass,
+  SandboxProviderDescriptor,
+  SandboxProviderDescriptorInput,
+  SandboxProviderLocation,
+  SandboxProviderPort,
+  SandboxProviderPrivateSecretFileDeleteRequest,
+  SandboxProviderPrivateSecretFileTransport,
+  SandboxProviderPrivateSecretFileWriteRequest,
+  SandboxProvisionContext,
+  SandboxProvisioningBoundaryGuard,
+  SandboxProvisioningDiagnosticAdmissionMode,
+  SandboxProvisioningDiagnosticAnomaly,
+  SandboxProvisioningDiagnosticAttemptContext,
+  SandboxProvisioningDiagnosticCause,
+  SandboxProvisioningDiagnosticChannel,
+  SandboxProvisioningDiagnosticCommandKind,
+  SandboxProvisioningDiagnosticEmitter,
+  SandboxProvisioningDiagnosticEmitterOptions,
+  SandboxProvisioningDiagnosticEvent,
+  SandboxProvisioningDiagnosticFact,
+  SandboxProvisioningDiagnosticHttpStatusClass,
+  SandboxProvisioningDiagnosticNativeState,
+  SandboxProvisioningDiagnosticObserver,
+  SandboxProvisioningDiagnosticOperation,
+  SandboxProvisioningDiagnosticOutcome,
+  SandboxProvisioningDiagnosticProviderFamily,
+  SandboxProvisioningDiagnosticRecordResult,
+  SandboxProvisioningDiagnosticRecorder,
+  SandboxProvisioningDiagnosticReplayKey,
+  SandboxProvisioningDiagnosticStage,
+  SandboxProvisioningDiagnosticStartedEvent,
+  SandboxProvisioningDiagnosticStartedFact,
+  SandboxProvisioningDiagnosticTerminalEvent,
+  SandboxProvisioningDiagnosticTerminalFact,
+  SandboxProvisioningDiagnosticTerminalOutcome,
+  SandboxProvisioningDiagnosticWorkspaceSourceKind,
+  SandboxProvisioningFailureStage,
+  SandboxProvisioningPolicySnapshot,
+  SandboxProvisioningProgressEvent,
+  SandboxProvisioningProgressReporter,
+  SandboxProvisioningProgressStage,
+  SandboxReadoptionPort,
+  SandboxReadoptionTarget,
+  SandboxResolvedEnvironmentMetadata,
+  SandboxResourceSnapshot,
+  SandboxRetentionDescriptorPort,
+  SandboxRetentionMode,
+  SandboxRetentionPolicy,
+  SandboxRunCleanupAuthorityProjection,
+  SandboxRunCleanupAuthorityState,
+  SandboxRunCleanupAuthorization,
+  SandboxRunCleanupOwnershipKind,
+  SandboxRunCleanupSettledOwner,
+  SandboxRunCleanupSettledStatus,
+  SandboxRunCreateState,
+  SandboxRunLegacyCleanupSettledStatus,
+  SandboxRunOwnerRecord,
+  SandboxRunOwnerStatus,
+  SandboxRunOwnerStore,
+  SandboxRuntimeCommandDescriptor,
+  SandboxRuntimePreflightCommandDescriptor,
+  SandboxRuntimePrivateFile,
+  SandboxRuntimePrivateFilePort,
+  SandboxRuntimeSetupCommandDescriptor,
+  SandboxSecretFileHandle,
+  SandboxSecretFileOperation,
+  SandboxSecretFilePort,
+  SandboxSecretFileWriteRequest,
+  SandboxSelectedRunPort,
+  SandboxTeardownDisposition,
+  SandboxTeardownResult,
+  SandboxTerminalDescriptorPort,
+  SandboxTerminalEndpointDescriptor,
+  SandboxTerminalProtocol,
+  SandboxTranscriptSourceBase,
+  SandboxWorkspaceArchiveTransferPort,
+  SandboxWorkspaceArchiveUploadRequest,
+  SandboxWorkspaceBoundaryEvent,
+  SandboxWorkspaceBoundaryGuard,
+  SandboxWorkspaceCommandExecutionRequest,
+  SandboxWorkspaceCommandExecutor,
+  SandboxWorkspaceCommandRunner,
+  SandboxWorkspaceDeliveryHook,
+  SandboxWorkspaceDeliveryHookContext,
+  SandboxWorkspaceDescriptor,
+  SandboxWorkspaceDescriptorPort,
+  SandboxWorkspaceFailureCause,
+  SandboxWorkspaceMaterializationHook,
+  SandboxWorkspaceMaterializationHookContext,
+  SandboxWorkspaceMaterializationMode,
+  SandboxWorkspaceMaterializationPlan,
+  SandboxWorkspaceMaterializationResult,
+  SandboxWorkspaceMaterializationStage,
+  SandboxWorkspaceOperationFailure,
+  SandboxWorkspaceProgressEvent,
+  SandboxWorkspaceProgressReporter,
+  SandboxWorkspaceTransferDetachment,
+  SandboxWorkspaceTransferProgressSnapshot,
+  SelectedSandboxRun,
+  SettleLegacySandboxRunCleanupArgs,
+  SettleLegacySandboxRunCleanupResult,
+  SettleSandboxCleanupAttemptResult,
+  TaskModelIntent,
+  TaskModelLaunchMaterial,
+  TerminalExitStatus,
+  TerminalOpaqueInputCapability,
+  TerminalTransport,
+  TerminalTransportCleanupSettlement,
+  TerminalTransportFactory,
+  TerminalTransportFrame,
+  TerminalTransportReadyState,
+  TerminalTransportWriteOutcome,
+  TerminalViewerAttachment,
+  TerminalViewerAttachmentFactory,
+  TerminalViewerAttachmentOutcome,
+  TerminalViewerDataListener,
+  TerminalViewerGeometry,
+  ValidateLegacySandboxRunCreateFenceArgs,
+  VolumeWorkspaceSource,
+  WorkspaceSource,
+  WorkspaceSourceKind,
+} from '@cap-console/sandbox-core';
+
+export {
+  SANDBOX_ENVIRONMENT_BLOCKED_STATUSES,
+  SANDBOX_ENVIRONMENT_READY_STATUS,
+  SandboxEnvironmentCompatibilityError,
+  SandboxEnvironmentError,
+  SandboxEnvironmentSourceError,
+  assertEnvironmentSelectable,
+  isEnvironmentCompatible,
+  isEnvironmentStatusSelectable,
+  normalizeResolvedEnvironment,
+  providerFamiliesForEnvironmentSource,
+  selectEnvironmentSourceForProvider,
+  sourceChecksum,
+  sourceDigest,
+  sourceReference,
+} from '@cap-console/sandbox-environment';
+export type {
+  AioDockerImageEnvironmentSource,
+  BoxLiteImageEnvironmentSource,
+  ResolvedSandboxEnvironment,
+  SandboxEnvironmentBaseSource,
+  SandboxEnvironmentCompatibility,
+  SandboxEnvironmentParameter,
+  SandboxEnvironmentRecord,
+  SandboxEnvironmentResolver,
+  SandboxEnvironmentResolverContext,
+  SandboxEnvironmentRuntimeId,
+  SandboxEnvironmentSelection,
+  SandboxEnvironmentSourceDescriptor,
+  SandboxEnvironmentStatus,
+  SandboxEnvironmentValidationProbe,
+  SandboxEnvironmentValidationResult,
+  SandboxEnvironmentValidator,
+} from '@cap-console/sandbox-environment';
+
+export {
+  InMemorySandboxRunOwnerStore,
+  SandboxProviderRegistry,
+  SandboxProviderRouter,
+  buildSandboxProvisionPlan,
+  buildSelectedSandboxRun,
+  provisionSandboxFeatureCapabilities,
+  provisionSandboxRequiredCapabilities,
+  selectConfiguredSandboxProvider,
+  selectDeliverySandboxProvider,
+  selectReadoptionSandboxProvider,
+  selectRetainedTranscriptSandboxProvider,
+  selectSandboxProvider,
+  selectSandboxProviderCandidate,
+} from './provider-center/index.js';
+export type {
+  BuildSelectedSandboxRunArgs,
+  RoutableSandboxProvider,
+  SandboxProviderCandidate,
+  SandboxProviderCandidateSelection,
+  SandboxProviderCompatibility,
+  SandboxProviderRegistryListOptions,
+  SandboxProviderRegistrySnapshot,
+  SandboxProviderRouterOptions,
+  SandboxProviderSelection,
+  SandboxProvisionPlan,
+  SelectSandboxProviderCandidateOptions,
+} from './provider-center/index.js';
+
+export {
+  CAP_SANDBOX_TRANSFER_ABSOLUTE_CAP_MS_ENV,
+  CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS_ENV,
+  DEFAULT_BOXLITE_RUNTIME_REQUIRED_TOOLS,
+  DEFAULT_CLOUD_HTTP_CAPABILITIES,
+  SANDBOX_IMAGE_ENV_DIR,
+  SANDBOX_IMAGE_ENV_PATH,
+  SANDBOX_IMAGE_PARAMETER_TIMEOUT_MS,
+  TASK_MODEL_MATERIAL_TIMEOUT_MS,
+  buildSandboxCommandExecutor,
+  buildSandboxImageParameterCleanupCommands,
+  buildSandboxImageParameterSetupCommands,
+  buildSandboxTerminalTransportFactory,
+  buildSandboxTerminalViewerAttachmentFactory,
+  buildSandboxWorkspaceBridge,
+  buildTaskModelMaterialCommands,
+  buildTaskModelMaterialVerificationCommand,
+  createConfiguredSandboxProvider,
+  createConfiguredSandboxRetentionStore,
+  deliverSandboxGitWorkspaceChanges,
+  explicitProviderFamilyLabel,
+  materializeSandboxGitWorkspace,
+  materializeTaskModel,
+  normalizeBoxLiteRuntimeRequiredTools,
+  normalizeConfiguredSandboxProviderFamily,
+  openSandboxTerminalPty,
+  providerFamilyAllowsAio,
+  providerFamilyAllowsBoxLite,
+  providerFamilyAllowsCloudHttp,
+  providerMatchesSandboxTerminalStoryRequest,
+  readBoxLiteRuntimeRequiredTools,
+  readConfiguredSandboxProviderFamily,
+  readConfiguredWorkspaceTransferLiveness,
+  readNumberEnv,
+  readOptionalEnv,
+  readSandboxLocationEnv,
+  readSandboxProviderCapabilitiesEnv,
+  readSandboxTerminalStoryProvider,
+  removeSandboxImageParameterFile,
+  removeSandboxImageParameterFileBestEffort,
+  resolveConfiguredDeploymentEnvironmentTarget,
+  resolveConfiguredProviderIdForFamily,
+  resolveConfiguredProviderProvisioningPolicyForFamily,
+  resolveConfiguredTaskProvisioningPolicy,
+  resolveSandboxCommandDescriptor,
+  resolveSandboxTerminalStoryReadiness,
+  resolveSandboxWorkspaceDescriptor,
+  resolveTerminalDescriptor,
+  runSandboxAioShellExec,
+  scrubSandboxImageParameterSecrets,
+  toLegacySandboxExecResult,
+  verifyTaskModelMaterial,
+} from './host-harness/index.js';
+export type {
+  BuildSandboxTerminalTransportFactoryArgs,
+  BuildSandboxTerminalViewerAttachmentFactoryArgs,
+  ConfiguredDeploymentEnvironmentTarget,
+  ConfiguredProviderProvisioningPolicy,
+  ConfiguredSandboxProviderFamily,
+  DeliverSandboxGitWorkspaceArgs,
+  HarnessRoutableSandboxProvider,
+  MaterializeSandboxGitWorkspaceArgs,
+  OpenSandboxTerminalPtyArgs,
+  ResolveSandboxTerminalStoryReadinessArgs,
+  RetainedSandbox,
+  SandboxHostApprovalSink,
+  SandboxHostHarness,
+  SandboxHostImageParameter,
+  SandboxHostImageParameterProfile,
+  SandboxHostLogger,
+  SandboxHostMaterialResolvers,
+  SandboxHostProvisionLookup,
+  SandboxHostRuntime,
+  SandboxHostRuntimePreflightProbe,
+  SandboxHostRuntimePrivateFilePort,
+  SandboxHostRuntimeRegistry,
+  SandboxHostSetupCommand,
+  SandboxHostSetupPlan,
+  SandboxHostSkillInstaller,
+  SandboxHostSkillInstallers,
+  SandboxImageParameterSetupCommand,
+  SandboxRetentionStore,
+  SandboxTerminalExitStatus,
+  SandboxTerminalPtyMode,
+  SandboxTerminalStoryProvider,
+  SandboxTerminalStoryReadiness,
+  SandboxTerminalTransportLogger,
+  SandboxWorkspaceBridge,
+  TaskModelMaterialCommand,
+} from './host-harness/index.js';
+
+export {
+  BackpressureController,
+  DEFAULT_HIGH_WATER_MARK,
+  DEFAULT_LOW_WATER_MARK,
+} from './terminal/backpressure.js';
+export type {
+  BackpressureOptions,
+  FlowSignal,
+} from './terminal/backpressure.js';
+
+export {
+  aggregateTerminalCleanupSettlements,
+  confirmedEmptyTerminalCleanupSettlement,
+  indeterminateTerminalCleanupSettlement,
+  normalizeTerminalCleanupDecision,
+} from './terminal/cleanup.js';
+
+export {
+  DEFAULT_CODEX_INTERACTIVE_LAUNCH_ARGV,
+  assertNativeCodexInteractiveLaunchArgv,
+  terminalSessionIdForTask,
+  toSandboxTerminalRuntimeExec,
+} from './terminal/runtime.js';
+export type {
+  SandboxLegacyTerminalExec,
+  SandboxResolvedTaskLaunchContext,
+  SandboxTerminalExec,
+  SandboxTerminalExecResult,
+  SandboxTerminalExecutionMode,
+  SandboxTerminalExitSignal,
+  SandboxTerminalLaunchContext,
+  SandboxTerminalRuntime,
+  SandboxTerminalStartup,
+} from './terminal/runtime.js';
+
+export {
+  selectLaunch,
+} from './terminal/select-launch.js';
+export type {
+  SandboxTerminalLaunchPlan,
+} from './terminal/select-launch.js';
+
+export {
+  CODEX_PROMPT_FILE_PATH,
+  buildAttachSessionCommand,
+  buildCodexLaunchLine,
+  buildDetachedCodexLaunchLine,
+  buildExactHasSessionCommand,
+  buildHasSessionCommand,
+  buildResizeDetachedSessionCommand,
+  buildViewerAttachSessionCommand,
+  detachedSessionName,
+  exactDetachedSessionTarget,
+  headlessExitFile,
+  wrapHeadlessDetachedSession,
+  wrapInDetachedSession,
+} from './terminal/session-commands.js';
+
+export {
+  SandboxTerminalSession,
+  exitCodeFromExecBody,
+  probeSessionLiveness,
+} from './terminal/session-engine.js';
+export type {
+  SandboxTerminalOwnerRecoveryEvent,
+  SandboxTerminalOwnerRecoveryPolicy,
+  SandboxTerminalSessionExitStatus,
+  SandboxTerminalSessionLogger,
+  SandboxTerminalSessionMode,
+} from './terminal/session-engine.js';
+
+export {
+  SESSION_CAST_FILENAME,
+  SESSION_LOG_FILENAME,
+  readSessionLogTail,
+  stripAnsi,
+} from './terminal/snapshot.js';
+
+export {
+  TerminalTransportRegistry,
+  createTerminalTransportRegistry,
+} from './terminal/transport.js';
+export type {
+  TerminalTransportBuildArgs,
+  TerminalTransportFactoryBuilder,
+  TerminalTransportFactoryContext,
+} from './terminal/transport.js';
+
+export {
+  SandboxTerminalViewerAttachment,
+  SandboxTerminalViewerAttachmentFactory,
+} from './terminal/viewer-attachment.js';
+export type {
+  SandboxTerminalViewerAttachmentFactoryArgs,
+  TerminalViewerAttachmentPolicy,
+} from './terminal/viewer-attachment.js';
+
+export {
+  buildSandboxSettlePlan,
+  forceFailSettlePlan,
+  terminalSettlePlan,
+} from './lifecycle/settle-plan.js';
+export type {
+  SandboxSettlePlan,
+} from './lifecycle/settle-plan.js';
+
+export {
+  DEFAULT_SANDBOX_TRANSFER_POLL_INTERVAL_MS,
+  GIT_HTTP_LOW_SPEED_LIMIT_BYTES_PER_SECOND,
+  GIT_HTTP_LOW_SPEED_TIME_SECONDS,
+  SANDBOX_TRANSFER_CONTROL_EXEC_TIMEOUT_MS,
+  buildGitCloneCommand,
+  buildGitDeliveryCommands,
+  classifySandboxGitFailure,
+  deliverSandboxGitWorkspaceStaged,
+  materializeSandboxGitWorkspaceStaged,
+  parseGitTransferProgress,
+  parseSandboxExecResult,
+  sandboxRepoSourceDir,
+  sandboxWorkspaceTransferJobId,
+  scrubSandboxExecSecrets,
+  systemSandboxGitDeadlineDriver,
+} from './workspace/git.js';
+export type {
+  SandboxExecResult,
+  SandboxGitDeadlineDriver,
+  SandboxGitFailureClassification,
+  SandboxGitFailureEvidence,
+  SandboxGitHelperOptions,
+} from './workspace/git.js';
+
+export {
+  RepoStoreArchiveStreamError,
+  createRepoStoreArchiveStream,
+  estimateRepoStoreCopyBytes,
+  splitRepoStorePath,
+} from './workspace/repo-archive.js';
+export type {
+  RepoStoreArchiveStreamArgs,
+} from './workspace/repo-archive.js';
+
+// ---------------------------------------------------------------------------
+// Tolerated provider internals (phase-7a debt — 阶段 7a 端口化根治).
+//
+// Each symbol below is provider-internal surface that ratcheted `apps/api`
+// consumers (the taskless probe, the sandbox-environments validator, and
+// their tests) still reach through this facade. They are tolerated ONLY as
+// the enumerated entries below; the healthy end state of this list is EMPTY
+// (phase 7a ports these consumers off provider internals).
+// `@cap-console/sandbox-cloud-http` is no longer re-exported at all: zero
+// consumers reached it through the barrel.
+// ---------------------------------------------------------------------------
+
+export {
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  AIO_SANDBOX_WORKSPACE_DIR,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.spec.ts, src/runtime-models/configured-runtime-model-taskless-probe.ts, src/sandbox-environments/sandbox-environments.validator.ts
+  AioSandboxContainerController,
+  // phase-7a: test/repo-copy-injection-e2e.mjs
+  buildAioLocalSandboxProvisionSpec,
+  // phase-7a: src/metrics/resource-sampler.service.ts
+  createAioHttpCommandExecutor,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.ts
+  createAioRuntimePrivateFilePort,
+  // phase-7a: src/sandbox/workspace-source-resolver.ts
+  createRepoStoreVolumeInspector,
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  validateAioEnvironment,
+} from '@cap-console/sandbox-provider-aio';
+
+export type {
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.ts, src/sandbox-environments/sandbox-environments.validator.ts
+  AioDockerClient,
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  AioEnvironmentValidationCommand,
+  // phase-7a: src/sandbox/workspace-source-resolver.ts
+  RepoStoreVolumeInspector,
+} from '@cap-console/sandbox-provider-aio';
+
+export {
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.spec.ts
+  BOXLITE_DEFAULT_DISK_SIZE_GB,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.spec.ts
+  BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.ts, src/sandbox-environments/sandbox-environments.validator.ts, test/generated-private-git-boxlite-native.test.mjs
+  BoxLiteRestClient,
+  // phase-7a: src/public-surface/durable-admission-cross-surface.story.spec.ts, test/generated-private-git-boxlite-native.test.mjs
+  BoxLiteSandboxProvider,
+  // phase-7a: src/public-surface/durable-admission-cross-surface.story.spec.ts
+  FakeBoxLiteClient,
+  // phase-7a: test/generated-private-git-boxlite-native.test.mjs
+  createBoxLiteRuntimePreflight,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.ts
+  createBoxLiteWorkspaceSecurityAdapter,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.ts, test/generated-private-git-boxlite-native.test.mjs
+  deleteBoxLiteSandboxAndConfirm,
+  // phase-7a: src/public-surface/durable-admission-cross-surface.story.spec.ts, src/runtime-models/configured-runtime-model-taskless-probe.ts, src/sandbox-environments/sandbox-environments.validator.ts
+  readBoxLiteProviderConfig,
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  requiredToolsForBoxLiteCapabilities,
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  validateBoxLiteEnvironment,
+} from '@cap-console/sandbox-provider-boxlite';
+
+export type {
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.spec.ts, src/runtime-models/configured-runtime-model-taskless-probe.ts
+  BoxLiteClient,
+  // phase-7a: src/sandbox-environments/sandbox-environments.validator.ts
+  BoxLiteEnvironmentValidationCommand,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.spec.ts, src/runtime-models/configured-runtime-model-taskless-probe.ts
+  BoxLiteProviderConfig,
+  // phase-7a: src/runtime-models/configured-runtime-model-taskless-probe.ts
+  BoxLiteSandbox,
+} from '@cap-console/sandbox-provider-boxlite';

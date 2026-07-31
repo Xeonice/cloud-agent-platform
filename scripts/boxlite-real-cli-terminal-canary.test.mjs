@@ -6,10 +6,12 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import {
-  BoxLitePartialCreateError,
-  BoxLiteRestClient,
-} from '../packages/sandbox/dist/index.js';
+import { BoxLiteRestClient } from '../packages/sandbox/dist/index.js';
+// Provider-internal symbol: scripts canaries are not ratcheted apps/api
+// consumers, so the reviewed facade whitelist (close-gate-blindspots 2.3) does
+// not carry it — import it from the provider package dist directly, like
+// aio-terminal-pair-stale-sweep-canary.mjs does.
+import { BoxLitePartialCreateError } from '../packages/sandbox-provider-boxlite/dist/index.js';
 import {
   assertRealCliContinuousOutputEvidence,
   beginBoxLiteCreateAttempt,

@@ -93,6 +93,8 @@ tie-breaker.
 See [docs/testing-strategy.md](./docs/testing-strategy.md).
 
 Every active sandbox package that owns implementation has a `coverage` script
-using `c8 --100`. The repo-level `pnpm coverage:sandbox` runs the sandbox
-coverage gate across core, cloud HTTP, AIO provider, BoxLite provider, and the
-provider center.
+using `c8 --100`. Run them per package, e.g.
+`pnpm --filter @cap-console/sandbox-core coverage`. (The former repo-level
+`pnpm coverage:sandbox` aggregate was deleted by close-gate-blindspots 5.4: no
+CI lane consumed it and it was measured red at change time — a
+declared-but-unconsumed script is the state 总则 4 forbids.)

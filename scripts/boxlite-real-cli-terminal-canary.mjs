@@ -61,7 +61,6 @@ import {
 } from '../apps/api/dist/terminal/terminal.gateway.js';
 import { WriteLockService } from '../apps/api/dist/write-lock/write-lock.service.js';
 import {
-  BoxLitePartialCreateError,
   BoxLiteRestClient,
   buildExactHasSessionCommand,
   buildSandboxCommandExecutor,
@@ -73,6 +72,11 @@ import {
   openSandboxTerminalPty,
   terminalSessionIdForTask,
 } from '../packages/sandbox/dist/index.js';
+// Provider-internal symbol: scripts canaries are not ratcheted apps/api
+// consumers, so the reviewed facade whitelist (close-gate-blindspots 2.3) does
+// not carry it — import it from the provider package dist directly, like
+// aio-terminal-pair-stale-sweep-canary.mjs does.
+import { BoxLitePartialCreateError } from '../packages/sandbox-provider-boxlite/dist/index.js';
 
 const requireFromApi = createRequire(
   new URL('../apps/api/package.json', import.meta.url),
