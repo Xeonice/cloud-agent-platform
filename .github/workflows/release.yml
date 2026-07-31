@@ -560,10 +560,38 @@ jobs:
             "${{ secrets.VERCEL_ORG_ID }}" "${{ secrets.VERCEL_PROJECT_ID }}" \
             > .vercel/project.json
 
+      # A REHEARSAL MUST NOT BE ABLE TO MOVE PRODUCTION. `deploy_console` exists so
+      # this job can be exercised without cutting a release; if that exercise
+      # published the production console it would not be a rehearsal, it would be a
+      # release of the console alone — the split-version state this whole change
+      # exists to prevent, delivered by its own test switch.
+      #
+      # It is not hypothetical. Rehearsing right after this change landed would have
+      # published a console sending `x-cap-console-build` to a deployed api built
+      # before that header was admitted, and every request would have died at the
+      # CORS preflight. So a real Release deploys to production; anything else
+      # deploys a preview, which exercises the identical chain — pull, link
+      # assertion, build, deploy, version proof — against a URL that carries no
+      # version claim.
+      - name: Decide the deploy target
+        id: target
+        run: |
+          set -euo pipefail
+          if [[ '${{ github.event_name }}' == 'release' ]]; then
+            echo 'environment=production' >> "$GITHUB_OUTPUT"
+            echo 'prod=--prod' >> "$GITHUB_OUTPUT"
+            echo 'deploy-console: target = PRODUCTION (a published Release)'
+          else
+            echo 'environment=preview' >> "$GITHUB_OUTPUT"
+            echo 'prod=' >> "$GITHUB_OUTPUT"
+            echo 'deploy-console: target = PREVIEW (rehearsal; production is only moved by a Release)'
+          fi
+
       - name: Deploy the console at the release version
         run: |
           set -euo pipefail
-          npx --yes vercel@latest pull --yes --environment=production \
+          npx --yes vercel@latest pull --yes \
+            --environment='${{ steps.target.outputs.environment }}' \
             --token "${{ secrets.VERCEL_TOKEN }}"
           # `pull` rewrites project.json from the server. Re-assert the target
           # rather than trusting it: linking to the wrong project is the failure
@@ -578,12 +606,31 @@ jobs:
             }
             console.log(`deploy-console: linked to ${link.projectName ?? link.projectId}`);
           '
-          npx --yes vercel@latest build --prod \
+          # Refuse to build without the identity rather than baking the sentinel and
+          # discovering it downstream. The proof step below is a presence check; this
+          # is the precondition it cannot express.
+          if [[ -z "${VITE_BUILD_ID:-}" ]]; then
+            echo "deploy-console: FATAL — VITE_BUILD_ID is empty, so the console would" >&2
+            echo "bake the \"dev\" sentinel and the api would refuse it." >&2
+            exit 1
+          fi
+          npx --yes vercel@latest build ${{ steps.target.outputs.prod }} \
             --token "${{ secrets.VERCEL_TOKEN }}"
-          npx --yes vercel@latest deploy --prebuilt --prod \
+          npx --yes vercel@latest deploy --prebuilt ${{ steps.target.outputs.prod }} \
             --token "${{ secrets.VERCEL_TOKEN }}"
         env:
           EXPECTED_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          # THE BUILD ID HAS TO BE PASSED HERE. `vite.config.ts` defines it as
+          # `process.env.VITE_BUILD_ID ?? "dev"`, evaluated in whatever process runs
+          # the build — so a `vercel build` that inherits no such variable bakes the
+          # sentinel. That is EXACTLY the defect this change exists to remove: the
+          # value was plumbed end to end on the image path and not at all on the
+          # Vercel one, so `buildId()` returned a real version from the image and the
+          # literal "dev" from the console anyone actually used. Omitting it here
+          # would have reintroduced it in the job that fixes it, and the api now
+          # REFUSES a sentinel from a deployed console, so the release would ship a
+          # console the api rejects.
+          VITE_BUILD_ID: ${{ needs.resolve-release.outputs.version }}
 
       - name: Prove the deployed console carries the release version
         run: |
@@ -593,9 +640,24 @@ jobs:
           # while VITE_BUILD_ID silently defaulted. Assert the value is present in
           # the built output rather than trusting the exit code.
           expected='${{ needs.resolve-release.outputs.version }}'
-          if ! grep -rq -- "${expected}" .vercel/output 2>/dev/null; then
+          if [[ -z "${expected}" ]]; then
+            echo "deploy-console: FATAL — no release version to assert." >&2
+            exit 1
+          fi
+          # As a QUOTED literal. Vite replaces the compile-time value with
+          # `JSON.stringify(...)`, so the baked id appears in the bundle with its
+          # quotes; a bare substring search would also match the version turning up
+          # in a source-map path or a comment and report success for a build that
+          # baked the sentinel. This assertion is still presence-only — it cannot
+          # prove WHICH expression the literal came from — which is why the step
+          # above refuses to build at all when the variable is unset. Two weak checks
+          # on the same fact, on purpose: the value was silently defaulting for the
+          # entire life of the Vercel path before anything looked.
+          if ! grep -rqF -- "\"${expected}\"" .vercel/output 2>/dev/null; then
             echo "deploy-console: FATAL — the release version ${expected} is not present" >&2
-            echo "in the built console output. VITE_BUILD_ID did not reach the bundle." >&2
+            echo "as a baked literal in the built console output. VITE_BUILD_ID did" >&2
+            echo "not reach the bundle, so this console would present the \"dev\"" >&2
+            echo "sentinel — which the api refuses from a deployed console." >&2
             exit 1
           fi
           echo "deploy-console: the built console carries ${expected}"

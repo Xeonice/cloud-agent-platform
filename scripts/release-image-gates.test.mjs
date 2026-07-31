@@ -23,6 +23,25 @@ const RELEASE_WORKFLOW = readFileSync(
 const IMAGE = 'ghcr.io/xeonice/cap-api:v1.2.3';
 const SECRET_CANARY = 'cap-release-image-secret-canary-74ad19';
 
+/**
+ * A job with its `#` comment lines removed.
+ *
+ * Needed because prose satisfied a gate here. `'the release publishes the console'`
+ * asserted `/VITE_BUILD_ID/` against the raw job text and passed for the job's whole
+ * life while the variable was NEVER set — the only occurrences were in a comment
+ * explaining why it mattered. The workflow that exists to stop the console baking a
+ * sentinel was baking one, and the assertion about it was green.
+ *
+ * Only whole-line comments are stripped. A `#` inside a shell string or a `${{ }}`
+ * expression is code, and this must not eat it.
+ */
+function jobCode(name) {
+  return workflowJob(name)
+    .split('\n')
+    .filter((line) => !/^\s*#/u.test(line))
+    .join('\n');
+}
+
 function workflowJob(name) {
   const marker = `  ${name}:\n`;
   const start = RELEASE_WORKFLOW.indexOf(marker);
@@ -424,9 +443,16 @@ test('the release publishes the console, and only for a real Release', () => {
   // mid-release with the images already pushed.
   assert.match(console_, /github\.event_name == 'release'/u);
   assert.match(console_, /inputs\.deploy_console == true/u);
-  // The release version must reach the console build, or the console ships
-  // carrying the sentinel — the exact gap this job exists to close.
-  assert.match(console_, /VITE_BUILD_ID/u);
+  // The release version must reach the console build as an ACTUAL assignment, or
+  // the console ships carrying the sentinel — the exact gap this job exists to
+  // close. Matched against comment-stripped text: the previous version of this
+  // assertion accepted the raw job, and a comment mentioning the name satisfied it
+  // while nothing set the variable.
+  assert.match(
+    jobCode('deploy-console'),
+    /^\s+VITE_BUILD_ID:\s*\$\{\{\s*needs\.resolve-release\.outputs\.version\s*\}\}\s*$/mu,
+    'the release version must be ASSIGNED to VITE_BUILD_ID, not merely mentioned',
+  );
   // And the deploy succeeding is not evidence the value arrived: assert it is in
   // the built output rather than trusting the exit code.
   assert.match(console_, /\.vercel\/output/u);
@@ -435,6 +461,54 @@ test('the release publishes the console, and only for a real Release', () => {
   for (const secret of ['VERCEL_TOKEN', 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID']) {
     assert.match(console_, new RegExp(secret, 'u'));
   }
+});
+
+test('a rehearsal deploys a preview; only a Release moves production', () => {
+  // The rehearsal switch was added so this job could be exercised without cutting a
+  // release, and it deployed `--prod`. That is not a rehearsal — it is a release of
+  // the console ALONE, which is the split-version state this change exists to
+  // prevent, delivered by its own test switch. Concretely: rehearsing right after
+  // the change landed would have published a console sending `x-cap-console-build`
+  // to a deployed api built before that header was admitted, and every request
+  // would have died at the CORS preflight.
+  const code = jobCode('deploy-console');
+  assert.match(code, /environment=production/u, 'a Release must target production');
+  assert.match(code, /environment=preview/u, 'anything else must target a preview');
+  assert.match(
+    code,
+    /if \[\[ '\$\{\{ github\.event_name \}\}' == 'release' \]\]/u,
+    'the target must be chosen by whether this is a real Release',
+  );
+  // The production flag is derived, never hardcoded onto build/deploy — a literal
+  // `--prod` on either line would send every rehearsal to production regardless of
+  // what the target step decided.
+  for (const line of code.split('\n')) {
+    if (!/npx .*vercel@latest (build|deploy)/u.test(line)) continue;
+    assert.doesNotMatch(
+      line,
+      /--prod\b/u,
+      `\`--prod\` is hardcoded on: ${line.trim()} — it must come from steps.target`,
+    );
+    assert.match(line, /steps\.target\.outputs\.prod/u);
+  }
+});
+
+test('the console build refuses to run without an identity to bake', () => {
+  // The proof step is a presence check on the built output and cannot express a
+  // precondition: it runs after a build that already baked whatever it had. If the
+  // variable is empty the build must not happen at all, because the api now refuses
+  // a sentinel from a deployed console — so a console built without it is a console
+  // the release ships and the api rejects.
+  const code = jobCode('deploy-console');
+  assert.match(
+    code,
+    /if \[\[ -z "\$\{VITE_BUILD_ID:-\}" \]\]; then/u,
+    'the build must refuse an empty VITE_BUILD_ID rather than baking the sentinel',
+  );
+  // And the proof searches for a QUOTED literal: Vite bakes the value via
+  // JSON.stringify, so a bare substring search would also match the version
+  // appearing in a source-map path and report success for a sentinel build.
+  assert.match(code, /grep -rqF -- "\\"\$\{expected\}\\""/u);
 });
 
 test('deployable Release assets wait for the complete-set latest promotion gate', () => {
