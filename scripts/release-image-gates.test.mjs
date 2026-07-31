@@ -477,6 +477,44 @@ test('the console job can run the toolchain the Vercel project asks for', () => 
     'pnpm must be installed before the Vercel CLI runs the project install command');
 });
 
+test('compat evidence walks to the nearest conclusion and pins the bytes', () => {
+  // v0.47.0 is the release that broke on the old form of this gate. It asked the
+  // RELEASE COMMIT for a 'task model N-1 compatibility' conclusion; a release-please
+  // merge changes only CHANGELOG and the manifest, ci.yml's path filter therefore
+  // reports backend=false and SKIPS the job, and the gate refused for want of
+  // evidence. Two changes each correct alone: from the day the filter landed, every
+  // CLEAN release was going to fail here. The five before it passed only because
+  // their tagged commits happened to carry backend changes.
+  const code = jobCode('attach-run-assets');
+
+  // The walk needs history; a shallow checkout would fail closed on every release.
+  assert.match(code, /fetch-depth: 200/u, 'the evidence walk needs history to walk');
+  assert.match(code, /git rev-list --first-parent --max-count=50/u);
+
+  // A skip is not a pass. It is walked PAST, never accepted as evidence.
+  assert.match(code, /completed:success\)/u);
+  assert.match(code, /completed:skipped\)/u);
+  // Everything else — absent, failure, cancelled, still running — refuses. Walking
+  // past a check that RAN and did not pass is the one thing this must never do.
+  assert.match(code, /refusing to attest/u);
+
+  // The assertion that keeps the attestation literally true rather than inferred:
+  // the released backend bytes must be the checked backend bytes. Without it the
+  // gate would be trusting a chain of path-filter decisions instead of comparing
+  // the subject.
+  assert.match(
+    code,
+    /git diff --quiet "\$\{evidence\}" "\$\{RELEASE_GIT_SHA\}" -- "\$\{SUBJECT\[@\]\}"/u,
+    'the evidence commit and the release must be byte-identical over the subject',
+  );
+
+  // The subject must stay in step with ci.yml's filter. If one widens and the other
+  // does not, this list is the half that fails — so it is pinned here too.
+  for (const path of ['apps/api', 'packages', 'scripts', '.github/workflows']) {
+    assert.ok(code.includes(path), `the compat subject must include ${path}`);
+  }
+});
+
 test('a rehearsal never promotes latest', () => {
   // `latest` moving is the promise at the top of this workflow: one Release is one
   // mutually-compatible set, and `latest` advances only once the whole set exists.
@@ -578,7 +616,7 @@ test('attestation is generated only from verified check-run evidence, drift-guar
 
   // Honesty split (D1): the verified-compat gate runs BEFORE generation, and
   // the drift-guard assertion runs BEFORE upload.
-  const verify = runAssets.indexOf('name: Verify task model N-1 compatibility check-run');
+  const verify = runAssets.indexOf('name: Verify task model N-1 compatibility evidence');
   const generate = runAssets.indexOf('name: Generate task model attestation asset');
   const drift = runAssets.indexOf(
     'name: Assert attested buildIdentity matches the api image GIT_SHA build-arg',
@@ -592,11 +630,18 @@ test('attestation is generated only from verified check-run evidence, drift-guar
   // never assumed from workflow adjacency — and anything but completed:success
   // fails the step closed.
   assert.match(runAssets, /^      checks: read$/mu);
+  // The check name is declared once and used by the query — pinned on BOTH sides,
+  // because a gate that queries the wrong check name finds nothing and a walk that
+  // finds nothing must never be mistaken for a walk that found a pass.
+  assert.match(runAssets, /CHECK='task model N-1 compatibility'/u);
   assert.match(
     runAssets,
-    /gh api -X GET[\s\S]*\/check-runs[\s\S]*check_name='task model N-1 compatibility'/u,
+    /gh api -X GET[\s\S]*\/check-runs[\s\S]*-f check_name="\$\{CHECK\}"/u,
   );
-  assert.match(runAssets, /if \[ "\$result" != "completed:success" \]; then/u);
+  // Only `completed:success` is evidence. A skip is walked past — see the walk test
+  // — and every other state refuses; nothing here accepts an inconclusive result.
+  assert.match(runAssets, /completed:success\)\n\s+evidence="\$\{sha\}"/u);
+  assert.match(runAssets, /if \[ -z "\$\{evidence\}" \]; then/u);
 
   // The generator consumes the SAME resolve-release git_sha the api image was
   // built with, and only ever a verified `--compat-verified true`.

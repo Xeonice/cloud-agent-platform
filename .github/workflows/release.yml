@@ -405,28 +405,104 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The evidence walk below needs history. A shallow checkout would make
+          # `rev-list` stop at the release commit and the walk would fail closed on
+          # every release, which is a different way of being broken.
+          fetch-depth: 200
 
-      # Fail the attestation path closed unless the release commit's N-1
-      # compatibility check-run ACTUALLY concluded successfully. release.yml
-      # triggers on release:published while the compat job lives in ci.yml on
-      # the merged commit, so adjacency proves nothing — query the evidence.
-      - name: Verify task model N-1 compatibility check-run
+      # Fail the attestation path closed unless the RELEASED BACKEND BYTES have a
+      # successful N-1 compatibility check-run behind them. release.yml triggers on
+      # release:published while the compat job lives in ci.yml on the merged commit,
+      # so adjacency proves nothing — query the evidence.
+      #
+      # WHY THIS IS NOT JUST "ASK THE RELEASE COMMIT". It was, and v0.47.0 is the
+      # release that broke on it. A release-please merge changes CHANGELOG.md and
+      # the manifest and nothing else, so ci.yml's path filter — added later, and
+      # correct on its own terms — reports `backend=false` and SKIPS the compat job.
+      # The gate then saw `completed:skipped`, had no positive evidence, and refused.
+      # Two changes each right in isolation, and nobody checked what they meant
+      # together: from that point on, every CLEAN release was going to fail here.
+      # The five releases before it passed only because their tagged commits happened
+      # to carry backend changes.
+      #
+      # A skip is not a pass, so this does not accept one. It walks first-parent
+      # history for the nearest commit that actually CONCLUDED, requires that
+      # conclusion to be success, and then requires the backend subject to be
+      # BYTE-IDENTICAL between that commit and the release. That last assertion is
+      # what keeps the attestation literally true rather than inferred: the code
+      # being released is the code that was checked, not merely code whose
+      # intervening diffs looked unrelated.
+      - name: Verify task model N-1 compatibility evidence
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_GIT_SHA: ${{ needs.resolve-release.outputs.git_sha }}
         run: |
-          result="$(gh api -X GET \
-            "repos/${{ github.repository }}/commits/${RELEASE_GIT_SHA}/check-runs" \
-            -f check_name='task model N-1 compatibility' \
-            --jq '[.check_runs[]] | sort_by(.id) | last | if . == null then "absent" else "\(.status):\(.conclusion)" end')" || {
-            echo "error: could not query check-runs for ${RELEASE_GIT_SHA} — refusing to attest compatibilityChecksPassed" >&2
-            exit 1
+          set -euo pipefail
+          CHECK='task model N-1 compatibility'
+          # The subject the compat job exercises, and the paths ci.yml's filter
+          # treats as reaching it. Kept in step with that filter on purpose: if one
+          # widens and the other does not, this assertion is the half that fails.
+          SUBJECT=(apps/api packages scripts .github/workflows package.json
+                   pnpm-lock.yaml pnpm-workspace.yaml turbo.json)
+
+          conclusion_for() {
+            gh api -X GET "repos/${{ github.repository }}/commits/$1/check-runs" \
+              -f check_name="${CHECK}" \
+              --jq '[.check_runs[]] | sort_by(.id) | last
+                    | if . == null then "absent" else "\(.status):\(.conclusion)" end'
           }
-          echo "task model N-1 compatibility check-run for ${RELEASE_GIT_SHA}: ${result}"
-          if [ "$result" != "completed:success" ]; then
-            echo "error: the release commit's 'task model N-1 compatibility' check-run is ${result} — refusing to attest compatibilityChecksPassed" >&2
+
+          evidence=''
+          for sha in $(git rev-list --first-parent --max-count=50 "${RELEASE_GIT_SHA}"); do
+            if ! result="$(conclusion_for "${sha}")"; then
+              echo "error: could not query check-runs for ${sha} — refusing to attest" >&2
+              exit 1
+            fi
+            echo "  ${sha}  ${result}"
+            case "${result}" in
+              completed:success)
+                evidence="${sha}"
+                break
+                ;;
+              completed:skipped)
+                # The job existed and was deliberately not run because this commit
+                # could not reach the subject. Keep walking; the byte-identity
+                # assertion below is what actually decides, so this walk only has to
+                # FIND the evidence, not reason about what it skipped past.
+                continue
+                ;;
+              *)
+                # absent, failure, cancelled, in_progress — no usable conclusion, and
+                # walking past it would mean silently ignoring a check that ran and
+                # did not pass.
+                echo "error: ${sha} reports '${result}' for '${CHECK}' — refusing to attest" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if [ -z "${evidence}" ]; then
+            echo "error: no successful '${CHECK}' within 50 first-parent commits of" >&2
+            echo "${RELEASE_GIT_SHA} — refusing to attest compatibilityChecksPassed" >&2
             exit 1
           fi
+
+          if [ "${evidence}" = "${RELEASE_GIT_SHA}" ]; then
+            echo "compat evidence: the release commit itself passed '${CHECK}'"
+          else
+            if ! git diff --quiet "${evidence}" "${RELEASE_GIT_SHA}" -- "${SUBJECT[@]}"; then
+              echo "error: '${CHECK}' last passed at ${evidence}, but the backend subject" >&2
+              echo "changed between there and ${RELEASE_GIT_SHA}:" >&2
+              git diff --name-only "${evidence}" "${RELEASE_GIT_SHA}" -- "${SUBJECT[@]}" >&2
+              echo "Refusing to attest compatibilityChecksPassed for code that was not checked." >&2
+              exit 1
+            fi
+            echo "compat evidence: ${evidence} passed '${CHECK}', and the backend subject"
+            echo "is byte-identical there and at ${RELEASE_GIT_SHA} — the released code IS"
+            echo "the checked code."
+          fi
+          echo "compat_evidence_sha=${evidence}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
