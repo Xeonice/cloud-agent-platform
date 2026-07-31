@@ -27,4 +27,6 @@
 ## 5. Track: verify (depends: remove-player)
 
 - [x] 5.1 `typecheck` + `lint` + unit tests green for `@cap/ui` and `apps/web` (the new helper/component tests included). — @cap/ui + @cap/web typecheck ✓ (rebuilt @cap/ui dist so the new `scrollToTop`/`scrollback` types resolve); eslint ✓ on all changed/new files; vitest: cast-log (11) + cast-log.headless (1) + 105 others green. NOTE: 1 unrelated red — `update-status-query.test.ts` — is caused by FOREIGN uncommitted WIP in `apps/web/src/lib/api/queries.ts` that reverts the shipped responsive-update-check `refetchInterval`; not touched by this change.
-- [ ] 5.2 Real-service check: open a finished task's 终端记录 tab → the full terminal history is shown at once, scrollable, ANSI colors intact, with no play/seek/speed controls and no input; an empty task → honest empty face.
+- [x] 5.2 Real-service check: open a finished task's 终端记录 tab → the full terminal history is shown at once, scrollable, ANSI colors intact, with no play/seek/speed controls and no input; an empty task → honest empty face.
+
+> 5.2 结案注记（2026-07-31，重构阶段0清欠）：该真机检查已于 2026-06-18 随 v0.6.0 生产实景验证完成（完成任务的终端记录 tab 全量历史一次呈现、可滚动、ANSI 色保留、无播放控件；真实 cast 52 行 vs 旧动画 6 行），当时未回勾。据实补记后归档。

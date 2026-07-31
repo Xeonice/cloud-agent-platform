@@ -67,3 +67,11 @@ the approval as one cohesive, verifiable change: the page-level amber banner, th
 - **Pixel baseline:** the session design baseline (`session-cockpit-redesign`
   design-baseline) must gain the gated-state variant (banner visible, H1 等待审批,
   写入前确认 tag) for a deterministic approval-state visual gate.
+
+---
+
+> **挂起注记（2026-07-31，重构阶段 0 清欠，决策 12）**：本 proposal 方向未被推翻，
+> 但其接缝（approval-surface.tsx / session-terminal.tsx / $taskId.tsx /
+> PermissionRequest 链路）将被架构重构阶段 6（目录归拢）与阶段 7（terminal 抽包）
+> 重排。在为本 change 编写 tasks/specs 之前，必须对照
+> `docs/refactor-master-plan.md` 重读上述接缝的现状。

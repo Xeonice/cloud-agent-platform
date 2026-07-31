@@ -195,15 +195,56 @@ The console SHALL provide BOTH a modal (on `/dashboard`) and a full-page form (`
 - **THEN** its options come from `GET /repos` (the imported set) and no repo outside the imported scope is selectable
 
 ### Requirement: Configurable cross-origin API and WebSocket endpoints
-`apps/web` SHALL read the API base URL and WebSocket URL from Vite environment configuration (`VITE_API_BASE_URL` / `VITE_WS_URL`, migrated from the prior `NEXT_PUBLIC_*` names) via `import.meta.env`, SHALL NOT assume the api is same-origin, and SHALL document them in `.env.example` alongside `VITE_AUTH_TOKEN`. The reused `config.ts`, `api-client.ts` (now `lib/api/real.ts`), and `ws-client.ts` (`TerminalSocket`) SHALL read endpoints from this configuration so a Vercel web-only deploy can target a separate Fly/compose api origin.
+`apps/web` SHALL resolve the API base URL and WebSocket URL from a single
+configuration module used by REST, SSE, and terminal WebSocket clients. Explicit
+build-time Vite configuration (`VITE_API_BASE_URL` / `VITE_WS_URL`) SHALL take
+precedence for web-only and split-domain deploys. When those values are absent,
+the compose Node-server web image SHALL inject public runtime configuration
+(`CAP_PUBLIC_API_BASE_URL`, `CAP_PUBLIC_WS_URL`, `CAP_PUBLIC_API_HOST`,
+`CAP_PUBLIC_API_PORT`, `CAP_PUBLIC_API_PROTOCOL`) before hydration. When no
+explicit public endpoint is configured in the browser, the console SHALL derive
+the API/WS host from the current `window.location.hostname`, preserving the
+browser protocol and using the configured API port (default `8080`). Server-side
+web rendering SHALL use `CAP_SERVER_API_BASE_URL` for internal API calls so the
+web container can dial the compose service name.
 
-#### Scenario: Web targets a cross-origin api
-- **WHEN** `VITE_API_BASE_URL`/`VITE_WS_URL` point at a different origin than the web app
-- **THEN** the console issues its REST and WebSocket calls to that configured origin rather than its own
+#### Scenario: Explicit Vite endpoints win
 
-#### Scenario: Env names are migrated to the Vite convention
-- **WHEN** the console reads its endpoint configuration
-- **THEN** it resolves `VITE_API_BASE_URL`/`VITE_WS_URL`/`VITE_AUTH_TOKEN` via `import.meta.env` and no longer references `NEXT_PUBLIC_*` variables
+- **WHEN** `VITE_API_BASE_URL` and `VITE_WS_URL` are set at build time
+- **THEN** the browser sends REST/SSE calls and terminal WebSocket connections to
+  those configured endpoints
+- **AND** runtime public config and browser same-host fallback do not override
+  them
+
+#### Scenario: Runtime public endpoints win over same-host fallback
+
+- **WHEN** the Node-server web image injects `CAP_PUBLIC_API_BASE_URL` and/or
+  `CAP_PUBLIC_WS_URL`
+- **THEN** the browser uses those public endpoints without rebuilding the web
+  image
+- **AND** those values are treated as public routing data only, never secrets
+
+#### Scenario: Browser derives same-host API endpoints from the opened host
+
+- **WHEN** the operator opens the release web image at
+  `http://100.101.167.99:3000` with no explicit public API base URL
+- **AND** runtime config sets `CAP_PUBLIC_API_PORT=18080`
+- **THEN** REST/SSE requests target `http://100.101.167.99:18080`
+- **AND** terminal WebSocket connections target `ws://100.101.167.99:18080`
+
+#### Scenario: HTTPS browser origin derives WSS terminal endpoint
+
+- **WHEN** the operator opens the console over `https://cap.example.com`
+- **AND** no explicit WebSocket URL is configured
+- **THEN** the derived terminal endpoint uses `wss://` with the configured API
+  host/port
+
+#### Scenario: SSR uses the internal API base
+
+- **WHEN** the web route renders on the Node server
+- **THEN** server-side API calls use `CAP_SERVER_API_BASE_URL` or the documented
+  localhost fallback
+- **AND** they do not use the browser-facing host-published API port
 
 ### Requirement: TanStack Start application shell and build
 `apps/web` SHALL be a TanStack Start application built with Vite (Vinxi-free, Vite-native), with the build plugin order `tailwindcss()` → `tanstackStart({ srcDirectory: 'src' })` → `viteReact()` → `nitro()` (this order is load-bearing; mis-ordering breaks the build). It SHALL remove all Next.js artifacts (`next.config.mjs`, `next-env.d.ts`, the Next-shaped `vercel.json`, and the `next` dependency) and SHALL define a `__root` route providing `<HeadContent>`/`<Outlet>`/`<Scripts>`, injecting the compiled `app.css`, mounting a Sonner `<Toaster>`, and running a theme pre-hydration inline script to set the `.dark` class before paint (avoiding FOUC). The router SHALL be created by a per-request `getRouter()` factory that constructs a NEW `QueryClient` per request (never a module singleton, to avoid cross-user SSR state leakage), creates the router with `{ queryClient }` context, and wires `setupRouterSsrQueryIntegration`. The TanStack Start version SHALL be pinned exactly (RC channel).
@@ -979,37 +1020,47 @@ The console SHALL expose a left-sidebar `镜像管理` product navigation entry 
 opens an authenticated `/images` page for task startup image/default management.
 The `/settings` access/defaults form SHALL render a user-scoped default image
 selector as a plain dropdown backed by account settings; the saved value SHALL
-follow the current user and SHALL be used for new task creation when no per-task
-override is supplied. The `/images` page SHALL be dedicated to the admin-only
-image library. Image-library controls SHALL be separate from the user default
-selector and SHALL be hidden behind an explicit image-reference registration
-action rather than occupying the settings form. The image library SHALL list
-sandbox environments with name, provider family/source kind, runtime
-compatibility, readiness status, and last validation time. Admins SHALL be able
-to register an existing AIO or BoxLite registry image reference, run validation,
-and inspect validation errors. The settings area SHALL NOT surface
-image-library management controls. The image library SHALL NOT present upload,
-build, registry-hosting, registry-credential, loaded-image, or rootfs-source
-controls.
+follow the current user and SHALL be used for new task creation when no
+per-task override is supplied. The `/images` page SHALL be dedicated to the
+admin-only image library. Image-library controls SHALL be separate from the user
+default selector and SHALL be hidden behind an explicit add/import action rather
+than occupying the settings form. The image library SHALL list sandbox
+environments with name, provider family, image reference, runtime compatibility,
+readiness status, and last validation time. Admins SHALL be able to create/import
+an AIO image or BoxLite image, run validation, inspect validation errors, and
+view/copy provider-specific extension templates. The settings area SHALL NOT
+surface image-library management controls.
 
 #### Scenario: Admin opens image management from the sidebar
 
 - **WHEN** an admin opens the console sidebar
 - **THEN** the sidebar includes `镜像管理`
 - **WHEN** the admin opens `/images`
-- **THEN** the page shows the admin image library with configured environments,
+- **THEN** the page shows the admin image library with configured images,
   readiness, and compatibility information
 - **AND** validation details are available without crowding the main list
 
-#### Scenario: Admin registers an existing image reference
+#### Scenario: Admin imports an AIO image
 
-- **WHEN** an admin opens the image registration form
-- **THEN** the form asks for a display name, provider family, already-published
-  image reference, and optional runtime ids
-- **AND** the primary action uses registration/reference language rather than
-  upload/build language
-- **AND** the form links to the external build/push guide and base-image
-  templates
+- **WHEN** an admin chooses to add an image and selects provider `AIO`
+- **THEN** the form asks for an image name, a pinned image reference, and optional
+  runtime compatibility
+- **AND** the form does not expose an `AIO loaded image` source type
+
+#### Scenario: Admin imports a BoxLite image
+
+- **WHEN** an admin chooses to add an image and selects provider `BoxLite`
+- **THEN** the form asks for an image name, a pinned image reference, and optional
+  runtime compatibility
+- **AND** the form does not expose a `BoxLite rootfs` source type
+
+#### Scenario: Image extension template is available
+
+- **WHEN** an admin is adding or viewing an AIO or BoxLite image
+- **THEN** the image library provides a copyable Dockerfile template derived from
+  the matching official CAP sandbox base image
+- **AND** it provides build, tag, push, and import guidance using a pinned tag
+  rather than `latest`
 
 #### Scenario: Operator chooses their own default image
 
@@ -1223,13 +1274,29 @@ display raw cron expressions.
 The task creation dialog and the full-page advanced task creation route SHALL
 let operators choose whether the submitted task runs once or repeatedly. The
 repeated mode SHALL reuse the same task-template controls as immediate task
-creation and SHALL add recurrence controls that do not require cron syntax.
+creation and SHALL add shared recurrence controls that do not require cron
+syntax. Supported human choices SHALL include daily, weekdays, weekly, monthly,
+hourly at a selected minute of the hour, and clock-aligned 5, 10, 15, or 30
+minute intervals.
 
 #### Scenario: Recurrence controls use human choices
 - **WHEN** the operator configures repeated execution
-- **THEN** the console offers supported human-readable recurrence choices such
-  as daily, weekdays, weekly, or monthly at a local time
+- **THEN** the console offers daily, weekdays, weekly, monthly, hourly, and
+  fixed minute interval choices without exposing cron syntax
 - **AND** it submits recurrence fields rather than a user-entered cron string
+
+#### Scenario: Hourly recurrence selects the minute of the hour
+- **WHEN** the operator selects hourly recurrence and chooses minute `15`
+- **THEN** both task creation surfaces describe the schedule as running each hour
+  at minute `15`
+- **AND** the submitted recurrence includes `kind = hourly`, `minuteOfHour = 15`,
+  and the selected timezone
+
+#### Scenario: Minute interval uses supported clock-aligned presets
+- **WHEN** the operator selects `minuteInterval` recurrence
+- **THEN** the interval Select offers exactly 5, 10, 15, and 30 minutes
+- **AND** selecting 15 submits `kind = minuteInterval`, `intervalMinutes = 15`,
+  and the selected timezone
 
 #### Scenario: Existing task template controls are shared
 - **WHEN** the operator switches between run-once and run-repeatedly modes
@@ -1644,3 +1711,42 @@ progress object is absent.
 - **WHEN** the summary carries no progress object (legacy backend or non-transfer stage)
 - **THEN** the card renders exactly its existing state/stage presentation
 - **AND** no percent or progress affordance is fabricated
+
+### Requirement: Recurring task timezone selection uses the browser-local IANA timezone
+Both recurring-task creation surfaces SHALL use one shared IANA timezone Select
+rather than a free-text timezone field. For a new schedule whose timezone has not
+been changed by the operator, the console SHALL select the valid IANA timezone
+reported by the browser after hydration. It SHALL fall back to `UTC` when the
+browser value is unavailable or invalid. Editing an existing schedule SHALL
+preserve its persisted timezone regardless of the current browser timezone.
+
+#### Scenario: New schedule defaults to the browser timezone
+- **WHEN** the hydrated browser reports `Asia/Shanghai` for a new recurring task
+  and the operator has not changed the timezone
+- **THEN** the timezone Select chooses `Asia/Shanghai`
+- **AND** the submitted recurrence explicitly includes `Asia/Shanghai`
+
+#### Scenario: Invalid browser timezone falls back to UTC
+- **WHEN** the browser cannot report a valid IANA timezone for a new recurring
+  task
+- **THEN** the timezone Select chooses `UTC`
+- **AND** the console submits `UTC` rather than an empty or arbitrary string
+
+#### Scenario: Editing preserves the persisted timezone
+- **WHEN** an operator edits a schedule stored with `Europe/London` from a browser
+  whose local timezone is `Asia/Shanghai`
+- **THEN** the timezone Select remains `Europe/London`
+- **AND** hydration does not overwrite the persisted value
+
+#### Scenario: Browser timezone detection is SSR-safe
+- **WHEN** a recurring-task creation surface is server-rendered and hydrated
+- **THEN** the server render and first client render use deterministic timezone
+  state without a hydration mismatch
+- **AND** client detection updates only a new, untouched timezone selection
+
+#### Scenario: Existing timezone remains selectable
+- **WHEN** the timezone option catalog does not otherwise contain the browser's
+  resolved timezone or an edited schedule's persisted timezone
+- **THEN** the Select includes that valid IANA identifier together with `UTC`
+- **AND** it does not require free-text entry
+

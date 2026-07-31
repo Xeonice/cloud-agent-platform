@@ -1,0 +1,133 @@
+{
+  "$comment": "工件01：上下文地图（机器可读）。消费者：scripts/api-module-layout-check v2（阶段3报告模式、阶段6拦截模式）、阶段6目录归拢。散文版与边缘裁定理由见 01-contexts-manifest.md 与 08-ddd-target-architecture.md §A。修改本文件 = 架构决策，须经 change 留痕。",
+  "version": 1,
+  "scope": "apps/api/src",
+  "layers": {
+    "$comment": "上下文内部层序。import 只允许从左往右：interface→application→domain/store。domain 不得 import 任何层；store 只被 application import；Prisma 只允许出现在 store 层文件（*.store.ts）。",
+    "order": ["interface", "application", "domain", "store"]
+  },
+  "contexts": {
+    "task-execution": {
+      "type": "core",
+      "aggregates": ["Task"],
+      "directories": [
+        "tasks",
+        "task-admission",
+        "admission-coordination",
+        "task-operations",
+        "task-lifecycle",
+        "task-concurrency",
+        "task-failure",
+        "inline-admission",
+        "guardrails",
+        "scheduled-tasks",
+        "creds"
+      ],
+      "notes": {
+        "guardrails": "决策8：拆解后编排残余并入本上下文 application 层",
+        "inline-admission": "legacy 隔离区，退役即 rm -rf，归拢时保持目录级可删除性",
+        "creds": "会话级临时凭据，铸造/销毁跟随任务会话生命周期（creds.module.ts 自述其消费方是 tasks lifecycle 与 guardrails）",
+        "scheduled-tasks": "调度产生任务，与 Task 同一通用语言"
+      }
+    },
+    "sandbox-provisioning": {
+      "type": "core",
+      "aggregates": ["SandboxRun", "SandboxEnvironment"],
+      "directories": [
+        "sandbox",
+        "sandbox-environments",
+        "task-provisioning-diagnostics",
+        "provision-lookup"
+      ],
+      "notes": {
+        "task-provisioning-diagnostics": "名字带 task- 但通用语言是开通证据/诊断，归属 provisioning"
+      }
+    },
+    "agent-runtime": {
+      "type": "core",
+      "aggregates": [],
+      "directories": ["agent-runtime", "runtimes", "runtime-models"],
+      "notes": {
+        "$comment": "无聚合——纯策略对象（policy/mechanism），现状已正确，不做充血改造"
+      }
+    },
+    "delivery": {
+      "type": "core",
+      "aggregates": ["Repo"],
+      "directories": ["forge", "repos", "repo-store"]
+    },
+    "identity-access": {
+      "type": "supporting",
+      "aggregates": ["User"],
+      "directories": [
+        "auth",
+        "auth-otp",
+        "auth-password",
+        "accounts",
+        "principal",
+        "api-keys",
+        "mcp-tokens",
+        "admin-seed"
+      ]
+    },
+    "interface": {
+      "type": "supporting",
+      "aggregates": [],
+      "directories": [
+        "v1",
+        "mcp",
+        "openapi",
+        "public-surface",
+        "surface-parity",
+        "terminal",
+        "session-recording",
+        "write-lock",
+        "http",
+        "rate-limit"
+      ],
+      "notes": {
+        "write-lock": "终端单写者锁帧协议，非任务不变量",
+        "http": "zod-validation pipe，入口层工具",
+        "terminal": "WS 网关与录制回放；terminal.gateway 的编排职责在阶段4后应只剩协议翻译"
+      }
+    },
+    "platform-ops": {
+      "type": "generic",
+      "aggregates": [],
+      "directories": [
+        "self-update",
+        "update-status",
+        "metrics",
+        "runner-metrics",
+        "audit",
+        "mail",
+        "observability",
+        "settings",
+        "health",
+        "prisma",
+        "crypto",
+        "testing"
+      ],
+      "notes": {
+        "$comment": "决策7：本上下文豁免战术 DDD，保持事务脚本形态",
+        "audit": "横切订阅者；阶段4后经事件订阅消费 task-execution，terminal detail 例外走显式调用",
+        "prisma": "基础设施，全上下文可见（fan-in 127），不受跨上下文规则约束",
+        "crypto": "共享内核（shared kernel），同 prisma 豁免"
+      }
+    }
+  },
+  "crossContextRules": {
+    "$comment": "跨上下文 import 的唯一合法形态。阶段3报告模式建 ratchet，阶段6转拦截。",
+    "allowed": [
+      "对方上下文显式导出的 *.port.ts 接口与 DI token",
+      "领域事件订阅（阶段4后）",
+      "*.module.ts 内的 DI 组装（composition exemption，沿用 layout v1）",
+      "platform-ops 的 prisma/crypto/observability 作为共享内核被任何上下文 import"
+    ],
+    "forbidden": [
+      "跨上下文直接 import 具体 *.service.ts / 实现类",
+      "跨上下文触碰对方聚合的 Prisma 表（跨聚合写库）"
+    ]
+  },
+  "pendingDecisions": []
+}

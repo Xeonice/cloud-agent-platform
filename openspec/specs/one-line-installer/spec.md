@@ -23,7 +23,7 @@ requiring no backend service.
 
 ### Requirement: Installer wraps the release-image bring-up flow
 
-The script SHALL bootstrap a local self-host by wrapping the release-image bring-up flow — preflight Docker, delegate to the site-hosted `quick-deploy.sh`, fetch `docker-compose.prod.yml`, and run the published `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images — rather than cloning the repository or running `make up`. When `CAP_VERSION` is unset, the delegated quick-deploy path SHALL resolve it to the latest GitHub Release tag before starting the stack. The default target SHALL select a sandbox backend by host OS: macOS defaults to the BoxLite sandbox path, Linux defaults to the AIO sandbox path. Operators SHALL be able to override the selected provider before running the installer.
+The script SHALL bootstrap a local self-host by wrapping the release-image bring-up flow - preflight Docker, delegate to the site-hosted `quick-deploy.sh`, fetch `docker-compose.prod.yml`, and run the published `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images - rather than cloning the repository or running `make up`. When `CAP_VERSION` is unset, the delegated quick-deploy path SHALL resolve it to the latest GitHub Release tag before starting the stack. The default target SHALL select a sandbox backend by host OS: macOS defaults to the BoxLite sandbox path, Linux defaults to the AIO sandbox path. Operators SHALL be able to override the selected provider before running the installer. The install output SHALL direct operators to log in with the printed admin email/password, not a shared legacy bearer token.
 
 #### Scenario: macOS bootstrap defaults to BoxLite
 
@@ -46,6 +46,12 @@ The script SHALL bootstrap a local self-host by wrapping the release-image bring
 
 - **WHEN** the script is inspected
 - **THEN** it contains no `git clone`, no `make up`, and no local image build
+
+#### Scenario: Local account credential is surfaced
+
+- **WHEN** the installer completes successfully
+- **THEN** it directs the operator to log in with the admin email/password printed by quick-deploy
+- **AND** it does not direct the operator to use an `Authorization: Bearer` token for console login
 
 ### Requirement: Environment preflight and honest failure
 
@@ -164,25 +170,17 @@ compose fetch base to the site so it retrieves this asset, while remaining overr
 
 ### Requirement: Prebuilt installer is auditable and discloses caveats
 
-The site's prebuilt install path SHALL be inspectable and SHALL disclose the equivalent manual
-alternative and the path's caveats, consistent with the host-root trust boundary. The site SHALL
-present the inspectable `quick-deploy.sh` URL and SHALL state that this path is platform-aware
-(macOS BoxLite, Linux AIO, explicit AIO requires amd64), legacy-token (not local-account production),
-host-root-equivalent via `docker.sock`, and that the prebuilt `cap-web` console is localhost-only.
+The site's prebuilt install path SHALL be inspectable and SHALL disclose the equivalent manual alternative and the path's caveats, consistent with the host-root trust boundary. The site SHALL present the inspectable `quick-deploy.sh` URL and SHALL state that this path is platform-aware (macOS BoxLite, Linux AIO, explicit AIO requires amd64), local-account based, host-root-equivalent via `docker.sock`, and that the prebuilt `cap-web` console is localhost-only.
 
 #### Scenario: Inspectable URL and manual alternative disclosed
 
 - **WHEN** a visitor views the prebuilt install instructions on the site
-- **THEN** the inspectable `quick-deploy.sh` URL is shown and the equivalent manual steps
-  (download `docker-compose.prod.yml`, run the prebuilt compose) are presented, so users are not
-  required to pipe an unreviewed script to a shell
+- **THEN** the inspectable `quick-deploy.sh` URL is shown and the equivalent manual steps (download `docker-compose.prod.yml`, run the prebuilt compose) are presented, so users are not required to pipe an unreviewed script to a shell
 
 #### Scenario: Caveats disclosed
 
 - **WHEN** a visitor views the prebuilt install option
-- **THEN** it states the path is platform-aware (macOS BoxLite, Linux AIO, explicit AIO requires amd64),
-  legacy-token (not local-account production), host-root-equivalent, and that the prebuilt `cap-web`
-  is localhost-only
+- **THEN** it states the path is platform-aware (macOS BoxLite, Linux AIO, explicit AIO requires amd64), local-account based, host-root-equivalent, and that the prebuilt `cap-web` is localhost-only
 
 ### Requirement: Installer discloses all-interface binding without configuring public access
 
@@ -247,3 +245,4 @@ runtime readiness, and task-time package/repository dependencies.
   sandbox image pulls
 - **AND** it documents that Release-asset delivery can avoid BoxLite pulling the
   sandbox image from GHCR during sandbox creation
+
