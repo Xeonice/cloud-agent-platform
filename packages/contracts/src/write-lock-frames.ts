@@ -29,8 +29,10 @@ export type WriteLease = z.infer<typeof WriteLeaseSchema>;
  * The full lease map shape: `sessionId` -> lease. Modeled as a record so the
  * inferred type is exactly `Record<sessionId, { writerClientId, leaseExpiry }>`.
  */
-export const WriteLeaseMapSchema = z.record(z.string(), WriteLeaseSchema);
-export type WriteLeaseMap = z.infer<typeof WriteLeaseMapSchema>;
+// `WriteLeaseMapSchema` / `WriteLeaseMap` stood here — a `Record<string, WriteLease>`
+// for a many-leases view the frame protocol never adopted. `WriteLeaseSchema`
+// itself IS used (`lease: WriteLeaseSchema.nullable()` below); only the map form
+// was unreferenced, by anything, ever.
 
 // ---------------------------------------------------------------------------
 // Keystroke frame (lock-gated raw write)

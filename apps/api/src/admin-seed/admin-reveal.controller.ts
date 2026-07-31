@@ -1,9 +1,14 @@
 import { Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
+
+import {
+  AdminRevealResponseSchema,
+  type AdminRevealResponse,
+} from '@cap-console/contracts';
+
 import { PrismaService } from '@/prisma/prisma.service';
 import {
   AdminRevealHolder,
   SYSTEM_SETTINGS_ROW_ID,
-  type AdminRevealCredential,
 } from './admin-seed.service';
 
 /**
@@ -25,12 +30,11 @@ import {
  * and is cleared the moment the reveal is consumed — it is NEVER persisted.
  */
 
-/**
- * The reveal response: the credential exactly once, or `{}` when there is
- * nothing to reveal (already consumed, restarted past an unconsumed reveal, or a
- * fixed `ADMIN_PASSWORD` was configured so no plaintext was ever held).
- */
-export type AdminRevealResponse = AdminRevealCredential | Record<string, never>;
+// `AdminRevealResponse` was declared here as
+// `AdminRevealCredential | Record<string, never>` — the right shape, in the wrong
+// place. The contract now carries both arms (a union, with the empty one strict),
+// so the two-armed response is stated once and the schema below can be executed
+// against it.
 
 @Controller('auth')
 export class AdminRevealController {
@@ -47,6 +51,14 @@ export class AdminRevealController {
   @Post('admin/reveal')
   @HttpCode(HttpStatus.OK)
   async reveal(): Promise<AdminRevealResponse> {
+    // Parsed on the way out, as `SmtpController` and `RuntimesService` now are.
+    // This schema had no call site anywhere, which is exactly how the contract
+    // came to describe only one of the two bodies this endpoint returns.
+    return AdminRevealResponseSchema.parse(await this.revealOnce());
+  }
+
+  /** The reveal itself. Split out so the parse above wraps every return path. */
+  private async revealOnce(): Promise<AdminRevealResponse> {
     const credential = this.holder.peek();
     // No plaintext in memory ⇒ nothing this process can reveal (consumed earlier,
     // restarted past an unconsumed reveal, or a fixed ADMIN_PASSWORD was used).

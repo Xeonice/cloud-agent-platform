@@ -13,6 +13,41 @@ import {
 
 const UNRELATED_PATH = '/unrelated/sandbox/keep';
 
+/**
+ * Proof that the CHILD has processed SIGTERM.
+ *
+ * The SIGTERM case below holds the credential-directory exec open, signals the
+ * child, and then asserts that no credential write follows. That assertion is only
+ * meaningful once the child has actually RUN its signal handler — the handler is
+ * what sets the stop flag the product checks immediately before the write. Waiting
+ * a turn of THIS process's event loop orders nothing in the child's, so the barrier
+ * used to be decided by whichever process the scheduler happened to favour. It held
+ * on an idle machine and gave way on a loaded CI runner, where the released exec
+ * response reached the child before the queued signal did and the write went out —
+ * failing an assertion about product behaviour on account of test timing.
+ *
+ * This is preloaded into the child and arms a SECOND SIGTERM listener, but only
+ * after the script has registered its own: `--import` runs before the entry module,
+ * so `setImmediate` re-arms until the entry module's synchronous top level (where
+ * `runCli` registers its handler) has run. Node fires signal listeners in
+ * registration order, so the product's handler completes — including the
+ * synchronous `lease.requestStop()` — before this one writes its byte. The child is
+ * single-threaded, so a byte on fd 3 means the stop flag is already set.
+ */
+const SIGTERM_OBSERVER = `data:text/javascript,${encodeURIComponent(`
+import { writeSync } from 'node:fs';
+const arm = () => {
+  if (process.listenerCount('SIGTERM') > 0) {
+    process.on('SIGTERM', () => {
+      try { writeSync(3, 'stopped'); } catch {}
+    });
+    return;
+  }
+  setImmediate(arm);
+};
+setImmediate(arm);
+`)}`;
+
 function createEnvelope(runtime = 'codex') {
   if (runtime === 'codex') {
     const auth = JSON.stringify({ token: randomBytes(48).toString('base64url') });
@@ -267,6 +302,8 @@ test('standalone SIGTERM waits for exact session cleanup before removing only it
   const child = spawn(
     process.execPath,
     [
+      '--import',
+      SIGTERM_OBSERVER,
       resolve('scripts/aio-preload-canary-credential.mjs'),
       '--endpoint',
       `http://127.0.0.1:${address.port}`,
@@ -277,8 +314,10 @@ test('standalone SIGTERM waits for exact session cleanup before removing only it
       '--unsafe-preloaded-credential-handoff',
       'acknowledged',
     ],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
+    { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] },
   );
+  // Latched before the first await so the byte cannot arrive unobserved.
+  const childProcessedSigterm = once(child.stdio[3], 'data');
   const stdout = [];
   const stderr = [];
   child.stdout.on('data', (chunk) => stdout.push(chunk));
@@ -288,7 +327,15 @@ test('standalone SIGTERM waits for exact session cleanup before removing only it
 
   await prepareSeen;
   child.kill('SIGTERM');
-  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  // Wait for the CHILD to have run its handler, not for a turn of our own loop.
+  // Raced against exit because `node --test` applies no default timeout here and
+  // run-suite passes none, so a regression must fail rather than hang the suite.
+  await Promise.race([
+    childProcessedSigterm,
+    once(child, 'exit').then(() => {
+      throw new Error('child exited before it processed SIGTERM');
+    }),
+  ]);
   assert.equal(child.exitCode, null);
   assert.equal(events.some((event) => event.startsWith('credential-cleanup:')), false);
   releasePrepare();

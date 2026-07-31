@@ -5,6 +5,9 @@ import {
 } from "@cap-console/contracts";
 
 vi.mock("./config", () => ({
+  // The console reports which release it was built from on every call; a mock
+  // that omits it makes the module look like it lost an export.
+  buildId: () => "test-build",
   wsUrl: () => "wss://terminal.example.test",
   operatorToken: () => "operator-token",
 }));

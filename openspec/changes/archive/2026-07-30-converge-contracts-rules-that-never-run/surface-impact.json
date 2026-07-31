@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "converge-contracts-rules-that-never-run",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "No /v1 operation, request or response schema, status code or error body moves, and no file under apps/api/src/v1/ or packages/contracts/src/public-v1-operations.ts is modified by this change (verified against the diff). STATED EXPLICITLY because verification asked and the first draft of this reason did not say it: the change DOES take a new dependency ON /v1's internals. The execution gate's INDIRECTION_POINTS entry pins apps/api/src/public-surface/public-v1-operation.ts:436-455 by file, line range and wrapper pattern, so refactoring that parse site now fails a repository gate. That is a new coupling to the public surface with no byte on it moving — a developer-workflow consequence, carried under the `ci` surface of the tasks that added it, not a wire change."
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "The MCP PROTOCOL is untouched: no tool, argument, result shape, registration or transport behaviour changes, and no file under apps/api/src/mcp/ is modified. CARVE-OUT, written explicitly because the first draft of this reason was accurate and incomplete: GET/POST/DELETE /mcp-tokens is console REST, not an MCP tool, and it DOES change — three outbound parses are added (McpTokenMintResponseSchema, McpTokenListResponseSchema, McpTokenRevokeResponseSchema), so a stored row that drifts from the declaration now fails the request where it previously served an unvalidated body. No wire shape moves; a new failure mode appears. That behaviour is declared under internalOnly below."
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "The document projects the operation registry, which is untouched. Verified rather than asserted: grep for AdminReveal and McpToken in apps/api/src/openapi/openapi.registry.ts returns ZERO hits, so neither the new AdminRevealResponseSchema arm nor any of the added response parses is projected into a published document. V1CreateTaskRequestSchema and V1ListQuerySchema stay registered and stay parsed through the operation table."
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "The playground builds its catalogue from the shared PUBLIC_V1_OPERATIONS manifest (apps/web/src/components/api/catalog.ts:5,83), which this change does not modify; no file under apps/web/src/components/api/ is touched. Inherited from openapi above rather than independently load-bearing, which is what verification asked this reason to say."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "contract-rule-execution",
+      "reason": "Two console REST request surfaces tighten onto declarations they already claimed to follow: POST/PATCH under /accounts stop accepting a password over 200 characters (restoring the contract's .max(200), whose comment states it guards the argon2 hasher), and the OTP verify body stops accepting a code that is not six digits. Neither adds nor removes a field. GET /auth/admin-reveal gains a contract arm modelling 'no credential to reveal', which is the body it has always returned on two of three paths. Adds outbound response parses on the SMTP test, admin-reveal, OTP acknowledgement and all three /mcp-tokens endpoints: each validates a body that previously left unvalidated, so a projection that drifts from its declaration now fails the request instead of serving. Adds an execution-reachability gate over packages/contracts and corrects two defects in the import-reachability gate shipped in the previous change. Deletes local DTO restatements in apps/api/src/accounts and apps/api/src/auth-otp, the mcp-token list declaration and its both-branch tolerance in apps/web, and one stale env-var constant."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "contracts-registry",
+    "requiresWireCompatibilityFixture": true
+  }
+}

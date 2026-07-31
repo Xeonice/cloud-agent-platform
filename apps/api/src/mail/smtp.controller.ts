@@ -13,7 +13,9 @@ import {
 import { createTransport, type Transporter } from 'nodemailer';
 import {
   SaveSmtpConfigRequestSchema,
+  SmtpConfigReadSchema,
   TestSmtpConfigRequestSchema,
+  TestSmtpConfigResponseSchema,
   type SaveSmtpConfigRequest,
   type SmtpConfigRead,
   type TestSmtpConfigRequest,
@@ -71,7 +73,14 @@ export class SmtpController {
     // config surfaces as a masked projection with empty non-secret fields and no
     // stored password. This lets the admin UI render the unconfigured state
     // uniformly without a separate "does it exist" probe.
-    return (await this.smtp.readConfig()) ?? EMPTY_SMTP_CONFIG_READ;
+    //
+    // Parsed on the way out, following `v1-events.controller.ts` and
+    // `public-list-pages.ts`. `SmtpConfigReadSchema` had NO call site anywhere in
+    // the repository, which is exactly how this endpoint came to emit a body its
+    // own declared contract rejected — an unexecuted schema cannot notice.
+    return SmtpConfigReadSchema.parse(
+      (await this.smtp.readConfig()) ?? EMPTY_SMTP_CONFIG_READ,
+    );
   }
 
   /**
@@ -87,7 +96,10 @@ export class SmtpController {
     @Body() body: SaveSmtpConfigRequest,
   ): Promise<SmtpConfigRead> {
     await this.requireAdmin(req);
-    return this.smtp.saveConfig(body);
+    // Parsed on the way out for the same reason as the read: both paths return
+    // `SmtpConfigRead`, and a projection that only one of them validates is a
+    // projection that can drift on the other.
+    return SmtpConfigReadSchema.parse(await this.smtp.saveConfig(body));
   }
 
   /**
@@ -105,6 +117,16 @@ export class SmtpController {
   async test(
     @Req() req: AuthenticatedRequest,
     @Body() body: TestSmtpConfigRequest,
+  ): Promise<TestSmtpConfigResponse> {
+    // Parsed on the way out. The handler has four separate `return` statements, so
+    // the parse wraps a helper rather than one of them — a parse on one path is a
+    // parse that misses three.
+    return TestSmtpConfigResponseSchema.parse(await this.runTest(req, body));
+  }
+
+  private async runTest(
+    req: AuthenticatedRequest,
+    body: TestSmtpConfigRequest,
   ): Promise<TestSmtpConfigResponse> {
     const admin = await this.requireAdmin(req);
 

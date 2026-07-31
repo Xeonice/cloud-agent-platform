@@ -733,15 +733,24 @@ export type RegisterForgeConnectionRequest = z.infer<
  * `passLast4` is an optional masked suffix for display only. The plaintext
  * password is NEVER on this schema.
  */
+// A read is a projection of a singleton that MAY NEVER HAVE BEEN SAVED, and that
+// is what separates it from `SaveSmtpConfigRequestSchema` below — which keeps
+// every `.min(1)`, because a save is what creates the row and is the point where
+// emptiness can still be rejected. This schema carried the write shape's
+// strictness for its whole life while three reachable states violated it: the
+// controller coalescing an absent row to a blank tuple, a row saved without a
+// password (`hasPassword: false` with everything else filled, so `hasPassword` is
+// not a discriminant), and the console mock's fixed host/port/user with an empty
+// `from`. Nothing noticed because nothing executed the schema.
 export const SmtpConfigReadSchema = z.object({
-  /** SMTP server host (non-secret), e.g. `smtp.resend.com`. */
-  host: z.string().min(1),
-  /** SMTP server port (non-secret), e.g. `465`. */
-  port: z.number().int().min(1).max(65535),
-  /** SMTP auth username (non-secret), e.g. `resend`. */
-  user: z.string().min(1),
-  /** Sender (From) address used for outbound mail (non-secret). */
-  from: z.string().min(1),
+  /** SMTP server host (non-secret), e.g. `smtp.resend.com`. Empty when unset. */
+  host: z.string(),
+  /** SMTP server port (non-secret), e.g. `465`. Zero when unset. */
+  port: z.number().int().min(0).max(65535),
+  /** SMTP auth username (non-secret), e.g. `resend`. Empty when unset. */
+  user: z.string(),
+  /** Sender (From) address used for outbound mail (non-secret). Empty when unset. */
+  from: z.string(),
   /** Non-reversible presence indicator for the stored password. Never the password. */
   hasPassword: z.boolean(),
   /** Optional masked suffix of the stored password for display (e.g. last 4 chars). */

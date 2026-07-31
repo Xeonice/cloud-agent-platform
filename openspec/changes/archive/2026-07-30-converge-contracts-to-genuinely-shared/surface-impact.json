@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "change": "converge-contracts-to-genuinely-shared",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": { "status": "unchanged", "reason": "Thirteen local restatements of shared types are replaced by imports of the declarations they restate. No /v1 operation, request or response schema, status code or error body changes; the wire shapes were already what the contract describes." },
+    "mcp": { "status": "unchanged", "reason": "No MCP tool, argument, result shape, registration or transport behaviour is touched." },
+    "openapi": { "status": "unchanged", "reason": "The document projects the operation registry; converging duplicate declarations does not alter a registered schema." },
+    "apiPlayground": { "status": "unchanged", "reason": "The playground reads the same unchanged registry." },
+    "internalOnly": { "status": "changed", "scope": "contract-duplicate-convergence", "reason": "Removes 13 duplicate declarations across apps/api, apps/web and packages/sandbox-environment; adds type-only imports in packages/sandbox-core plus a parity gate for its runtime family array; reconciles two already-drifted pairs (the SMTP read body and the /runtimes envelope) where the declaration and the bytes already contradicted each other; adds a build gate failing on an unimported contracts export." }
+  },
+  "protocolDifferences": [],
+  "verification": { "id": "contracts-registry", "requiresWireCompatibilityFixture": false }
+}

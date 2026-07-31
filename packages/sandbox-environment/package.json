@@ -31,6 +31,7 @@
     "@cap-console/sandbox-core": "workspace:*"
   },
   "devDependencies": {
+    "@cap-console/contracts": "workspace:*",
     "@cap-console/eslint-config": "workspace:*",
     "@cap-console/tsconfig": "workspace:*",
     "@types/node": "^20.14.0",

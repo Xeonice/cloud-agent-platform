@@ -1,4 +1,8 @@
-import { DEFAULT_AGENT_RUNTIME_ID, type AgentRuntimeId } from '@cap-console/contracts';
+import {
+  DEFAULT_AGENT_RUNTIME_ID,
+  type AgentRuntimeId,
+  type ExecutionMode,
+} from '@cap-console/contracts';
 import type {
   SandboxRuntimePreflightCommandDescriptor,
   SandboxRuntimePrivateFile,
@@ -79,12 +83,14 @@ export const DEFAULT_RUNTIME_ID: RuntimeId = DEFAULT_AGENT_RUNTIME_ID;
  * turn completion, so the task reaches a terminal status autonomously. Selected by
  * CONSUMER at task creation (console → interactive-pty; MCP / `/v1` → headless-exec).
  */
-export type ExecutionMode = 'interactive-pty' | 'headless-exec';
+export type { ExecutionMode };
 
 /**
  * The transcript format a runtime declares. The sandbox transcript-read layer (which
- * owns the parsers) dispatches by this tag — the port stays a dependency-light LEAF and
- * never imports the parsers or `@cap-console/contracts`.
+ * owns the parsers) dispatches by this tag — the port stays a dependency-light LEAF
+ * and never imports the parsers. It does take type-only declarations from
+ * `@cap-console/contracts` (the runtime id set, the execution mode), because a
+ * second copy of a shared vocabulary is what this port previously held.
  */
 export type TranscriptFormat = 'codex-rollout' | 'claude-jsonl';
 

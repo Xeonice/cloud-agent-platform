@@ -218,6 +218,10 @@ jobs:
   typecheck-lint:
     name: typecheck + lint + test
     runs-on: ubuntu-latest
+    # The only job here without one. Without a cap an unforced hang inherits
+    # GitHub's 360-minute default, and this job now runs suites whose runners
+    # no longer force-exit — see apps/api/package.json.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -272,6 +276,40 @@ jobs:
       # provider suite that builds conformance outside the participation ledger.
       - name: Provider contract parity gate
         run: pnpm test:provider-parity
+
+      # `packages/sandbox-core` declares zero runtime dependencies, so its types
+      # can derive from the contracts package (`import type` is erased) but its
+      # runtime arrays cannot — `validateEnum` consumes them as values, and a
+      # value import would give a deliberately dependency-free package a
+      # dependency on zod. Ten vocabularies therefore exist twice on purpose,
+      # and until now they agreed only because whoever edited one remembered the
+      # other; the family list had already been restated in four places whose
+      # contents disagreed. This compares the member sets. Like the gates above,
+      # it self-tests, so it is provably able to fail.
+      - name: Sandbox vocabulary parity gate
+        run: pnpm test:vocabulary-parity
+
+      # `packages/contracts` is the one package both apps depend on and is about
+      # to be published. The property that makes it that package rather than a
+      # junk drawer is that everything in it is shared, and nothing checked it:
+      # this tree carried six dead modules and thirteen types a consumer had
+      # re-declared while every other gate was green. This fails on an export
+      # nothing can reach — imported by no consumer, composed into no other
+      # export, and with no live schema/type twin — with an exception list that
+      # requires a reason per entry. Self-tests, so it is provably able to fail.
+      - name: Contracts shared-export gate
+        run: pnpm test:contracts-shared
+
+      # The other half of the same property. The gate above asks whether anything
+      # NAMES a contract export; this asks whether anything RUNS it. They are
+      # different questions: three shipped defects — the SMTP read body, the
+      # /runtimes envelope, the admin-reveal response — were each a schema every
+      # consumer imported the TYPE of and nobody ever parsed, so each declared a
+      # rule the api was already contradicting with no signal anywhere. Parses
+      # that happen through a registry or an in-package helper are declared, not
+      # inferred. Self-tests, so it is provably able to fail.
+      - name: Contracts executed-schema gate
+        run: pnpm test:contracts-executed
 
       # The layout contract `monorepo-foundation` now states: package-internal
       # imports go through the alias (814 `../` traversals made every directory

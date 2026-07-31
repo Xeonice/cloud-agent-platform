@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+
+import type { ModelDiscoveryErrorCode } from '@cap-console/contracts';
 import {
   assertSafeProviderUrl,
   UnsafeProviderUrlError,
@@ -20,20 +22,12 @@ import {
  * the classifier.
  */
 
-/** A distinguishable model-discovery failure code surfaced to the console. */
-export type ModelDiscoveryErrorCode =
-  /** The provider rejected the credential (HTTP 401/403). (Re)enter the key. */
-  | 'provider_auth_failed'
-  /** The provider could not be reached (network/DNS/timeout) or returned 5xx. */
-  | 'provider_unreachable'
-  /** Reached the provider but the response was not a parseable model list. */
-  | 'provider_bad_response'
-  /**
-   * The base URL was rejected as unsafe BEFORE any outbound fetch (bad scheme,
-   * or a host that resolves to loopback/private/link-local/metadata) — an SSRF
-   * guard hit, not a provider failure (task 2.2 / design D4).
-   */
-  | 'provider_url_blocked';
+/**
+ * Re-exported from the contract rather than restated. The four members and their
+ * semantics — including `provider_url_blocked` as the SSRF-guard outcome — are
+ * documented at the declaration; a second copy here could only drift from it.
+ */
+export type { ModelDiscoveryErrorCode };
 
 /** A successful discovery: the available model ids the provider reported. */
 export interface ModelDiscoverySuccess {

@@ -496,6 +496,9 @@ importers:
 
   packages/sandbox-core:
     devDependencies:
+      '@cap-console/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -518,6 +521,9 @@ importers:
         specifier: workspace:*
         version: link:../sandbox-core
     devDependencies:
+      '@cap-console/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@cap-console/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config

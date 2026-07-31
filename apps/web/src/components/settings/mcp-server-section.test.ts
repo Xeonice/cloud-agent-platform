@@ -85,23 +85,31 @@ describe("Settings page MCP Server section — data seam", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => [
-        {
-          id: "mcp-1",
-          name: "Cursor",
-          scopes: [
-            "tasks:read",
-            "tasks:diagnostics",
-            "admin:all",
-            "tasks:diagnostics",
-          ],
-          prefix: "mcp_",
-          last4: "ab12",
-          lastUsedAt: null,
-          expiresAt: null,
-          revokedAt: null,
-        },
-      ],
+      // The ENVELOPE the api actually sends (`mcp-tokens.controller.ts` returns
+      // `{ tokens }`, and the contract declares it). This fixture used to serve a
+      // bare array — a shape the api has never sent — and passed only because the
+      // console carried both-branch tolerance for a declaration it had wrong. The
+      // test encoded the drift; converging the console removed the tolerance and
+      // left this fixture describing nothing.
+      json: async () => ({
+        tokens: [
+          {
+            id: "mcp-1",
+            name: "Cursor",
+            scopes: [
+              "tasks:read",
+              "tasks:diagnostics",
+              "admin:all",
+              "tasks:diagnostics",
+            ],
+            prefix: "mcp_",
+            last4: "ab12",
+            lastUsedAt: null,
+            expiresAt: null,
+            revokedAt: null,
+          },
+        ],
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
 

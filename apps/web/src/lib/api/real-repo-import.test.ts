@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../config", () => ({
+  // The console reports which release it was built from on every call; a mock
+  // that omits it makes the module look like it lost an export.
+  buildId: () => "test-build",
   apiBaseUrl: () => "http://api.test",
   operatorToken: () => "legacy-console-token",
 }));

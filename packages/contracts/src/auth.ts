@@ -18,16 +18,13 @@ import { FRAME_CHANNEL } from './ws-frames.js';
 
 /**
  * The shared operator-token config contract. The orchestrator reads `AUTH_TOKEN`
- * from its environment; the web console reads the same value (exposed to the
- * browser bundle as `NEXT_PUBLIC_AUTH_TOKEN`) and attaches it to REST + WS calls.
+ * from its environment; the web console reads the same value from its own
+ * build-time env var and attaches it to REST + WS calls.
  *
  * `authTokenConfigSchema` validates that a configured token is a non-empty
  * string — the orchestrator refuses to boot (task 11.3b) when this fails.
  */
 export const AUTH_TOKEN_ENV_VAR = 'AUTH_TOKEN' as const;
-
-/** The browser-exposed env var name carrying the same operator token to the web bundle. */
-export const AUTH_TOKEN_PUBLIC_ENV_VAR = 'NEXT_PUBLIC_AUTH_TOKEN' as const;
 
 /** The HTTP scheme used for the operator bearer token on REST requests. */
 export const OPERATOR_AUTH_SCHEME = 'Bearer' as const;

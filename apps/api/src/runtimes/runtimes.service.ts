@@ -1,36 +1,32 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
-import { AGENT_RUNTIME_IDS, type AgentRuntimeId } from '@cap-console/contracts';
+import {
+  AGENT_RUNTIME_IDS,
+  RuntimeReadinessResponseSchema,
+  type AgentRuntimeId,
+  type RuntimeReadinessResponse,
+} from '@cap-console/contracts';
 
 import {
   CLAUDE_AUTH_SOURCE,
   type ClaudeAuthSource,
 } from '@/sandbox/claude-auth-source.port';
 
-/**
- * Per-runtime readiness fact surfaced by `GET /runtimes` (add-claude-code-runtime
+/*
+ * Per-runtime readiness surfaced by `GET /runtimes` (add-claude-code-runtime
  * Track 3, task 3.3 / agent-runtime "Runtime readiness endpoint"). BOOLEANS ONLY —
  * `ready` reports whether the runtime's credential is configured so the create
  * dialog can OFFER or DISABLE the runtime before a task is created, WITHOUT ever
  * leaking the token value or any suffix of it.
  *
- * Mirrors the contract shape (`packages/contracts`). The id used to be a local
- * literal union, added as a fallback "even before the contract type is wired
- * through"; the contract landed and this stayed, so it was a fifth independent
- * statement of which runtimes exist — and a silent one, because a narrower union
- * assigns cleanly to a wider one and nothing failed when the two disagreed.
+ * The shape comes from `@cap-console/contracts` and the body is parsed against it
+ * before it leaves. There used to be a local `RuntimeReadiness` interface and a
+ * `RuntimesReadinessResponse` envelope here, and the envelope is why: the contract
+ * declared `z.array(…)` while this service sent `{ runtimes: [...] }` from the day
+ * both were written — the same commit, `f050ab0`, which also shipped console code
+ * tolerating either shape. Three statements, one of them false, and nothing
+ * executed the schema that would have said so. See design D7.
  */
-export interface RuntimeReadiness {
-  /** The runtime id, from the one declaration. */
-  readonly id: AgentRuntimeId;
-  /** Whether the runtime is configured/ready to run. Never carries a secret. */
-  readonly ready: boolean;
-}
-
-/** The `GET /runtimes` response: per-runtime readiness, booleans only. */
-export interface RuntimesReadinessResponse {
-  readonly runtimes: readonly RuntimeReadiness[];
-}
 
 /**
  * Computes runtime readiness for `GET /runtimes` from the deployment auth sources
@@ -78,15 +74,19 @@ export class RuntimesService {
     'claude-code': (ownerUserId) => this.isClaudeConfigured(ownerUserId),
   };
 
-  async getReadiness(ownerUserId: string | null): Promise<RuntimesReadinessResponse> {
-    return {
-      runtimes: await Promise.all(
+  async getReadiness(ownerUserId: string | null): Promise<RuntimeReadinessResponse> {
+    // Parsed on the way out, so the declaration is executed rather than merely
+    // written. Neither `RuntimeReadinessSchema` nor `RuntimeReadinessResponseSchema`
+    // had a call site anywhere in the repository, which is how the envelope
+    // mismatch survived from `f050ab0` to here.
+    return RuntimeReadinessResponseSchema.parse(
+      await Promise.all(
         AGENT_RUNTIME_IDS.map(async (id) => ({
           id,
           ready: await this.readinessPolicy[id](ownerUserId),
         })),
       ),
-    };
+    );
   }
 
   /**

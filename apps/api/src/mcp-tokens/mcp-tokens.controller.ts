@@ -12,7 +12,10 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import {
+  McpTokenListResponseSchema,
   McpTokenMintRequestSchema,
+  McpTokenMintResponseSchema,
+  McpTokenRevokeResponseSchema,
   type McpTokenListResponse,
   type McpTokenMintRequest,
   type McpTokenMintResponse,
@@ -57,18 +60,28 @@ export class McpTokensController {
     @Body() body: McpTokenMintRequest,
   ): Promise<McpTokenMintResponse> {
     const operator = this.requireSessionOperator(req);
-    return this.tokens.mint(operator.id, {
-      name: body.name,
-      scopes: body.scopes,
-      expiresAt: body.expiresAt ?? null,
-    });
+    // Parsed on the way out. This is the ONE response in the repository that
+    // carries a raw `mcp_` token, transmitted exactly once, so a shape drift here
+    // is the most expensive kind — and it was the least checked.
+    return McpTokenMintResponseSchema.parse(
+      await this.tokens.mint(operator.id, {
+        name: body.name,
+        scopes: body.scopes,
+        expiresAt: body.expiresAt ?? null,
+      }),
+    );
   }
 
   @Get()
   async list(@Req() req: AuthenticatedRequest): Promise<McpTokenListResponse> {
     const operator = this.requireSessionOperator(req);
     const tokens = await this.tokens.list(operator.id);
-    return { tokens };
+    // Parsed on the way out, as the SMTP, runtimes and admin-reveal responses now
+    // are. This schema had no call site, so nothing noticed that the console
+    // declared this response as a BARE ARRAY and carried both-branch code to
+    // tolerate whichever arrived — the same drift as `RuntimeReadiness`, with the
+    // sides swapped: there the api disagreed with the contract, here the console did.
+    return McpTokenListResponseSchema.parse({ tokens });
   }
 
   @Delete(':id')
@@ -84,7 +97,7 @@ export class McpTokensController {
       // not the caller's token. Surface a 403 rather than reveal existence.
       throw new ForbiddenException('No such MCP token for this operator');
     }
-    return { token };
+    return McpTokenRevokeResponseSchema.parse({ token });
   }
 
   /**

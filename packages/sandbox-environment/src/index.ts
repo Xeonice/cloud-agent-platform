@@ -6,13 +6,19 @@ import type {
 } from '@cap-console/sandbox-core';
 import { snapshotSandboxResources } from '@cap-console/sandbox-core';
 
-export type SandboxEnvironmentStatus =
-  | 'draft'
-  | 'validating'
-  | 'ready'
-  | 'failed'
-  | 'stale'
-  | 'disabled';
+// Type-only, deliberately. This package declares exactly one runtime dependency
+// and its package-boundary test asserts that list verbatim; `import type` is
+// erased at emit, so the runtime graph is unchanged while these three stop being
+// a second declaration of shapes the contract already owns. `Readonly<…>` keeps
+// the property modifiers the local declarations carried — a derivation, which
+// cannot drift, rather than the restatement it replaces.
+import type {
+  SandboxEnvironmentStatus as ContractSandboxEnvironmentStatus,
+  SandboxEnvironmentParameter as ContractSandboxEnvironmentParameter,
+  SandboxEnvironmentValidationProbe as ContractSandboxEnvironmentValidationProbe,
+} from '@cap-console/contracts';
+
+export type SandboxEnvironmentStatus = ContractSandboxEnvironmentStatus;
 
 export const SANDBOX_ENVIRONMENT_READY_STATUS: SandboxEnvironmentStatus = 'ready';
 
@@ -41,11 +47,8 @@ export interface SandboxEnvironmentCompatibility {
   readonly runtimeIds?: readonly SandboxEnvironmentRuntimeId[];
 }
 
-export interface SandboxEnvironmentParameter {
-  readonly name: string;
-  readonly value?: string;
-  readonly secret: boolean;
-}
+export type SandboxEnvironmentParameter =
+  Readonly<ContractSandboxEnvironmentParameter>;
 
 export interface SandboxEnvironmentBaseSource {
   readonly kind: SandboxEnvironmentSourceKind;
@@ -82,12 +85,8 @@ export interface SandboxEnvironmentRecord {
   readonly contractVersion?: string | null;
 }
 
-export interface SandboxEnvironmentValidationProbe {
-  readonly name: string;
-  readonly ok: boolean;
-  readonly command?: string;
-  readonly output?: string;
-}
+export type SandboxEnvironmentValidationProbe =
+  Readonly<ContractSandboxEnvironmentValidationProbe>;
 
 export interface SandboxEnvironmentValidationResult {
   readonly environmentId: string;

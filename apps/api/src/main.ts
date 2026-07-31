@@ -18,6 +18,7 @@ import {
   isAutoSameHostWebOrigin,
   isLegacyTokenEnabled,
   parseWebOrigins,
+  CONSOLE_CORS_ALLOWED_HEADERS,
 } from './auth/auth-config';
 import {
   assertGitRuntimeAvailable,
@@ -167,15 +168,10 @@ async function bootstrap(): Promise<void> {
         (allowedOrigins.length > 0 ? allowedOrigins : false),
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        // Public task-create retry key. Without this entry a browser client is
-        // blocked by the CORS preflight even though POST /v1/tasks accepts it.
-        'Idempotency-Key',
-        // Explicit for non-EventSource SSE clients that resume with this header.
-        'Last-Event-ID',
-      ],
+      // One declaration, shared with the browser e2e harness — which runs its own
+      // Nest bootstrap and so answers its own preflights. Both carried their own
+      // copy until a header added to one was missed by the other.
+      allowedHeaders: [...CONSOLE_CORS_ALLOWED_HEADERS],
     });
   });
 

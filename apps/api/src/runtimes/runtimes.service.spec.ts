@@ -42,7 +42,7 @@ function authSource(
 }
 
 test('readiness reports every declared runtime, exactly once', async () => {
-  const { runtimes } = await new RuntimesService().getReadiness(OWNER);
+  const runtimes = await new RuntimesService().getReadiness(OWNER);
   assert.deepEqual(
     [...runtimes.map((entry) => entry.id)].sort(),
     [...AGENT_RUNTIME_IDS].sort(),
@@ -52,7 +52,7 @@ test('readiness reports every declared runtime, exactly once', async () => {
 });
 
 test('the default runtime is always offerable, with or without a credential', async () => {
-  const { runtimes } = await new RuntimesService().getReadiness(null);
+  const runtimes = await new RuntimesService().getReadiness(null);
   const fallback = runtimes.find((entry) => entry.id === DEFAULT_AGENT_RUNTIME_ID);
   assert.ok(fallback);
   assert.equal(
@@ -67,7 +67,7 @@ test('claude-code readiness follows the auth source and fails closed', async () 
     source?: ClaudeAuthSource,
     owner: string | null = OWNER,
   ) => {
-    const { runtimes } = await new RuntimesService(source).getReadiness(owner);
+    const runtimes = await new RuntimesService(source).getReadiness(owner);
     return runtimes.find((entry) => entry.id === 'claude-code')?.ready;
   };
 

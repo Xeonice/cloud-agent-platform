@@ -304,26 +304,137 @@ test('non-API release images stay version-matched and BoxLite stays multi-arch',
   );
 });
 
-test('latest promotion waits for all four version images and preserves registry manifests', () => {
+// The verify and the promote used to be two steps of one job. They are two jobs
+// now, so that the console can be published BETWEEN them: a console that fails to
+// publish then leaves `latest` on the previous release, where the images and the
+// console still match, instead of on a release whose console never shipped.
+//
+// The property these cases protect is unchanged — every version image is proven
+// to exist before any `latest` moves, and the promotion only ever creates
+// manifests — so it is still asserted, now across the split rather than inside
+// one job. The earlier single-job assertion was pinning the implementation; this
+// pins the property.
+const IMAGE_SET = 'cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox';
+
+test('every version image is proven to exist before any latest moves', () => {
+  const verify = workflowJob('verify-image-set');
+  assert.match(
+    verify,
+    /^    needs: \[resolve-release, build-smoke-push-api, build-push\]$/mu,
+  );
+  assert.match(verify, /^    timeout-minutes: 15$/mu);
+  assert.match(verify, /uses: docker\/setup-buildx-action@v3/u);
+  assert.match(verify, /uses: docker\/login-action@v3/u);
+  assert.equal(verify.match(new RegExp(`for image in ${IMAGE_SET}`, 'gu'))?.length, 1);
+  assert.match(verify, /docker buildx imagetools inspect/u);
+  // The verify job must not promote — that is the whole point of the split.
+  assert.doesNotMatch(verify, /docker buildx imagetools create/u);
+});
+
+test('latest promotion waits for the verified set AND the published console', () => {
   const promotion = workflowJob('promote-latest');
   assert.match(
     promotion,
-    /^    needs: \[resolve-release, build-smoke-push-api, build-push\]$/mu,
+    /^    needs: \[resolve-release, verify-image-set, deploy-console\]$/mu,
   );
   assert.match(promotion, /^    timeout-minutes: 15$/mu);
   assert.match(promotion, /uses: docker\/setup-buildx-action@v3/u);
   assert.match(promotion, /uses: docker\/login-action@v3/u);
 
-  const images = 'cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox';
-  assert.equal(promotion.match(new RegExp(`for image in ${images}`, 'gu'))?.length, 2);
-  const inspect = promotion.indexOf('docker buildx imagetools inspect');
-  const promote = promotion.indexOf('docker buildx imagetools create');
-  assert.ok(inspect >= 0 && promote > inspect);
+  // A SKIPPED console (workflow_dispatch, where the console job does not run) must
+  // still let `latest` move; a FAILED one must not. Without this condition the
+  // coupling would have silently stopped dispatch runs from ever promoting,
+  // because a skipped dependency skips its dependents.
+  assert.match(promotion, /needs\.deploy-console\.result == 'success'/u);
+  assert.match(promotion, /needs\.deploy-console\.result == 'skipped'/u);
+  assert.doesNotMatch(promotion, /needs\.deploy-console\.result == 'failure'/u);
+
+  assert.equal(promotion.match(new RegExp(`for image in ${IMAGE_SET}`, 'gu'))?.length, 1);
   assert.match(
     promotion,
     /docker buildx imagetools create[\s\S]*--tag "ghcr\.io\/xeonice\/\$\{image\}:latest"[\s\S]*"ghcr\.io\/xeonice\/\$\{image\}:\$\{RELEASE_VERSION\}"/u,
   );
   assert.doesNotMatch(promotion, /\bdocker (?:pull|tag|push)\b/u);
+});
+
+test('the cap-web IMAGE is built with the release version too', () => {
+  // Both deployment paths must carry the version, and only one of them had a test.
+  // If this build-arg line is ever dropped, the published cap-web image ships the
+  // sentinel silently — which is exactly how the Vercel path went unplumbed for
+  // its whole life while the image path looked fine.
+  const build = workflowJob('build-push');
+  assert.match(
+    build,
+    /VITE_BUILD_ID=\$\{\{ needs\.resolve-release\.outputs\.version \}\}/u,
+  );
+});
+
+test('the sentinel default is the one the contract refuses on', () => {
+  // Three files spell the fallback and the api refuses on it; a drift between any
+  // of them turns a refusal into a pass. Checked as text because the Dockerfile
+  // and the vite define cannot import from the contracts package — the reason a
+  // constant for it was written and deleted rather than shipped.
+  const dockerfile = readFileSync(
+    path.join(REPO_ROOT, 'apps/web/Dockerfile'),
+    'utf8',
+  );
+  const viteConfig = readFileSync(
+    path.join(REPO_ROOT, 'apps/web/vite.config.ts'),
+    'utf8',
+  );
+  const config = readFileSync(
+    path.join(REPO_ROOT, 'apps/web/src/lib/config.ts'),
+    'utf8',
+  );
+  const contracts = readFileSync(
+    path.join(REPO_ROOT, 'packages/contracts/src/version.ts'),
+    'utf8',
+  );
+  assert.match(dockerfile, /^ARG VITE_BUILD_ID=dev$/mu);
+  assert.match(viteConfig, /process\.env\.VITE_BUILD_ID \?\? "dev"/u);
+  assert.match(config, /readEnv\("VITE_BUILD_ID"\) \?\? "dev"/u);
+  assert.match(contracts, /CONSOLE_BUILD_ID_SENTINEL = 'dev'/u);
+});
+
+test('the console deploy links its target explicitly and asserts it', () => {
+  // Two failures a rehearsal found, both of which look like SUCCESS in CI:
+  //
+  //  1. VERCEL_ORG_ID/VERCEL_PROJECT_ID as env vars are not honoured by this CLI.
+  //     With `--yes` and no link, `vercel pull` CREATES a project named after the
+  //     directory and deploys there — the release goes green, `latest` moves, and
+  //     the console an operator looks at never changes.
+  //  2. The cap-web project carries `Root Directory = apps/web` server-side, so
+  //     running the CLI from inside `apps/web` resolves `apps/web/apps/web`.
+  const console_ = workflowJob('deploy-console');
+  assert.match(console_, /\.vercel\/project\.json/u, 'the link must be written, not inherited');
+  assert.match(console_, /EXPECTED_PROJECT_ID/u, 'the link must be re-asserted after pull rewrites it');
+  assert.doesNotMatch(
+    console_,
+    /working-directory: apps\/web/u,
+    'the CLI runs from the repository root; the project supplies its own root directory',
+  );
+});
+
+test('the release publishes the console, and only for a real Release', () => {
+  const console_ = workflowJob('deploy-console');
+  assert.match(console_, /^    needs: \[resolve-release, verify-image-set\]$/mu);
+  // A real Release always publishes it; a manual run only when asked. The
+  // rehearsal switch exists because the first version of this job could only be
+  // tested by cutting a release, and both defects it had would have surfaced
+  // mid-release with the images already pushed.
+  assert.match(console_, /github\.event_name == 'release'/u);
+  assert.match(console_, /inputs\.deploy_console == true/u);
+  // The release version must reach the console build, or the console ships
+  // carrying the sentinel — the exact gap this job exists to close.
+  assert.match(console_, /VITE_BUILD_ID/u);
+  // And the deploy succeeding is not evidence the value arrived: assert it is in
+  // the built output rather than trusting the exit code.
+  assert.match(console_, /\.vercel\/output/u);
+  // All three secrets are checked by name, so "one of three is missing" names
+  // which one.
+  for (const secret of ['VERCEL_TOKEN', 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID']) {
+    assert.match(console_, new RegExp(secret, 'u'));
+  }
 });
 
 test('deployable Release assets wait for the complete-set latest promotion gate', () => {

@@ -17,6 +17,55 @@
 # surfaced as overridable build-args here but DEFAULTS to the pinned values in
 # docker/aio-sandbox.Dockerfile (never `:latest`).
 #
+# THE RELEASE ALSO PUBLISHES THE HOSTED CONSOLE (couple-console-deploy-to-the-release).
+# Vercel's git integration used to publish it on every merge to `main`, so the
+# console was a second version of the product on its own cadence: measured at the
+# time, `main` sat 19 commits past the newest tag with 10 of them touching
+# `apps/web` or `packages/contracts`, including a wire shape that moved. That path
+# is now off (`apps/web/vercel.json` sets `git.deploymentEnabled.main = false`) and
+# `deploy-console` below replaces it. Pull-request previews are unaffected — they
+# deploy from their own branch and make no version claim.
+#
+# REQUIRED REPOSITORY SECRETS for that job: VERCEL_TOKEN, VERCEL_ORG_ID and
+# VERCEL_PROJECT_ID. All three are set. The ids are not secret (a team id and a
+# project id); the token is.
+#
+# THE TOKEN MUST BE A USER/TEAM TOKEN, NOT A PROJECT-SCOPED ONE. Vercel's API
+# will happily mint a token scoped to one project (`POST /v3/user/tokens` with a
+# `projectId`), and that token genuinely works against the REST API — it reads
+# cap-web and 404s on every other project, which was verified. But it CANNOT
+# drive the CLI: `vercel whoami` answers "User not found", because a project
+# token has no user for the CLI to resolve, and the CLI resolves one before doing
+# anything else. Such a token was minted, tested, found unusable here, and
+# revoked. Do not re-derive that; it costs an afternoon.
+#
+# The consequence is worth stating rather than hiding: the token this job uses
+# can reach every project in the team, because the CLI path offers no narrower
+# option. If that ever matters more than the convenience of the CLI, the way out
+# is to drive the deploy through the REST API with a project-scoped token, which
+# is a different and larger job than this one.
+#
+# To rotate:
+#   curl -X POST 'https://api.vercel.com/v3/user/tokens?teamId=<team id>' \
+#     -H "Authorization: Bearer <an existing user token>" \
+#     -H 'Content-Type: application/json' -d '{"name":"cap-release-console"}'
+#   gh secret set VERCEL_TOKEN --repo Xeonice/cloud-agent-platform < <file holding it>
+# then revoke the old one via DELETE /v3/user/tokens/<id>.
+#
+# EXERCISE THE NEW TOKEN BEFORE INSTALLING IT, not after — a GitHub secret cannot
+# be read back, so a token installed untested stays untested until a release
+# depends on it. Run the whole chain against `--environment=preview`
+# (pull → build → deploy --prebuilt); a preview publishes nothing to
+# cap-console.douglasdong.com. The token currently installed was exercised that
+# way; two earlier ones were minted, partially tested, and revoked, because
+# "same kind of token, therefore same behaviour" is the reasoning this repository
+# keeps disproving.
+#
+# Learn from `release-please.yml`: a workflow that LOOKS correct is not evidence it
+# ran. That one needed a non-`GITHUB_TOKEN` PAT and silently did not fire without
+# it. So after the first release, CONFIRM a production deployment appeared —
+# `vercel ls cap-web` — rather than reading this file and assuming.
+#
 # INERT UNTIL A RELEASE IS CUT (design D3): the only triggers are
 # `release: published` and the manual `workflow_dispatch`. Merely committing or
 # pushing this file builds and pushes NOTHING — a normal push to any branch does
@@ -38,6 +87,16 @@ on:
         description: "Version tag to build and push (e.g. v1.2.3)."
         required: true
         type: string
+      deploy_console:
+        description: >-
+          Also publish the hosted console. OFF by default so an ordinary manual
+          re-run of the image set cannot move the console; ON to rehearse the
+          console deploy without cutting a release. A rehearsal is how the two
+          silent-success defects in this job were found — a wrong-project link
+          and a wrong working directory, both of which would have gone green.
+        required: false
+        default: false
+        type: boolean
 
 # Least-privilege: write to GHCR (packages) only; read the repo to build.
 permissions:
@@ -244,7 +303,14 @@ jobs:
   # `imagetools create` promotes the registry manifest itself instead of pulling,
   # retagging, and pushing one host platform; this preserves BoxLite's amd64/arm64
   # manifest list as well as the single-platform manifests of the other images.
-  promote-latest:
+  # Split from `promote-latest` so the console can be published BETWEEN verifying
+  # the image set and moving `latest` onto it. The two used to be one job, which
+  # put `latest` on the new images before the console existed: a console failure
+  # then left anyone pulling `latest` with new images and the previous console —
+  # the exact split-version state this coupling exists to prevent. Now a console
+  # failure leaves `latest` on the last release, so the coordinated pair stays
+  # coordinated.
+  verify-image-set:
     needs: [resolve-release, build-smoke-push-api, build-push]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -266,6 +332,34 @@ jobs:
           for image in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
             docker buildx imagetools inspect "ghcr.io/xeonice/${image}:${RELEASE_VERSION}"
           done
+
+  promote-latest:
+    # `deploy-console` is in this chain deliberately: `latest` moves only after
+    # every deployed surface of the release exists.
+    needs: [resolve-release, verify-image-set, deploy-console]
+    # A dependency that is SKIPPED skips its dependents by default, and
+    # `deploy-console` is skipped on a `workflow_dispatch` that did not ask for it.
+    # Without this condition, adding the console to the chain would have silently
+    # stopped `latest` from ever moving on a dispatch run — a regression introduced
+    # by the coupling itself. So: promote when the image set verified AND the
+    # console either published or was legitimately not attempted. A console FAILURE
+    # still blocks the promote, which is the whole point.
+    if: |
+      always() &&
+      needs.verify-image-set.result == 'success' &&
+      (needs.deploy-console.result == 'success' || needs.deploy-console.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote the complete image set to latest
         env:
@@ -376,6 +470,135 @@ jobs:
             docker-compose.prod.yml docker-compose.prod.env.example \
             dist/task-model-attestation/* \
             --clobber --repo "${{ github.repository }}"
+
+  # The hosted console, published by the release and by nothing else.
+  #
+  # Vercel's git integration used to publish it on every merge to `main`, which
+  # made the console a SECOND version of the product: `apps/web/vercel.json` now
+  # sets `git.deploymentEnabled.main = false`, and this job is what replaces it.
+  # Pull-request previews are untouched — a preview deploys from its own branch,
+  # which stays enabled by default, and carries no version claim.
+  #
+  # `needs: verify-image-set`, and `promote-latest` in turn needs THIS job. So the
+  # order is build → verify → console → move `latest`. A console that fails to
+  # publish therefore leaves `latest` pointing at the previous release, where the
+  # images and the console still match, instead of at a release whose console
+  # never shipped.
+  #
+  # VITE_BUILD_ID is the same value release.yml already bakes into the cap-web
+  # IMAGE (see the build-args block above). Passing it here is what closes the gap
+  # that made `buildId()` return a real version from the image and the literal
+  # "dev" from the console anyone actually used.
+  #
+  # SECRETS: VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID are created by the
+  # operator. Without them this job fails and, by `needs`, the release reports a
+  # failure rather than quietly shipping images with a stale console.
+  deploy-console:
+    needs: [resolve-release, verify-image-set]
+    # A real Release always publishes the console. A manual run only does so when
+    # explicitly asked, so `deploy_console: true` is the rehearsal switch.
+    if: >-
+      github.event_name == 'release' ||
+      inputs.deploy_console == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fail early when the deploy credentials are absent
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          # Named individually rather than as one check, because "one of three is
+          # missing" is the failure an operator has to act on and a single
+          # combined message does not say which.
+          missing=0
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "deploy-console: FATAL — repository secret ${name} is unset." >&2
+              missing=1
+            fi
+          done
+          if [[ "${missing}" -eq 1 ]]; then
+            echo "The release publishes the console; without these it cannot, and" >&2
+            echo "shipping the images alone is the split-version state this job exists" >&2
+            echo "to prevent. Create them in the repository settings and re-run." >&2
+            exit 1
+          fi
+
+      # The link is WRITTEN, not inherited from the environment.
+      #
+      # `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` as env vars are the classic CI
+      # recipe and this CLI does not honour them: with both set and no `.vercel`
+      # directory, `vercel pull` still fails with "Could not retrieve Project
+      # Settings". What `--yes` then does is worse than failing — it CREATES a new
+      # project named after the directory (`apps/web` → `web`) and deploys there.
+      # Measured, not theorised: a rehearsal did exactly that, producing
+      # `prj_IqSLA4eEEdP9wvQmjZ11mCsSA2vq` while `cap-console.douglasdong.com`
+      # stayed on its previous build. The release would have gone green, moved
+      # `latest`, and left the console untouched — the silent half-release this
+      # whole job exists to prevent, reintroduced by its own plumbing.
+      # From the REPOSITORY ROOT, not `apps/web`. The cap-web project carries
+      # `Root Directory = apps/web` in its own settings, which `pull` writes into
+      # the local link — so running the CLI inside `apps/web` makes it resolve
+      # `apps/web/apps/web` and fail with "The provided path … does not exist".
+      # Also measured rather than reasoned about.
+      - name: Link the build directory to the cap-web project
+        run: |
+          set -euo pipefail
+          mkdir -p .vercel
+          printf '{"orgId":"%s","projectId":"%s"}' \
+            "${{ secrets.VERCEL_ORG_ID }}" "${{ secrets.VERCEL_PROJECT_ID }}" \
+            > .vercel/project.json
+
+      - name: Deploy the console at the release version
+        run: |
+          set -euo pipefail
+          npx --yes vercel@latest pull --yes --environment=production \
+            --token "${{ secrets.VERCEL_TOKEN }}"
+          # `pull` rewrites project.json from the server. Re-assert the target
+          # rather than trusting it: linking to the wrong project is the failure
+          # that looks like success.
+          node -e '
+            const fs = require("fs");
+            const link = JSON.parse(fs.readFileSync(".vercel/project.json", "utf8"));
+            const want = process.env.EXPECTED_PROJECT_ID;
+            if (link.projectId !== want) {
+              console.error(`deploy-console: FATAL — linked to ${link.projectId} (${link.projectName ?? "?"}), expected ${want}.`);
+              process.exit(1);
+            }
+            console.log(`deploy-console: linked to ${link.projectName ?? link.projectId}`);
+          '
+          npx --yes vercel@latest build --prod \
+            --token "${{ secrets.VERCEL_TOKEN }}"
+          npx --yes vercel@latest deploy --prebuilt --prod \
+            --token "${{ secrets.VERCEL_TOKEN }}"
+        env:
+          EXPECTED_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Prove the deployed console carries the release version
+        run: |
+          set -euo pipefail
+          # The deploy reporting success is not evidence the version reached the
+          # bundle: the whole defect this change fixes was a build that succeeded
+          # while VITE_BUILD_ID silently defaulted. Assert the value is present in
+          # the built output rather than trusting the exit code.
+          expected='${{ needs.resolve-release.outputs.version }}'
+          if ! grep -rq -- "${expected}" .vercel/output 2>/dev/null; then
+            echo "deploy-console: FATAL — the release version ${expected} is not present" >&2
+            echo "in the built console output. VITE_BUILD_ID did not reach the bundle." >&2
+            exit 1
+          fi
+          echo "deploy-console: the built console carries ${expected}"
 
   attach-sandbox-image-assets:
     needs: promote-latest

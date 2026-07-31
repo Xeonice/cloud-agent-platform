@@ -16,17 +16,17 @@ import { isAdminPrincipal } from '@/principal/admin';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ZodValidationPipe } from '@/http/zod-validation.pipe';
 import {
-  AccountsService,
-  AssignRoleSchema,
-  CreateAccountSchema,
-  ResetPasswordSchema,
-  SetEnabledSchema,
-  type AccountListItem,
-  type AssignRoleInput,
-  type CreateAccountInput,
-  type ResetPasswordInput,
-  type SetEnabledInput,
-} from './accounts.service';
+  AdminCreateAccountRequestSchema,
+  AdminResetPasswordRequestSchema,
+  AdminSetEnabledRequestSchema,
+  AdminSetRoleRequestSchema,
+  type AdminCreateAccountRequest,
+  type AdminResetPasswordRequest,
+  type AdminSetEnabledRequest,
+  type AdminSetRoleRequest,
+} from '@cap-console/contracts';
+
+import { AccountsService, type AccountListItem } from './accounts.service';
 
 /**
  * Admin-only account-administration REST surface (account-administration,
@@ -72,10 +72,10 @@ export class AccountsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UsePipes(new ZodValidationPipe(CreateAccountSchema))
+  @UsePipes(new ZodValidationPipe(AdminCreateAccountRequestSchema))
   async create(
     @Req() req: AuthenticatedRequest,
-    @Body() body: CreateAccountInput,
+    @Body() body: AdminCreateAccountRequest,
   ): Promise<AccountListItem> {
     await this.requireAdmin(req);
     return this.accounts.create(body);
@@ -83,11 +83,11 @@ export class AccountsController {
 
   @Patch(':id/enabled')
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ZodValidationPipe(SetEnabledSchema))
+  @UsePipes(new ZodValidationPipe(AdminSetEnabledRequestSchema))
   async setEnabled(
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body() body: SetEnabledInput,
+    @Body() body: AdminSetEnabledRequest,
   ): Promise<AccountListItem> {
     await this.requireAdmin(req);
     return this.accounts.setEnabled(id, body.allowed);
@@ -95,11 +95,11 @@ export class AccountsController {
 
   @Patch(':id/password')
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ZodValidationPipe(ResetPasswordSchema))
+  @UsePipes(new ZodValidationPipe(AdminResetPasswordRequestSchema))
   async resetPassword(
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body() body: ResetPasswordInput,
+    @Body() body: AdminResetPasswordRequest,
   ): Promise<AccountListItem> {
     await this.requireAdmin(req);
     return this.accounts.resetPassword(id, body.password);
@@ -107,11 +107,11 @@ export class AccountsController {
 
   @Patch(':id/role')
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ZodValidationPipe(AssignRoleSchema))
+  @UsePipes(new ZodValidationPipe(AdminSetRoleRequestSchema))
   async assignRole(
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body() body: AssignRoleInput,
+    @Body() body: AdminSetRoleRequest,
   ): Promise<AccountListItem> {
     await this.requireAdmin(req);
     return this.accounts.assignRole(id, body.role);

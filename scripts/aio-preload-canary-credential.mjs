@@ -588,6 +588,15 @@ function writeCliStdout(value) {
 }
 
 function requestCliSignal(signalName) {
+  // The stop state is established SYNCHRONOUSLY — `cliStopRequested` below and
+  // `lease?.requestStop()` further down both run before this function yields. That
+  // is load-bearing beyond this file: the SIGTERM test proves the child processed
+  // the signal by watching a second listener registered after this one, and signal
+  // listeners run in registration order, so the observer's byte only means "the
+  // stop flag is set" while these assignments stay ahead of the first await.
+  // Deferring either into a callback or a promise makes that barrier unsound; the
+  // test then fails rather than passing vacuously, which is the safe direction, but
+  // the failure names a credential write and not this line.
   if (cliSignalPromise) return;
   cliRequestedSignal = signalName;
   cliStopRequested = true;

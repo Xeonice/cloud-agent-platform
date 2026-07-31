@@ -295,11 +295,30 @@ export type AdminAccountListResponse = z.infer<
  *
  * NOTE: this is the SOLE channel through which the generated plaintext is ever
  * transmitted; it is never persisted to the database or logs as plaintext.
+ *
+ * TWO ARMS, and the second is a security property rather than an oversight. The
+ * endpoint answers `200 {}` to every caller after the first — and to a deploy
+ * that restarted past an unconsumed reveal, and to one configured with a fixed
+ * `ADMIN_PASSWORD` — precisely so a probe cannot tell "already consumed" from
+ * "never generated". `admin-reveal.controller.ts` has always returned that body
+ * on two of its three paths and documents why; this schema declared only the
+ * success arm, so the api's majority path failed its own contract. Nothing
+ * noticed, because the schema had no call site — the third instance of that
+ * defect in this package, after `SmtpConfigReadSchema` and
+ * `RuntimeReadinessResponseSchema`.
  */
-export const AdminRevealResponseSchema = z.object({
+export const AdminRevealCredentialResponseSchema = z.object({
   /** The seeded admin email. */
   email: EmailSchema,
   /** The generated plaintext password — transmitted exactly once. */
   password: z.string().min(1),
 });
+
+/** The "nothing to reveal" arm: an empty body, and strictly empty. */
+export const AdminRevealEmptyResponseSchema = z.object({}).strict();
+
+export const AdminRevealResponseSchema = z.union([
+  AdminRevealCredentialResponseSchema,
+  AdminRevealEmptyResponseSchema,
+]);
 export type AdminRevealResponse = z.infer<typeof AdminRevealResponseSchema>;
