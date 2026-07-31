@@ -113,12 +113,14 @@ diff 已验证：所有既有 `name:` 逐字节不变（唯一含 `name:` 的删
 
 ### F.1b openspec-metadata 验证器不识别 change 整目录删除（登记为债务）
 
-`validateChangedOpenSpecChanges` 对 staged diff 中出现的 change 路径逐个验证
+`validateChangedOpenSpecChanges` 对 diff 中出现的 change 路径逐个验证
 metadata，但当整个 change 目录被**废弃删除**（总则 4 判据，首例
 redesign-settings-single-column）时，验证器把"目录不存在"报成"sidecar/tasks
-required 缺失"，pre-commit 误红。处置：该次提交以 `--no-verify` 绕过（误报，
-非规避真实验证；lint/typecheck 已在 apply 阶段全绿），验证器补"路径全部为
-删除操作 ⇒ 跳过该 change"的识别归后续小修。
+required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修复**：
+目录不存在（归档移动或废弃删除）即跳过——被删的 change 没有可验证对象；
+目录仍在但 sidecar 缺失依旧报错，误删保护不受影响。配套自测已改写
+（原测试把误报行为钉成了规格），死函数 archivedOpenSpecChangeNames 一并删除。
+阶段 0 的 commit 1 曾以 `--no-verify` 绕过该误报（当时修复未落地），留痕于此。
 
 ### F.2 aio-terminal-session-ownership wall-clock flake（task 8.11，三分法留痕，不修）
 

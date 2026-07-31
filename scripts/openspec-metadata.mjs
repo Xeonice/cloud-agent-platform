@@ -1527,21 +1527,6 @@ export function changedOpenSpecChangeNames(
   return [...names].sort();
 }
 
-function archivedOpenSpecChangeNames(
-  changedPaths,
-  { repoRoot = DEFAULT_REPO_ROOT } = {},
-) {
-  const names = new Set();
-  for (const filePath of changedPaths) {
-    const normalized = normalizeChangedPath(repoRoot, filePath);
-    const match = normalized.match(
-      /^openspec\/changes\/archive\/\d{4}-\d{2}-\d{2}-([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/|$)/u,
-    );
-    if (match) names.add(match[1]);
-  }
-  return names;
-}
-
 /**
  * Validate only touched active changes. Untouched legacy changes deliberately do
  * not require a bulk sidecar/task-metadata backfill.
@@ -1551,11 +1536,16 @@ export function validateChangedOpenSpecChanges(
   { repoRoot = DEFAULT_REPO_ROOT, phase = 'apply', registryInventory } = {},
 ) {
   const names = changedOpenSpecChangeNames(changedPaths, { repoRoot });
-  const archivedNames = archivedOpenSpecChangeNames(changedPaths, { repoRoot });
   const validated = [];
   for (const changeName of names) {
     const activeDirectory = join(repoRoot, 'openspec', 'changes', changeName);
-    if (!existsSync(activeDirectory) && archivedNames.has(changeName)) continue;
+    // A change whose active directory no longer exists was either archived
+    // (moved under archive/) or retired outright (总则4 废弃删除, e.g.
+    // redesign-settings-single-column). Neither leaves anything to validate;
+    // requiring sidecar/tasks files for a deleted directory is a misfire.
+    // A change whose directory still exists but lost its sidecar remains
+    // a validation error, so accidental sidecar deletion stays caught.
+    if (!existsSync(activeDirectory)) continue;
     validated.push(
       validateChangeMetadata(changeName, {
         repoRoot,
