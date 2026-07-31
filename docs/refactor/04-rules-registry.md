@@ -138,6 +138,10 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
 - **处置**：留痕，不在本 change 修（proposal Not-in-scope 明列）。后续
   投资方向：将计时断言改为可注入时钟（该文件 1419 行起已有
   `Date.now` stub 先例）或放宽为语义断言；归属后续专项 change。
+- **追证（2026-08-01）**：docs-only PR #190（基于 main 原样代码）复现该套件
+  失败（1856 行 `Cannot read properties of undefined (reading 'sent')`，
+  同套件的竞态形态）——铁证该 flake 存在于 main、与 close-gate-blindspots
+  的改动无关。
 
 ### F.3 boxlite-client 1ms-timeout settlement flake（PR #189 首现，三分法留痕，不修）
 
