@@ -138,3 +138,17 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
 - **处置**：留痕，不在本 change 修（proposal Not-in-scope 明列）。后续
   投资方向：将计时断言改为可注入时钟（该文件 1419 行起已有
   `Date.now` stub 先例）或放宽为语义断言；归属后续专项 change。
+
+### F.3 boxlite-client 1ms-timeout settlement flake（PR #189 首现，三分法留痕，不修）
+
+- **现象**：`packages/sandbox-provider-boxlite/test/boxlite-client.test.mjs` 的
+  `execWithPoll({status:'running'}, 1)` 断言 settlement === 'indeterminate'
+  （poll 预算耗尽路径），GitHub runner 满载下 1ms 真实时钟先越线走 'timeout'
+  出口（错误消息 "settlement is timeout"），package-suites job 红；本地
+  standalone 通过。本 change 对该文件零改动（最近改动 34c8611）。
+- **三分法分类**：**environment-dependent**——被测的
+  `classifySandboxCommandExecutionRejection` 对 timeout/indeterminate 两条
+  路径行为均正确；失败面是测试用 1ms 真实时钟做路径选择，慢机上选路不稳定。
+- **处置**：留痕后重跑验证（记录在案的重跑不是 retry-to-hide）。修复方向
+  与 F.2 同批：可注入时钟或分离"预算耗尽"与"wall-clock 超时"的触发方式，
+  归后续 flake 专项 change。
