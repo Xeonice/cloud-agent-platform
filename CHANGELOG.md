@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.47.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.46.1...v0.47.0) (2026-07-31)
+
+
+### Features
+
+* **contracts:** execute every rule the contracts package states, and gate it ([83bb319](https://github.com/Xeonice/cloud-agent-platform/commit/83bb31967af457a0e1c7c8413453df64c172fdb7))
+* **release:** assert the console and the api are the same build ([91c2ca8](https://github.com/Xeonice/cloud-agent-platform/commit/91c2ca82d12a64cceae88b49feb3cd64f2abc1fe))
+
+
+### Bug Fixes
+
+* **auth:** close four request-boundary gaps ([1a7b381](https://github.com/Xeonice/cloud-agent-platform/commit/1a7b381f0a7117e97b2b08ba01b2f67a36686683))
+* **boot-smoke:** a completed WebSocket upgrade no longer fails the probe ([afc3169](https://github.com/Xeonice/cloud-agent-platform/commit/afc3169af465e7a039cc1e801c54ce130556d3ec))
+* **ci:** make the path filter fail open instead of silently skipping gates ([689049c](https://github.com/Xeonice/cloud-agent-platform/commit/689049c732cae8b9f438a3cf103b97a8b2592281))
+* **cors:** admit the header the console now sends, from one declaration ([5564b85](https://github.com/Xeonice/cloud-agent-platform/commit/5564b85e27a3240dc182625a2e5b4affe0f72a55))
+* **release:** a rehearsal must not move `latest` either ([dc4ba44](https://github.com/Xeonice/cloud-agent-platform/commit/dc4ba44fc327628b96db2030a525a28dff4bfc95))
+* **release:** a rehearsal must not move `latest` either ([32c97b4](https://github.com/Xeonice/cloud-agent-platform/commit/32c97b4cd0ada05f1df1e20d035b1dac4cbd9745))
+* **release:** a rehearsal must not move production, and must bake an identity ([d5d0259](https://github.com/Xeonice/cloud-agent-platform/commit/d5d0259d10a5a38b26d74ec54f3ab2ba507944c9))
+* **release:** a rehearsal must not move production, and must bake an identity ([9869f2d](https://github.com/Xeonice/cloud-agent-platform/commit/9869f2d26ffe538c5bcb57f6a95b1352595bf79a))
+* **release:** the console deploy was publishing to a project it invented ([7c0057a](https://github.com/Xeonice/cloud-agent-platform/commit/7c0057aaf76591dc513ca593ac23995332b245a2))
+* **release:** the console job had no pnpm, so the build could never have run ([48de455](https://github.com/Xeonice/cloud-agent-platform/commit/48de455f991a37b0d3c205bc4c8510b59847c7a7))
+* **release:** the console job had no pnpm, so the build could never have run ([828bdfd](https://github.com/Xeonice/cloud-agent-platform/commit/828bdfd1c2f8686f39f3d9313be1593add97a226))
+* **test:** make the SIGTERM stop barrier a barrier ([0c3cbae](https://github.com/Xeonice/cloud-agent-platform/commit/0c3cbae32bee56ad280ad60df6f0b9496296cbf1))
+* **web:** move the Vercel build command into the repo and off the package name ([fcd45c4](https://github.com/Xeonice/cloud-agent-platform/commit/fcd45c4aacc8a1f51f65d77faf5e4172489f02fa))
+
 ## [0.46.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.46.0...v0.46.1) (2026-07-27)
 
 
