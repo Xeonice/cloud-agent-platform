@@ -43,7 +43,7 @@ release-quarantined 等阶段 1 接管）+ 1 个挂起 proposal。
   timing-replay / ADD static-log / MODIFY empty-state）的目标态经逐条核对已全部
   在主 spec 中，重放不必要且 REMOVE 目标缺失会报错。task 5.2 据实补记
   （2026-06-18 v0.6.0 生产实景验证）后结案。
-- redesign-settings-single-column 已删除；session-approval-flow 已加挂起注记。
+- redesign-settings-single-column 已删除。session-approval-flow 的挂起注记**记录于本台账而非其 proposal.md**：touch 一个 pre-sidecar 时代的 legacy change 会触发 metadata 验证器的 sidecar/tasks backfill 要求（制度使然非 bug），故 proposal 保持 untouched；其接缝提醒见处置表该行，propose tasks 前必读（决策 12）。
 
 ## 台账维护规则
 
