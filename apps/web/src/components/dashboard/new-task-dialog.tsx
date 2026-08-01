@@ -52,6 +52,9 @@ import {
 import {
   AGENT_RUNTIME_IDS,
   DEFAULT_AGENT_RUNTIME_ID,
+  RUNTIME_METADATA,
+  SKILL_CATALOG_IDS,
+  type SkillCatalogId,
 } from "@cap-console/contracts";
 import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
 import { taskRepoCopyNotReadyFromApiError } from "@/lib/api/real";
@@ -127,18 +130,11 @@ const STRATEGIES = [
  * un-ready runtime is shown disabled with a configure hint rather than selectable
  * and failing at launch (frontend-console spec "runtime selector gated on readiness").
  * Exported so `/tasks/new` shares the same catalog (one module, no drift).
- */
-const RUNTIME_COPY: Readonly<Record<RuntimeId, { label: string; hint: string }>> = {
-  codex: { label: "Codex", hint: "OpenAI Codex CLI（默认）" },
-  "claude-code": { label: "Claude Code", hint: "Anthropic Claude Code CLI" },
-};
-
-/**
- * Built from a total mapping rather than written as a list, so a runtime added to
- * the contract without console copy is a build error. As a list it was silently
- * incomplete: a newly declared and registered runtime would be accepted by the
- * API, reported ready by `/runtimes`, and simply never appear in this picker —
- * the same defect `runtime-label.ts` next door already avoids.
+ *
+ * Label + hint come from the contracts `RUNTIME_METADATA` row
+ * (unlock-extension-axes D2) — the dialog holds NO local per-runtime copy table,
+ * so a runtime declared in contracts with a complete metadata row appears here
+ * with zero dialog edits.
  *
  * Ordered default-first, which is a presentation rule rather than a copy of the
  * set: the picker should lead with what the operator gets by doing nothing. It is
@@ -152,21 +148,38 @@ export const RUNTIME_CATALOG: ReadonlyArray<{
 }> = [
   DEFAULT_AGENT_RUNTIME_ID,
   ...AGENT_RUNTIME_IDS.filter((id) => id !== DEFAULT_AGENT_RUNTIME_ID),
-].map((id) => ({ id, ...RUNTIME_COPY[id] }));
+].map((id) => ({
+  id,
+  label: RUNTIME_METADATA[id].label,
+  hint: RUNTIME_METADATA[id].hint,
+}));
 
 /** The default runtime when the operator makes no explicit choice. */
 export const DEFAULT_RUNTIME: RuntimeId = DEFAULT_AGENT_RUNTIME_ID;
 
 /**
- * Selectable preinstall skills (task-preinstall-skills). The `id`s MUST match the
- * server-side skill allowlist (`apps/api/src/sandbox/skill-allowlist.ts`) — the
- * backend only executes allowlisted ids, so an id here that the server does not
- * know is simply ignored at provision time. Exported so `/tasks/new` shares it.
+ * Web-side display copy for the contracts-declared skill id vocabulary
+ * (unlock-extension-axes D9). The id set itself lives ONCE in contracts
+ * (`SKILL_CATALOG_IDS`) and is shared with the api allowlist
+ * (`apps/api/src/sandbox/skill-allowlist.ts`), so an id can no longer exist on
+ * one side without the other. Display copy stays web-side (DERIVED-legal split);
+ * the total Record makes "id declared without console copy" a build error.
  */
-export const SKILL_CATALOG: ReadonlyArray<{ id: string; label: string; hint: string }> = [
-  { id: "openspec", label: "OpenSpec", hint: "spec-driven 变更工作流 (/opsx:)" },
-  { id: "bmad", label: "BMAD", hint: "Agile AI 开发方法 (agent 人设)" },
-];
+const SKILL_COPY = {
+  openspec: { label: "OpenSpec", hint: "spec-driven 变更工作流 (/opsx:)" },
+  bmad: { label: "BMAD", hint: "Agile AI 开发方法 (agent 人设)" },
+} as const satisfies Record<SkillCatalogId, { label: string; hint: string }>;
+
+/**
+ * Selectable preinstall skills (task-preinstall-skills): option ids derive from
+ * the contracts declaration, copy from {@link SKILL_COPY}. Exported so
+ * `/tasks/new` shares it.
+ */
+export const SKILL_CATALOG: ReadonlyArray<{
+  id: SkillCatalogId;
+  label: string;
+  hint: string;
+}> = SKILL_CATALOG_IDS.map((id) => ({ id, ...SKILL_COPY[id] }));
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -266,11 +279,10 @@ export function buildCommandPreview(input: {
   // Lead with a comment naming the underlying CLI the sandbox launches for the
   // chosen runtime, so the preview unambiguously shows the claude-based vs
   // codex-based invocation (frontend-console spec) without an awkward trailing
-  // continuation. The codex case keeps the same `codex`-based framing as before.
+  // continuation. The copy is the runtime's `RUNTIME_METADATA` row
+  // (unlock-extension-axes D2) — no runtime-identity ternary in the dialog.
   const lines = [
-    runtime === "claude-code"
-      ? "# 沙箱内启动 claude"
-      : "# 沙箱内启动 codex",
+    RUNTIME_METADATA[runtime].cliPreviewComment,
     "agentctl run \\",
   ];
   if (input.repoFullName) lines.push(`  --repo ${input.repoFullName} \\`);

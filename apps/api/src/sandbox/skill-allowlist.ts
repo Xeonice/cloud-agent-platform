@@ -18,12 +18,23 @@
  * id) and ALWAYS reads stdin from /dev/null (the installers are non-interactive
  * but must not block on a TTY). Versions are PINNED for reproducibility, mirroring
  * the codex version-pin discipline; bump deliberately.
+ *
+ * The id set is NOT declared here: it is the contracts `SKILL_CATALOG_IDS`
+ * vocabulary (unlock-extension-axes D9). This table is keyed
+ * `Record<SkillCatalogId, ...>`, so a skill id declared in contracts without a
+ * pinned installer command here is a compile error, not a silently ignored
+ * option — the former MUST-match-the-frontend comment is now the type system.
  */
+
+import {
+  SKILL_CATALOG_IDS,
+  type SkillCatalogId,
+} from '@cap-console/contracts';
 
 /** A single allowlisted skill: how to install it into the workspace. */
 export interface SkillInstaller {
-  /** Operator-facing id (matches the frontend catalog). */
-  readonly id: string;
+  /** Operator-facing id — the contracts-declared skill catalog vocabulary. */
+  readonly id: SkillCatalogId;
   /** Human label for logs. */
   readonly label: string;
   /**
@@ -38,9 +49,10 @@ export interface SkillInstaller {
 const BMAD_PKG = 'bmad-method@6.8.0';
 
 /**
- * The allowlist, keyed by skill id. Only ids present here are ever executed.
+ * The allowlist, keyed by the contracts skill id vocabulary. Only declared ids
+ * are ever executed, and every declared id MUST have a row (compile-time total).
  */
-export const SKILL_ALLOWLIST: Readonly<Record<string, SkillInstaller>> = {
+export const SKILL_ALLOWLIST: Readonly<Record<SkillCatalogId, SkillInstaller>> = {
   openspec: {
     id: 'openspec',
     label: 'OpenSpec',
@@ -72,9 +84,9 @@ export const SKILL_ALLOWLIST: Readonly<Record<string, SkillInstaller>> = {
   },
 };
 
-/** True when `id` is an allowlisted, installable skill. */
-export function isAllowlistedSkill(id: string): boolean {
-  return Object.prototype.hasOwnProperty.call(SKILL_ALLOWLIST, id);
+/** True when `id` is a declared (and therefore installable) skill id. */
+export function isAllowlistedSkill(id: string): id is SkillCatalogId {
+  return (SKILL_CATALOG_IDS as readonly string[]).includes(id);
 }
 
 /** Resolve the installer for an id, or undefined when not allowlisted. */

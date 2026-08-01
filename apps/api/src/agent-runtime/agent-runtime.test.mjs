@@ -14,8 +14,7 @@
  *   - CLAUDE autosubmit is a no-op (no CR injected, no DSR/CPR machinery).
  *
  * Compiles the REAL agent-runtime sources with tsc, imports them; plain node with
- * inline assertions (mirrors the repo's `.test.mjs` convention — see
- * `terminal/codex-launch.test.mjs`).
+ * inline assertions (mirrors the repo's `.test.mjs` convention).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -87,7 +86,8 @@ function assert(condition, label) {
 // Emit INSIDE apps/api so module resolution can walk up to repo node_modules.
 const outDir = mkdtempSync(join(apiRoot, '.agent-runtime-test-'));
 
-// Compile the whole agent-runtime dir + the codex-launch leaf it imports, then
+// Compile the whole agent-runtime dir (the tmux session-command helpers now come
+// from the built `@cap-console/sandbox` facade — unlock-extension-axes 7.1), then
 // resolve a compiled module path (the tsc layout may be flat or nested).
 function compile() {
   const srcs = [
@@ -101,10 +101,10 @@ function compile() {
     sources: [...srcs].flat(),
     outDir,
   });
-  // tsc preserves the relative tree from the common root of the inputs. The
-  // sources span `agent-runtime/` (the inputs) and `terminal/` (codex-launch,
-  // pulled in by import), so the common root is `src/` and modules land under
-  // `<outDir>/agent-runtime/...`. Tolerate a flat emit too.
+  // tsc preserves the relative tree from the common root of the inputs. With
+  // every source under `agent-runtime/` the emit may be flat at `<outDir>`;
+  // older layouts (when a `terminal/` leaf was still pulled in by import)
+  // landed under `<outDir>/agent-runtime/...`. Tolerate both.
   const candidates = [
     join(outDir, 'agent-runtime'),
     outDir,

@@ -401,6 +401,31 @@ importers:
         specifier: ^8.33.0
         version: 8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
 
+  packages/runtime-conformance:
+    dependencies:
+      '@cap-console/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@cap-console/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+    devDependencies:
+      '@cap-console/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@cap-console/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^20.14.0
+        version: 20.19.41
+      eslint:
+        specifier: ^9.27.0
+        version: 9.39.4(jiti@2.7.0)
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+
   packages/sandbox:
     dependencies:
       '@cap-console/contracts':

@@ -38,12 +38,14 @@ import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type {
-  AuthSession,
-  ClaudeCredentialMode,
-  CodexCredentialMode,
-  Runtime,
-  TaskFailureCode,
+import {
+  ClaudeCredentialModeSchema,
+  CodexCredentialModeSchema,
+  type AuthSession,
+  type ClaudeCredentialMode,
+  type CodexCredentialMode,
+  type Runtime,
+  type TaskFailureCode,
 } from "@cap-console/contracts";
 import {
   apiKeysQuery,
@@ -202,22 +204,30 @@ function SettingsPage() {
           />
         </section>
 
-        {/* Agent 模型凭据 — ONE section with runtime tabs (Codex | Claude Code),
-            each runtime's provider entries below (Track 10.2, baseline #codex). */}
+        {/* Agent 模型凭据 — ONE section with a tab per contracts-declared
+            runtime, that runtime's provider entries below (Track 10.2, baseline
+            #codex; collection-driven since unlock-extension-axes). The unified
+            credential-mode value is narrowed back to each dialog's wire mode via
+            its schema — the wire schemas stay literal subsets of the vocabulary. */}
         <RuntimeCredentialTabs
-          codexCred={cred}
-          defaultRuntime={credentialRuntime ?? "codex"}
+          runtimes={{
+            codex: {
+              state: cred.state,
+              onConfigure: (mode) => {
+                const codexMode = CodexCredentialModeSchema.safeParse(mode);
+                if (codexMode.success) handleConfigure(codexMode.data);
+              },
+            },
+            "claude-code": {
+              state: claudeCred?.state ?? "not_connected",
+              onConfigure: (mode) => {
+                const claudeMode = ClaudeCredentialModeSchema.safeParse(mode);
+                if (claudeMode.success) setClaudeDialogMode(claudeMode.data);
+              },
+            },
+          }}
+          defaultRuntime={credentialRuntime}
           credentialIssue={credentialIssue}
-          claudeCred={
-            claudeCred ?? {
-              mode: "subscription",
-              state: "not_connected",
-              hasSetupToken: false,
-              hasApiKey: false,
-            }
-          }
-          onConfigureCodex={handleConfigure}
-          onConfigureClaude={setClaudeDialogMode}
         />
 
         {/* #forges: code-hosting (forge) connection — connect a GitHub/GitLab/Gitee

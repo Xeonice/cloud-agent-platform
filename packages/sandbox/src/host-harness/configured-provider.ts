@@ -61,10 +61,8 @@ import type {
 } from './harness.js';
 import {
   DEFAULT_CLOUD_HTTP_CAPABILITIES,
+  configuredFamilyAllowsProviderFamily,
   explicitProviderFamilyLabel,
-  providerFamilyAllowsAio,
-  providerFamilyAllowsBoxLite,
-  providerFamilyAllowsCloudHttp,
   readBoxLiteRuntimeRequiredTools,
   readConfiguredSandboxProviderFamily,
   readNumberEnv,
@@ -101,12 +99,17 @@ export function createConfiguredSandboxProvider<
     HarnessRoutableSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>
   >[] = [];
 
-  if (providerFamilyAllowsAio(providerFamily)) {
+  if (configuredFamilyAllowsProviderFamily(providerFamily, 'aio')) {
     providers.push(createAioProviderDescriptor(host, workspaceMaterialization));
   }
 
   const cloudBaseUrl = readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
-  if (cloudBaseUrl && providerFamilyAllowsCloudHttp(providerFamily)) {
+  if (providerFamily === 'cloud-http' && !cloudBaseUrl) {
+    throw new Error(
+      'CAP_SANDBOX_PROVIDER=cloud-http selected but CAP_SANDBOX_CLOUD_HTTP_BASE_URL is not configured',
+    );
+  }
+  if (cloudBaseUrl && configuredFamilyAllowsProviderFamily(providerFamily, 'cloud-http')) {
     providers.push(
       defineHttpCloudSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>({
         id: readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_ID') ?? 'cloud-http',
@@ -131,7 +134,7 @@ export function createConfiguredSandboxProvider<
   }
   if (
     boxlite.status === 'valid' &&
-    providerFamilyAllowsBoxLite(providerFamily)
+    configuredFamilyAllowsProviderFamily(providerFamily, 'boxlite')
   ) {
     const baseBoxLitePreflight = createBoxLiteRuntimePreflight({
       requiredTools: mergeToolLists(
@@ -648,22 +651,90 @@ function normalizeRuntimeDependencyKey(runtimeId: string): string {
 }
 
 /**
- * Refuse a transcript read strategy this provider does not implement.
+ * D3 — transcript read strategies, dispatched for real.
  *
- * `single-newest-jsonl` is the only strategy any provider implements. Returning
- * null for anything else made an UNIMPLEMENTED read indistinguishable from a
- * task that simply has no transcript — the operator saw an empty session and
- * nothing said why. Unreachable for both shipped runtimes (each declares that
- * one kind); it exists so a third runtime declaring a strategy nobody built
- * fails where the gap actually is.
+ * The 2026-07-28 fail-loud-on-unknown-runtime change ruled this seam a false
+ * seam and collapsed it to a single-member loud throw
+ * (`assertSingleNewestJsonlSupported`). That ruling is explicitly SUPERSEDED
+ * here because its triggering condition changed: a per-message JSON directory
+ * store (opencode's session layout) is a demonstrated second read shape. The
+ * vocabulary names SHAPES, not runtimes — a third runtime reusing the JSONL
+ * layout declares `single-newest-jsonl` instead of forcing a fake member — and
+ * the second member exists and dispatches even though no registered runtime
+ * declares it yet.
+ *
+ * NOTE(unlock-extension-axes integration): these member names mirror the
+ * contracts `TranscriptReadStrategy` vocabulary landed by the
+ * contracts-runtime-tables track (task 1.7). Once that track is merged this
+ * local alias is re-pointed at the contracts declaration.
  */
-function assertSingleNewestJsonlSupported(kind: string, providerLabel: string): void {
-  if (kind !== 'single-newest-jsonl') {
+type TranscriptReadStrategyKind = 'single-newest-jsonl' | 'per-message-json-dir';
+
+/**
+ * What a provider must supply for the strategies to read through. The medium
+ * carries provider mechanics (docker archive, executor find/cat); the strategy
+ * table below owns WHAT is read, so neither side branches on the other.
+ */
+interface TranscriptArtifactMedium {
+  /** Content of the newest artifact file matching the glob, or null when absent. */
+  readNewestMatching(dir: string, filenameGlob: RegExp): Promise<string | null>;
+  /**
+   * Contents of ALL matching artifact files in ascending path order, or null
+   * when the directory cannot be enumerated or a member cannot be read.
+   */
+  readAllMatching(
+    dir: string,
+    filenameGlob: RegExp,
+  ): Promise<readonly string[] | null>;
+}
+
+type TranscriptStrategyReader = (args: {
+  readonly medium: TranscriptArtifactMedium;
+  readonly dir: string;
+  readonly filenameGlob: RegExp;
+}) => Promise<string | null>;
+
+/**
+ * Total dispatch over the strategy vocabulary: every member has an
+ * implementation, and a kind outside the vocabulary misses the table and is
+ * refused loudly by name in {@link resolveTranscriptStrategyReader}.
+ */
+const TRANSCRIPT_READ_STRATEGIES: Record<
+  TranscriptReadStrategyKind,
+  TranscriptStrategyReader
+> = {
+  'single-newest-jsonl': ({ medium, dir, filenameGlob }) =>
+    medium.readNewestMatching(dir, filenameGlob),
+  'per-message-json-dir': async ({ medium, dir, filenameGlob }) => {
+    const documents = await medium.readAllMatching(dir, filenameGlob);
+    if (documents === null || documents.length === 0) return null;
+    return `${documents
+      .map((document) => document.replace(/\n+$/u, ''))
+      .join('\n')}\n`;
+  },
+};
+
+/**
+ * Resolve the reader for a runtime-declared strategy, refusing an unknown one
+ * loudly. Returning null for an unimplemented strategy once made it
+ * indistinguishable from a task that simply has no transcript — the operator
+ * saw an empty session and nothing said why. That loud boundary is preserved:
+ * only the vocabulary behind it grew from one member to a real dispatch.
+ */
+function resolveTranscriptStrategyReader(
+  kind: string,
+  providerLabel: string,
+): TranscriptStrategyReader {
+  const reader = (
+    TRANSCRIPT_READ_STRATEGIES as Record<string, TranscriptStrategyReader | undefined>
+  )[kind];
+  if (!reader) {
     throw new Error(
       `${providerLabel} cannot read transcripts with strategy "${kind}": ` +
-        'no provider implements a strategy other than single-newest-jsonl',
+        `known strategies are ${Object.keys(TRANSCRIPT_READ_STRATEGIES).join(', ')}`,
     );
   }
+  return reader;
 }
 
 async function readSandboxMetadata(args: {
@@ -944,23 +1015,49 @@ async function readAioTranscriptSource<
     runtimeId: args.runtimeId,
     providerLabel: 'AIO',
   });
-  assertSingleNewestJsonlSupported(runtime.readTranscriptSource.kind, 'AIO');
+  const reader = resolveTranscriptStrategyReader(
+    runtime.readTranscriptSource.kind,
+    'AIO',
+  );
 
   const { dir, filenameGlob } = runtime.transcriptArtifact({
     taskId: args.taskId,
     workspaceDir: AIO_SANDBOX_WORKSPACE_DIR,
     sessionId: args.host.sessionIdForTask?.(args.taskId),
   });
-  const jsonl = await args.controller.readSingleNewestJsonl(
-    args.taskId,
+  const jsonl = await reader({
+    medium: createAioTranscriptMedium(args.taskId, args.controller),
     dir,
     filenameGlob,
-  );
+  });
   if (jsonl === null) return null;
   return createTranscriptSource(args.host, {
     format: runtime.transcriptFormat,
     jsonl,
   });
+}
+
+/**
+ * The AIO container controller exposes exactly one artifact read call
+ * (`readSingleNewestJsonl`), so per-message enumeration is a declared provider
+ * capability GAP that fails loudly where it is — distinct from an unknown
+ * strategy, which is refused by {@link resolveTranscriptStrategyReader} before
+ * any medium is touched.
+ */
+function createAioTranscriptMedium(
+  taskId: string,
+  controller: Pick<AioSandboxContainerController, 'readSingleNewestJsonl'>,
+): TranscriptArtifactMedium {
+  return {
+    readNewestMatching: (dir, filenameGlob) =>
+      controller.readSingleNewestJsonl(taskId, dir, filenameGlob),
+    readAllMatching: async () => {
+      throw new Error(
+        'AIO cannot enumerate per-message transcript artifacts: the container ' +
+          'controller only exposes readSingleNewestJsonl',
+      );
+    },
+  };
 }
 
 async function readBoxLiteTranscriptSource<
@@ -985,18 +1082,21 @@ async function readBoxLiteTranscriptSource<
     runtimeId: args.runtimeId,
     providerLabel: 'BoxLite',
   });
-  assertSingleNewestJsonlSupported(runtime.readTranscriptSource.kind, 'BoxLite');
+  const reader = resolveTranscriptStrategyReader(
+    runtime.readTranscriptSource.kind,
+    'BoxLite',
+  );
 
   const { dir, filenameGlob } = runtime.transcriptArtifact({
     taskId: args.taskId,
     workspaceDir: args.workspacePath,
     sessionId: args.host.sessionIdForTask?.(args.taskId),
   });
-  const jsonl = await readBoxLiteSingleNewestJsonl(
-    args.executor,
+  const jsonl = await reader({
+    medium: createBoxLiteTranscriptMedium(args.executor),
     dir,
     filenameGlob,
-  );
+  });
   if (jsonl === null) return null;
   return createTranscriptSource(args.host, {
     format: runtime.transcriptFormat,
@@ -1004,16 +1104,40 @@ async function readBoxLiteTranscriptSource<
   });
 }
 
-async function readBoxLiteSingleNewestJsonl(
+function createBoxLiteTranscriptMedium(
+  executor: SandboxCommandExecutor,
+): TranscriptArtifactMedium {
+  return {
+    readNewestMatching: async (dir, filenameGlob) => {
+      const paths = await listBoxLiteMatchingFiles(executor, dir, filenameGlob);
+      const newest = paths?.at(-1);
+      if (!newest) return null;
+      return readBoxLiteFile(executor, newest);
+    },
+    readAllMatching: async (dir, filenameGlob) => {
+      const paths = await listBoxLiteMatchingFiles(executor, dir, filenameGlob);
+      if (paths === null) return null;
+      const contents: string[] = [];
+      for (const path of paths) {
+        const content = await readBoxLiteFile(executor, path);
+        if (content === null) return null;
+        contents.push(content);
+      }
+      return contents;
+    },
+  };
+}
+
+async function listBoxLiteMatchingFiles(
   executor: SandboxCommandExecutor,
   dir: string,
   filenameGlob: RegExp,
-): Promise<string | null> {
+): Promise<readonly string[] | null> {
   const listed = await executor.exec({
     command: `find ${shellQuote(dir)} -type f -print`,
   });
   if (listed.exitCode !== 0) return null;
-  const paths = (listed.stdout || listed.output)
+  return (listed.stdout || listed.output)
     .split(/\r?\n/u)
     .filter(Boolean)
     .filter((path) => {
@@ -1021,9 +1145,13 @@ async function readBoxLiteSingleNewestJsonl(
       return filenameGlob.test(path);
     })
     .sort((left, right) => left.localeCompare(right));
-  const newest = paths.at(-1);
-  if (!newest) return null;
-  const read = await executor.exec({ command: `cat ${shellQuote(newest)}` });
+}
+
+async function readBoxLiteFile(
+  executor: SandboxCommandExecutor,
+  path: string,
+): Promise<string | null> {
+  const read = await executor.exec({ command: `cat ${shellQuote(path)}` });
   if (read.exitCode !== 0) return null;
   return read.stdout || read.output;
 }

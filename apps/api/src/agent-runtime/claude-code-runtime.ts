@@ -1,9 +1,12 @@
 import {
+  // Detached tmux session protocol: ONE declaration, the sandbox facade
+  // (unlock-extension-axes 7.1 — the api-side `codex-launch.ts` copy is gone).
   buildHasSessionCommand,
+  createSandboxRuntimePrivateFile,
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
-} from './codex-launch';
-import { createSandboxRuntimePrivateFile } from '@cap-console/sandbox';
+} from '@cap-console/sandbox';
+import type { TranscriptReadStrategy } from '@cap-console/contracts';
 import { claudeProjectSlug } from './claude-transcript';
 import type {
   AgentRuntime,
@@ -21,7 +24,6 @@ import type {
   TerminalStartup,
   TranscriptArtifact,
   TranscriptFormat,
-  TranscriptReadStrategy,
 } from './agent-runtime.port';
 import { classifyClaudeOutputFailure } from './runtime-output-failure-classifier';
 import { explicitTaskModelShellMaterial } from './task-model-launch';
@@ -337,10 +339,12 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   }
 
   /**
-   * Claude persists one newest per-session JSONL file (unify-transcript-parsers D3), so the
-   * read mechanism reads the lexicographically-newest `transcriptArtifact` match and hands
-   * the claude-jsonl parser a `{ format, jsonl }` source — the prior verbatim read. A future
-   * multi-record runtime declares a different strategy without touching this.
+   * Claude persists one newest per-session JSONL file (unify-transcript-parsers D3), so it
+   * declares the `single-newest-jsonl` member of the contracts strategy vocabulary
+   * (unlock-extension-axes D3): the read mechanism reads the lexicographically-newest
+   * `transcriptArtifact` match and hands the claude-jsonl parser a `{ format, jsonl }`
+   * source — the prior verbatim read. A future multi-record runtime declares a different
+   * vocabulary member without touching this.
    */
   readonly readTranscriptSource: TranscriptReadStrategy = {
     kind: 'single-newest-jsonl',

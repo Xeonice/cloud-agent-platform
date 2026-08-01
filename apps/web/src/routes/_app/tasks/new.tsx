@@ -1064,7 +1064,13 @@ function NewTaskPage() {
             <div className="grid overflow-hidden rounded-md shadow-ring">
               <ConfigRow label="身份来源" value="本地账号" />
               <ConfigRow label="仓库范围" value="已导入仓库" />
-              <ConfigRow label="运行时" value="Codex / Claude Code" />
+              {/* Driven by the contracts-declared runtime collection (via
+                  RUNTIME_CATALOG → RUNTIME_METADATA labels) — no hardwired
+                  per-runtime copy in this page (unlock-extension-axes). */}
+              <ConfigRow
+                label="运行时"
+                value={RUNTIME_CATALOG.map((rt) => rt.label).join(" / ")}
+              />
               <ConfigRow label="写入动作" value="沙箱内自主" />
             </div>
           </Panel>

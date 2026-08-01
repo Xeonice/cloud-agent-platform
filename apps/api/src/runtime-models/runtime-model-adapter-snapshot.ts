@@ -1,9 +1,12 @@
-import type { RuntimeExecutionEnvironmentSnapshot } from '@cap-console/contracts';
+import type {
+  AgentRuntimeId,
+  RuntimeExecutionEnvironmentSnapshot,
+} from '@cap-console/contracts';
 
 /** Recheck the immutable snapshot at the adapter boundary before discovery. */
 export function assertRuntimeModelAdapterSnapshot(
   snapshot: RuntimeExecutionEnvironmentSnapshot,
-  runtime: 'codex' | 'claude-code',
+  runtime: AgentRuntimeId,
 ): void {
   const declared = snapshot.sandboxMetadata.dependencies[runtime];
   if (

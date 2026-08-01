@@ -64,6 +64,12 @@ function cloudCreateResponse(taskId, options = {}) {
   });
 }
 
+// unlock-extension-axes 6.3 (D8): protocol conformance no longer runs against
+// this stub — it runs over real HTTP against the reference server exported by
+// this package. `makeFetch` remains ONLY as the layer beneath the protocol:
+// fault injection (thrown transport errors, TimeoutError, never-settling
+// promises, exact HTTP status matrices) that a protocol-conformant listener
+// cannot produce, i.e. the reference server's own downstream.
 function makeFetch(routes) {
   const calls = [];
   const fetch = async (input, init = {}) => {
@@ -2623,6 +2629,11 @@ await test('readoption list preserves HTTP failure errors', async () => {
   );
 });
 
+// Diagnostic conformance stays on the fault-injection stub deliberately: its
+// scenarios simulate the network failing UNDER the server (lost responses,
+// transport timeouts, throttled cleanup), which a conformant reference
+// listener cannot produce on demand. The protocol scenarios themselves run
+// against the real reference server above/below.
 await test('cloud provider passes shared provisioning diagnostic conformance', async () => {
   const capabilityProvider = new mod.HttpCloudSandboxProvider({
     baseUrl: 'https://cloud.example.test',
@@ -2931,145 +2942,314 @@ await test('cloud provider passes shared provisioning diagnostic conformance', a
 });
 
 await test('cloud provider passes applicable ownership behavior conformance', async () => {
+  // unlock-extension-axes 6.3 (D8): the ownership behavior scenarios run over
+  // real HTTP against the reference server; the behavior trace is rebuilt from
+  // the requests the bound listener actually observed, not from stub routes.
   const taskId = '72000000-0000-4000-8000-000000000001';
-  const providerSandboxId = 'cloud-behavior-sandbox';
   const resource = ownership(
     'cloud-behavior-owner',
     'cloud-behavior-resource',
   );
-  const trace = [];
-  const appendTrace = (event) => {
-    trace.push({
-      sequence: trace.length + 1,
-      taskId,
-      providerId: 'cloud-http',
-      ...event,
-    });
-  };
-  const state = makeFetch({
-    'POST /v1/sandboxes': cloudCreateResponse(taskId, {
-      providerSandboxId,
-    }),
-    'GET /v1/sandboxes/readoptable': () => {
-      appendTrace({ kind: 'readoptable-listed' });
-      return response(200, { data: [taskId] });
-    },
-    [`POST /v1/sandboxes/${taskId}/reattach`]: ({ body, init }) => {
-      appendTrace({
-        kind: 'reattached',
-        providerSandboxIdMatched:
-          body.providerSandboxId === providerSandboxId,
-        ownershipFenceMatched:
-          body.resourceGeneration === resource.resourceGeneration &&
-          init.headers['if-match'] === `"${resource.resourceGeneration}"`,
-      });
-      return response(200, {
-        data: {
-          taskId,
-          providerSandboxId,
-          resourceGeneration: resource.resourceGeneration,
-          baseUrl: `https://sandbox.example.test/${taskId}`,
-          wsUrl: `wss://sandbox.example.test/${taskId}/ws`,
-        },
-      });
-    },
-    [`DELETE /v1/sandboxes/${taskId}`]: response(404, { error: 'gone' }),
-  });
-  const provider = new mod.HttpCloudSandboxProvider({
-    baseUrl: 'https://cloud.example.test',
-    fetch: state.fetch,
-  });
-  assert.equal(
-    provider.getProviderCapabilities().includes('command.exec'),
-    false,
-  );
-  assert.equal(typeof provider.getCommandDescriptor, 'undefined');
-  const getSelectedSandboxRun = provider.getSelectedSandboxRun.bind(provider);
-  provider.getSelectedSandboxRun = async (selectedTaskId) => {
-    const selected = await getSelectedSandboxRun(selectedTaskId);
-    assert.equal(selected?.command, undefined);
-    if (trace.length === 0) appendTrace({ kind: 'provider-selected' });
-    return selected;
-  };
-  participation.ran('behavior');
-  const scenarios = conformance.createSandboxProviderBehaviorConformanceScenarios(
-    {
-      provider,
-      taskId,
-      cloneSpec: null,
-      behavior: {
-        ownership: {
-          readoptionTarget: () => ({
-            providerSandboxId,
-            ownership: resource,
-          }),
-          readTrace: () => trace,
-        },
-      },
-      expectTranscriptSource: false,
-    },
-    assert,
-  );
-  assert.deepEqual(
-    scenarios.map((scenario) => scenario.name),
-    [
-      'behavior adapters cover every advertised provider-owned capability',
-      'ownership behavior readopts only the selected provider task',
-    ],
-  );
+  const server = await mod.startHttpCloudSandboxReferenceServer();
+  const clientTrace = [];
+  let selectedProviderSandboxId;
   try {
-    for (const scenario of scenarios) await scenario.run();
+    const provider = new mod.HttpCloudSandboxProvider({
+      baseUrl: server.baseUrl,
+    });
+    assert.equal(
+      provider.getProviderCapabilities().includes('command.exec'),
+      false,
+    );
+    assert.equal(typeof provider.getCommandDescriptor, 'undefined');
+    const getSelectedSandboxRun = provider.getSelectedSandboxRun.bind(provider);
+    provider.getSelectedSandboxRun = async (selectedTaskId) => {
+      const selected = await getSelectedSandboxRun(selectedTaskId);
+      assert.equal(selected?.command, undefined);
+      if (clientTrace.length === 0) clientTrace.push({ kind: 'provider-selected' });
+      return selected;
+    };
+    const readTrace = () => {
+      const events = [...clientTrace];
+      for (const request of server.requests) {
+        if (
+          request.method === 'GET' &&
+          request.pathname === '/v1/sandboxes/readoptable'
+        ) {
+          events.push({ kind: 'readoptable-listed' });
+        }
+        if (
+          request.method === 'POST' &&
+          request.pathname === `/v1/sandboxes/${taskId}/reattach`
+        ) {
+          events.push({
+            kind: 'reattached',
+            providerSandboxIdMatched:
+              request.body?.providerSandboxId === selectedProviderSandboxId,
+            ownershipFenceMatched:
+              request.body?.resourceGeneration === resource.resourceGeneration &&
+              request.headers['if-match'] === `"${resource.resourceGeneration}"`,
+          });
+        }
+      }
+      return events.map((event, index) => ({
+        sequence: index + 1,
+        taskId,
+        providerId: 'cloud-http',
+        ...event,
+      }));
+    };
+    participation.ran('behavior');
+    const scenarios = conformance.createSandboxProviderBehaviorConformanceScenarios(
+      {
+        provider,
+        taskId,
+        cloneSpec: null,
+        behavior: {
+          ownership: {
+            readoptionTarget: (context) => {
+              selectedProviderSandboxId = context.selectedRun.providerSandboxId;
+              return {
+                providerSandboxId: context.selectedRun.providerSandboxId,
+                ownership: resource,
+              };
+            },
+            readTrace,
+          },
+        },
+        expectTranscriptSource: false,
+      },
+      assert,
+    );
+    assert.deepEqual(
+      scenarios.map((scenario) => scenario.name),
+      [
+        'behavior adapters cover every advertised provider-owned capability',
+        'ownership behavior readopts only the selected provider task',
+      ],
+    );
+    try {
+      for (const scenario of scenarios) await scenario.run();
+    } finally {
+      await provider.teardownSandbox(taskId);
+    }
   } finally {
-    await provider.teardownSandbox(taskId);
+    await server.close();
   }
 });
 
-await test('cloud provider passes the shared sandbox provider conformance scenarios', async () => {
+await test('cloud provider passes the shared sandbox provider conformance scenarios over real HTTP', async () => {
+  // unlock-extension-axes 6.3 (D8): the protocol scenarios run against a real
+  // bound HTTP listener served by the named reference server — not against a
+  // hand-written fetch stub that could silently mirror the provider's own
+  // assumptions while the README drifted. The provider is constructed WITHOUT
+  // a fetch override, so every request below travels over real HTTP.
   const taskId = 'task-conformance';
-  const { fetch } = makeFetch({
-    'POST /v1/sandboxes': response(200, {
-      data: {
+  const server = await mod.startHttpCloudSandboxReferenceServer();
+  try {
+    const provider = new mod.HttpCloudSandboxProvider({
+      baseUrl: server.baseUrl,
+    });
+    participation.ran('provider');
+    const scenarios = conformance.createSandboxProviderConformanceScenarios(
+      {
+        provider,
         taskId,
-        baseUrl: `https://sandbox.example.test/${taskId}`,
-        wsUrl: `wss://sandbox.example.test/${taskId}/ws`,
+        cloneSpec: { url: 'https://github.com/acme/repo.git' },
+        runtimeId: 'codex',
+        requiredCapabilities: mod.HTTP_CLOUD_SANDBOX_PROVIDER_CAPABILITIES,
+        // Legacy (non-credentialed) delivery args so the deliver endpoint is
+        // exercised through the listener; the credentialed rejection keeps its
+        // own regression test against the same reference server.
+        deliverArgs: {
+          authHeader: 'Authorization: Basic conformance-token',
+          branch: `cap/${taskId}`,
+          commitMessage: 'CAP sandbox conformance',
+        },
       },
-    }),
-    [`GET /v1/sandboxes/${taskId}`]: response(200, { data: { id: taskId } }),
-    [`POST /v1/sandboxes/${taskId}/deliver`]: response(200, {
-      data: { hadChanges: true, commitSha: 'abc123', error: null },
-    }),
-    [`GET /v1/sandboxes/${taskId}/transcript?runtimeId=codex`]: response(200, {
-      data: { format: 'codex-rollout', jsonl: '{"type":"turn"}\n' },
-    }),
-    'GET /v1/sandboxes/readoptable': response(200, { data: [taskId] }),
-    [`POST /v1/sandboxes/${taskId}/reattach`]: response(200, {
-      data: {
-        taskId,
-        baseUrl: `https://sandbox.example.test/${taskId}`,
-        wsUrl: `wss://sandbox.example.test/${taskId}/ws`,
-      },
-    }),
-    [`DELETE /v1/sandboxes/${taskId}`]: response(204, null),
-    [`GET /v1/sandboxes/${taskId}`]: response(404, { error: 'gone' }),
-  });
-  const provider = new mod.HttpCloudSandboxProvider({
-    baseUrl: 'https://cloud.example.test',
-    fetch,
-  });
-  participation.ran('provider');
-  const scenarios = conformance.createSandboxProviderConformanceScenarios(
-    {
-      provider,
-      taskId,
-      cloneSpec: { url: 'https://github.com/acme/repo.git' },
-      runtimeId: 'codex',
-      requiredCapabilities: mod.HTTP_CLOUD_SANDBOX_PROVIDER_CAPABILITIES,
-    },
-    assert,
-  );
+      assert,
+    );
 
-  for (const scenario of scenarios) {
-    await scenario.run();
+    for (const scenario of scenarios) {
+      await scenario.run();
+    }
+
+    // All 7 required README endpoints were exercised through the bound
+    // listener within the conformance run.
+    const exercised = new Set(
+      server.requests.map((request) => `${request.method} ${request.pathname}`),
+    );
+    for (const endpoint of [
+      'POST /v1/sandboxes',
+      `GET /v1/sandboxes/${taskId}`,
+      `DELETE /v1/sandboxes/${taskId}`,
+      `GET /v1/sandboxes/${taskId}/transcript`,
+      `POST /v1/sandboxes/${taskId}/deliver`,
+      'GET /v1/sandboxes/readoptable',
+      `POST /v1/sandboxes/${taskId}/reattach`,
+    ]) {
+      assert.equal(
+        exercised.has(endpoint),
+        true,
+        `conformance must exercise ${endpoint} through the reference listener`,
+      );
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+await test('a baseline reference server without self-description degrades gracefully', async () => {
+  // unlock-extension-axes 6.4: capability/version self-description is a purely
+  // additive extension. The default reference server implements only the 7
+  // required endpoints; its absence of self-description is a negotiated
+  // baseline outcome, never an error, and the required protocol still works.
+  const server = await mod.startHttpCloudSandboxReferenceServer();
+  try {
+    assert.deepEqual(
+      await mod.negotiateHttpCloudSpecification({ baseUrl: server.baseUrl }),
+      { kind: 'baseline' },
+    );
+    const provider = new mod.HttpCloudSandboxProvider({
+      baseUrl: server.baseUrl,
+    });
+    const connection = await provider.provision(
+      provisionContext('task-baseline'),
+    );
+    assert.equal(connection.taskId, 'task-baseline');
+    assert.equal(await provider.sandboxExists('task-baseline'), true);
+    assert.deepEqual(
+      await provider.teardownSandbox('task-baseline'),
+      cleanupSucceeded('found-and-cleaned'),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+await test('specification version negotiation counter-offers instead of rejecting', async () => {
+  // Server prefers a version the client does not speak but also supports the
+  // client's version: negotiation counter-offers the mutual version.
+  const counterOffer = await mod.startHttpCloudSandboxReferenceServer({
+    selfDescription: {
+      specificationVersion: '2.0',
+      supportedSpecificationVersions: ['2.0', '1.0'],
+    },
+  });
+  try {
+    assert.deepEqual(
+      await mod.negotiateHttpCloudSpecification({
+        baseUrl: counterOffer.baseUrl,
+      }),
+      { kind: 'negotiated', specificationVersion: '1.0' },
+    );
+  } finally {
+    await counterOffer.close();
+  }
+
+  // Server advertising the client's preferred version negotiates directly.
+  const preferred = await mod.startHttpCloudSandboxReferenceServer({
+    selfDescription: {
+      specificationVersion: mod.HTTP_CLOUD_SANDBOX_SPECIFICATION_VERSION,
+    },
+  });
+  try {
+    assert.deepEqual(
+      await mod.negotiateHttpCloudSpecification({ baseUrl: preferred.baseUrl }),
+      {
+        kind: 'negotiated',
+        specificationVersion: mod.HTTP_CLOUD_SANDBOX_SPECIFICATION_VERSION,
+      },
+    );
+  } finally {
+    await preferred.close();
+  }
+
+  // No mutual version: a typed, actionable mismatch naming both sides —
+  // not a blanket rejection of the server.
+  const disjoint = await mod.startHttpCloudSandboxReferenceServer({
+    selfDescription: { specificationVersion: '3.0' },
+  });
+  try {
+    assert.deepEqual(
+      await mod.negotiateHttpCloudSpecification({ baseUrl: disjoint.baseUrl }),
+      {
+        kind: 'version-mismatch',
+        clientVersions: [
+          ...mod.HTTP_CLOUD_SANDBOX_SUPPORTED_SPECIFICATION_VERSIONS,
+        ],
+        serverVersions: ['3.0'],
+      },
+    );
+  } finally {
+    await disjoint.close();
+  }
+});
+
+await test('provider-local secret-writer rejections survive the real-server migration', async () => {
+  // unlock-extension-axes 6.5: the two provider-local secret-writer hard
+  // rejections are preserved unchanged now that conformance runs against the
+  // real reference server — and no request carrying secret material ever
+  // reaches the bound listener.
+  const canary = 'CAP_CLOUD_SECRET_WRITER_CANARY';
+  const server = await mod.startHttpCloudSandboxReferenceServer();
+  try {
+    const provider = new mod.HttpCloudSandboxProvider({
+      baseUrl: server.baseUrl,
+    });
+    // Rejection 1: canonical workspace credentials are refused before any
+    // external request is issued.
+    await assert.rejects(
+      () =>
+        provider.provision({
+          ...provisionContext('task-secret-writer'),
+          workspace: {
+            repositoryUrl: 'https://code.example.test/org/repo.git',
+            callerBranch: null,
+            resolvedBranch: 'main',
+            deadlineMs: 900_000,
+            credential: core.createExactHostGitCredential(
+              'https://code.example.test/org/repo.git',
+              `Authorization: Basic ${canary}`,
+            ),
+          },
+        }),
+      (error) =>
+        error?.code === 'sandbox_provider_configuration_error' &&
+        /provider-local secret writer/u.test(error.message) &&
+        !error.message.includes(canary),
+    );
+    assert.equal(server.requests.length, 0);
+
+    // Rejection 2: credentialed delivery refuses without issuing HTTP.
+    await provider.provision(provisionContext('task-secret-writer'));
+    const requestsBeforeDeliver = server.requests.length;
+    assert.deepEqual(
+      await provider.deliverWorkspaceChanges('task-secret-writer', {
+        credential: core.createExactHostGitCredential(
+          'https://code.example.test/org/repo.git',
+          `Authorization: Basic ${canary}`,
+        ),
+        branch: 'cap/task-secret-writer',
+        commitMessage: 'secret writer regression',
+      }),
+      {
+        hadChanges: false,
+        commitSha: null,
+        error: 'Credentialed delivery requires a provider-local secret writer',
+      },
+    );
+    assert.equal(server.requests.length, requestsBeforeDeliver);
+    assert.equal(
+      server.requests.some((request) =>
+        request.pathname.endsWith('/deliver'),
+      ),
+      false,
+    );
+    assert.equal(JSON.stringify(server.requests).includes(canary), false);
+    await provider.teardownSandbox('task-secret-writer');
+  } finally {
+    await server.close();
   }
 });
 

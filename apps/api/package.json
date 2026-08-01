@@ -17,7 +17,7 @@
     "test:compiled": "node --test \"dist/**/*.spec.js\"",
     "test:src": "node ../../scripts/run-suite.mjs \"src/**/*.test.mjs\"",
     "test:suite": "node --test \"test/**/*.test.mjs\"",
-    "test:public-surface": "node --test --test-force-exit \"dist/public-surface/*.spec.js\" \"dist/v1/v1-operation-manifest.spec.js\" \"dist/mcp/mcp.spec.js\" \"dist/openapi/openapi.registry.spec.js\"",
+    "test:public-surface": "node --test --test-force-exit \"dist/public-surface/*.spec.js\" \"dist/surface-parity/evidence.spec.js\" \"dist/v1/v1-operation-manifest.spec.js\" \"dist/mcp/mcp.spec.js\" \"dist/openapi/openapi.registry.spec.js\"",
     "test:e2e": "node --env-file=../../.env --test --test-force-exit test/api-e2e.mjs",
     "pretest:e2e": "pnpm -w exec turbo run build --filter=@cap-console/api",
     "test:integration:schedules": "node --test --test-force-exit test/scheduled-tasks-e2e.mjs",

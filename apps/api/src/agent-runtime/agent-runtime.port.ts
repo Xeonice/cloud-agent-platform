@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_RUNTIME_ID,
   type AgentRuntimeId,
   type ExecutionMode,
+  type TranscriptReadStrategy,
 } from '@cap-console/contracts';
 import type {
   SandboxRuntimePreflightCommandDescriptor,
@@ -27,9 +28,10 @@ import type {
  * codex extraction is behavior-preserving: `CodexRuntime` is today's logic moved
  * behind the port with no functional change.
  *
- * This is a dependency-light LEAF module: it pulls in only the codex-launch leaf
- * helpers, never Nest/Prisma/provider internals, so either side's compile graph
- * stays small and the runtimes are unit-testable in plain node.
+ * This is a dependency-light LEAF module: it pulls in only the contracts
+ * vocabulary and the sandbox facade's session-command leaf helpers, never
+ * Nest/Prisma/provider internals, so either side's compile graph stays small
+ * and the runtimes are unit-testable in plain node.
  */
 
 /**
@@ -104,21 +106,18 @@ export interface TranscriptArtifact {
 
 /**
  * HOW a runtime's transcript source is materialized out of the retained container
- * (unify-transcript-parsers, design D3). This generalizes the read layer's former
- * baked-in "read the single newest JSONL file" assumption into a runtime-declared
- * STRATEGY: the runtime declares the strategy as DATA (alongside WHERE via
- * {@link TranscriptArtifact} and WHAT via {@link TranscriptFormat}); the sandbox read
- * mechanism interprets it. The leaf port owns no read I/O — it only declares the shape.
+ * (unify-transcript-parsers, design D3). The runtime declares the strategy as DATA
+ * (alongside WHERE via {@link TranscriptArtifact} and WHAT via
+ * {@link TranscriptFormat}); the sandbox read mechanism interprets it. The leaf port
+ * owns no read I/O — it only declares the shape.
  *
- * - `single-newest-jsonl` — codex and claude: read the lexicographically-newest file
- *   matching {@link TranscriptArtifact.filenameGlob} under {@link TranscriptArtifact.dir}
- *   and hand the parser a `{ format, jsonl }` source (the prior verbatim behavior).
- *
- * The union is shaped so a FUTURE multi-record runtime (e.g. opencode, which persists
- * session/message/part records rather than one JSONL file) declares a NON-single-JSONL
- * variant — e.g. `{ kind: 'multi-record'; … }` — additively, WITHOUT editing codex/claude.
+ * The strategy vocabulary is now THE contracts declaration
+ * (unlock-extension-axes D3): shape-named members (`single-newest-jsonl` /
+ * `per-message-json-dir`), re-exported here so runtime implementations keep one
+ * import site. See the vocabulary's ruling record in `agent-runtime-id.ts` for
+ * the explicit supersession of the 2026-07-28 single-member loud-throw ruling.
  */
-export type TranscriptReadStrategy = { readonly kind: 'single-newest-jsonl' };
+export type { TranscriptReadStrategy };
 
 /**
  * A minimal shell-exec handle into a provisioned sandbox: runs ONE command over
@@ -415,15 +414,15 @@ export interface AgentRuntime {
    * (alongside {@link transcriptArtifact}'s WHERE and {@link transcriptFormat}'s WHAT) to
    * materialize the source it hands the parser.
    *
-   * NOT YET AN EXTENSION POINT. {@link TranscriptReadStrategy} has exactly ONE member,
-   * both shipped runtimes declare it verbatim, and every provider implements only that
-   * one — so a runtime declaring anything else gets NO transcript, it does not get a
-   * different read. This comment used to promise a future runtime could declare a
-   * non-single-JSONL strategy without editing the others, which was never true of the
-   * code beneath it. Building the real dispatch belongs with the runtime-axis work,
-   * when a second strategy exists to shape it against (fail-loud-on-unknown-runtime,
-   * Track 7). Until then the providers REFUSE an unimplemented strategy loudly rather
-   * than returning empty.
+   * The strategy is a shape-named contracts vocabulary with real dispatch
+   * (unlock-extension-axes D3). This member used to be flagged "NOT YET AN
+   * EXTENSION POINT": the 2026-07-28 fail-loud-on-unknown-runtime ruling kept a
+   * single member behind a loud provider-side throw because no second shape was
+   * in evidence. That ruling is explicitly SUPERSEDED — opencode's per-message
+   * JSON store demonstrated the second shape (`per-message-json-dir`), which
+   * exists at compile time with no registered runtime declaring it. The sandbox
+   * facade's read seam dispatches over the vocabulary; a strategy value outside
+   * it still fails loudly, naming the strategy.
    */
   readonly readTranscriptSource: TranscriptReadStrategy;
 }

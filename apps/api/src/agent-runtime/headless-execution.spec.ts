@@ -28,13 +28,11 @@ import { parseClaudeTranscript } from '@/sandbox/claude-transcript-parser';
 import { parseTranscript } from '@/sandbox/parse-transcript';
 import {
   CODEX_PROMPT_FILE_PATH,
-  headlessExitFile,
-  wrapHeadlessDetachedSession,
-} from './codex-launch';
-import {
   exitCodeFromExecBody,
+  headlessExitFile,
   selectLaunch,
   TASK_MODEL_MATERIAL_PATH,
+  wrapHeadlessDetachedSession,
 } from '@cap-console/sandbox';
 
 const CTX: LaunchContext = {

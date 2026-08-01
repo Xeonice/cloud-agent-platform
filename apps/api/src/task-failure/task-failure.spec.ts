@@ -1,12 +1,41 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskFailureCode } from '@cap-console/contracts';
+import {
+  DEFAULT_AGENT_RUNTIME_ID,
+  type TaskFailureCode,
+} from '@cap-console/contracts';
 import type { PrismaService } from '@/prisma/prisma.service';
 import { taskFailureFromRecord } from './task-failure';
 import { taskResponseFromRecord } from '@/tasks/task-response';
 import { TasksService } from '@/tasks/tasks.service';
 
 const FAILURE_AT = new Date('2026-07-12T12:32:31.000Z');
+
+test('persisted runtime parses against the declared vocabulary with default fallback', () => {
+  // Every declared runtime is accepted as itself — the label then resolves
+  // through RUNTIME_METADATA, not an identity ternary in task-failure.ts.
+  const claudeFailure = taskFailureFromRecord({
+    runtime: 'claude-code',
+    failureCode: 'runtime_auth_expired',
+    failureAt: FAILURE_AT,
+    failureExitCode: null,
+  });
+  assert.ok(claudeFailure && 'runtime' in claudeFailure);
+  assert.equal(claudeFailure.runtime, 'claude-code');
+  assert.match(claudeFailure.message, /Claude Code.*登录凭据已过期/);
+
+  // An unknown persisted value (free-text column) falls back to the DECLARED
+  // default rather than being collapsed through a two-way ternary.
+  const unknownFailure = taskFailureFromRecord({
+    runtime: 'not-a-runtime',
+    failureCode: 'runtime_auth_expired',
+    failureAt: FAILURE_AT,
+    failureExitCode: null,
+  });
+  assert.ok(unknownFailure && 'runtime' in unknownFailure);
+  assert.equal(unknownFailure.runtime, DEFAULT_AGENT_RUNTIME_ID);
+  assert.match(unknownFailure.message, /Codex.*登录凭据已过期/);
+});
 
 test('model failure columns project to fixed actionable public failures', () => {
   const cases: Array<{
