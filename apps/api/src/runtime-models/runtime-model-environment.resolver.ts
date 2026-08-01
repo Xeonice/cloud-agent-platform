@@ -363,7 +363,12 @@ function managedSnapshotSource(
   throw new RuntimeModelCatalogOperationalError();
 }
 
-function deploymentSnapshotSource(
+/**
+ * Exported for the unlock-extension-axes D6 regression pin (integration 7.4):
+ * the checksum fallback below is the LIVE production writer of
+ * `provider-snapshot`, and the vocabulary merge must not change its output.
+ */
+export function deploymentSnapshotSource(
   configured: SandboxEnvironmentSourceDescriptor,
   resolvedLocator?: string | null,
   resolvedDigest?: string | null,

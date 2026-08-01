@@ -1,5 +1,7 @@
 import {
-  DEFAULT_TASK_RUNTIME,
+  DEFAULT_AGENT_RUNTIME_ID,
+  RUNTIME_METADATA,
+  RuntimeSchema,
   TaskFailureCodeSchema,
   TaskFailureSchema,
   type Runtime,
@@ -77,7 +79,10 @@ export function runtimeFailureMessage(
   runtime: Runtime,
   code: RuntimeTaskFailureCode,
 ): string {
-  const runtimeLabel = runtime === 'claude-code' ? 'Claude Code' : 'Codex';
+  // Label position: a lookup in the compile-time-total RUNTIME_METADATA table,
+  // not an identity branch — a newly declared runtime gets its label here with
+  // zero edits to this file (unlock-extension-axes, agent-runtime spec).
+  const runtimeLabel = RUNTIME_METADATA[runtime].label;
   switch (code) {
     case 'runtime_auth_expired':
       return `${runtimeLabel} 登录凭据已过期，请前往设置重新连接后创建新任务。`;
@@ -91,7 +96,8 @@ export function runtimeFailureMessage(
 }
 
 export function runtimeFailureTitle(failure: RuntimeTaskFailure): string {
-  const runtimeLabel = failure.runtime === 'claude-code' ? 'Claude Code' : 'Codex';
+  // Same table-lookup shape as runtimeFailureMessage — no identity ternary.
+  const runtimeLabel = RUNTIME_METADATA[failure.runtime].label;
   switch (failure.code) {
     case 'runtime_auth_expired':
       return `${runtimeLabel} 登录凭据已过期`;
@@ -222,8 +228,15 @@ export function taskFailureFromRecord(
     case 'runtime_auth_rejected':
     case 'runtime_model_setup_failed':
     case 'runtime_model_rejected': {
-      const runtime: Runtime =
-        row.runtime === 'claude-code' ? 'claude-code' : DEFAULT_TASK_RUNTIME;
+      // Parse/default position, NOT a label lookup: the persisted column is
+      // untrusted free text, so parse it against the declared vocabulary and
+      // fall back to the declared default. Every declared runtime is accepted
+      // as itself; unknown values normalize to the default instead of being
+      // collapsed through a two-way identity ternary.
+      const parsedRuntime = RuntimeSchema.safeParse(row.runtime);
+      const runtime: Runtime = parsedRuntime.success
+        ? parsedRuntime.data
+        : DEFAULT_AGENT_RUNTIME_ID;
       return TaskFailureSchema.parse({
         code: parsedCode.data,
         runtime,

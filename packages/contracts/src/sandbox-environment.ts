@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AGENT_RUNTIME_IDS } from './agent-runtime-id.js';
 import { Sha256ChecksumSchema } from './artifact-checksum.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
 import { SANDBOX_PROVIDER_FAMILIES } from './provider-family.js';
@@ -22,13 +23,53 @@ export type SandboxEnvironmentProviderFamily = z.infer<
   typeof SandboxEnvironmentProviderFamilySchema
 >;
 
-export const SandboxEnvironmentSourceKindSchema = z.enum([
+/**
+ * Environment source-kind vocabulary — the SINGLE declaration, two tiers
+ * (unlock-extension-axes D6).
+ *
+ * MANAGED kinds are creatable/validatable through the managed-environment
+ * surface. `SandboxEnvironmentSourceKindSchema` below wraps ONLY this tier, so
+ * managed creation/validation keeps rejecting every non-managed kind exactly as
+ * before the merge — the extension tier does not widen the managed surface.
+ *
+ * EXTENSION/LEGACY kinds exist only on the runtime-model snapshot paths and are
+ * never selectable as managed environments. D6 RULING RECORD (integration task
+ * 7.2, 2026-08-01):
+ * - `provider-snapshot` has a LIVE production writer — the environment resolver
+ *   falls back to it whenever a checksum resolves without a matching configured
+ *   source kind (`runtime-model-environment.resolver.ts`). Deleting or renaming
+ *   it would be a silent behavior change, so it is modeled as an explicit
+ *   extension member.
+ * - `boxlite-rootfs` survives only on the READ path (historical persisted
+ *   snapshots, the snapshot validation refinement, and the taskless probe).
+ *   Decision: keep it as an explicitly modeled LEGACY member; migrating the
+ *   historical snapshots away is deliberately NOT a side effect of this change
+ *   and requires its own user-approved follow-up (see the runtime-model-catalog
+ *   spec: "Retiring boxlite-rootfs is not a side effect of this change").
+ *
+ * `runtime-model.ts` DERIVES its snapshot source union from these two tiers —
+ * managed members programmatically, extension members through a
+ * totality-checked table — and must not grow an independent member list. The
+ * R5 parity gate (`scripts/sandbox-core-vocabulary-parity.mjs`) reconciles the
+ * declaration against that derivation site.
+ */
+export const SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS = [
   'aio-docker-image',
   'boxlite-image',
-]);
+] as const;
+export const SANDBOX_ENVIRONMENT_EXTENSION_SOURCE_KINDS = [
+  'boxlite-rootfs',
+  'provider-snapshot',
+] as const;
+
+export const SandboxEnvironmentSourceKindSchema = z.enum(
+  SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS,
+);
 export type SandboxEnvironmentSourceKind = z.infer<
   typeof SandboxEnvironmentSourceKindSchema
 >;
+export type SandboxEnvironmentExtensionSourceKind =
+  (typeof SANDBOX_ENVIRONMENT_EXTENSION_SOURCE_KINDS)[number];
 
 export const SandboxEnvironmentSourceSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -113,12 +154,32 @@ export type SandboxEnvironmentValidationProbe = z.infer<
   typeof SandboxEnvironmentValidationProbeSchema
 >;
 
-export const RuntimeArtifactChecksumsSchema = z
-  .object({
-    codex: Sha256ChecksumSchema.optional(),
-    'claude-code': Sha256ChecksumSchema.optional(),
-  })
-  .strict();
+/**
+ * Per-runtime packaged CLI artifact checksums, keyed by THE runtime vocabulary
+ * instead of literal keys (unlock-extension-axes D1) — this was the last axis-B
+ * physical rejection: with strict literal keys, declaring a new runtime made
+ * its attestations unparseable.
+ *
+ * INTENDED SEMANTICS = PARTIAL. Under the Zod classic v3 entrypoint an
+ * enum-keyed `z.record` accepts any SUBSET of the declared runtime keys: a
+ * historical attestation persisted before a runtime was declared (so it lacks
+ * that runtime's checksum) MUST keep parsing; a key outside the vocabulary is
+ * rejected; values stay validated sha-256 checksums. Zod v4 FLIPS enum-keyed
+ * `z.record` to exhaustive (a missing declared key fails the parse), so the v4
+ * migration path for this schema is `z.partialRecord(...)`, NOT `z.record(...)`.
+ * Pinned constraint: `packages/contracts`, `apps/api`, and `apps/web` import
+ * only the classic v3 `zod` entrypoint (never the `zod/v4` subpath) — asserted
+ * by the scan test in `sandbox-environment.test.mjs`.
+ *
+ * The key schema derives from `AGENT_RUNTIME_IDS` directly — the same single
+ * declaration `RuntimeSchema` (task.ts) wraps — rather than importing
+ * `RuntimeSchema`, because task.js already imports this module and the reverse
+ * import would be an initialization cycle.
+ */
+export const RuntimeArtifactChecksumsSchema = z.record(
+  z.enum(AGENT_RUNTIME_IDS),
+  Sha256ChecksumSchema,
+);
 export type RuntimeArtifactChecksums = z.infer<
   typeof RuntimeArtifactChecksumsSchema
 >;

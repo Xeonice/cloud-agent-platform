@@ -9,20 +9,19 @@
  * "Codex"), which is the bug this change fixes — a shared helper makes that
  * drift impossible.
  *
+ * The label text itself lives in the contracts RUNTIME_METADATA policy table
+ * (unlock-extension-axes V.8): this file keeps the console's ABSENT/unknown
+ * semantics but no longer owns a second copy of the per-runtime copy, so a
+ * third runtime's label arrives with its metadata row and no console edit.
+ *
  * A null/undefined runtime (legacy rows, or an omitted-on-create value) defaults
  * to `Codex`, matching the backend `DEFAULT_TASK_RUNTIME = 'codex'` semantics.
  */
-import type { Runtime } from "@cap-console/contracts";
-
-/**
- * Display names for the runtimes this console ships copy for. A total mapping,
- * so adding a runtime to the contract without adding its label is a build error
- * rather than a UI that silently calls it "Codex".
- */
-const AGENT_LABELS: Record<Runtime, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-};
+import {
+  DEFAULT_AGENT_RUNTIME_ID,
+  RUNTIME_METADATA,
+  type Runtime,
+} from "@cap-console/contracts";
 
 /**
  * Agent display name from the persisted runtime.
@@ -33,6 +32,8 @@ const AGENT_LABELS: Record<Runtime, string> = {
  * than an unfamiliar word on screen.
  */
 export function agentLabel(runtime: Runtime | null | undefined): string {
-  if (runtime === null || runtime === undefined) return AGENT_LABELS.codex;
-  return AGENT_LABELS[runtime] ?? runtime;
+  if (runtime === null || runtime === undefined) {
+    return RUNTIME_METADATA[DEFAULT_AGENT_RUNTIME_ID].label;
+  }
+  return RUNTIME_METADATA[runtime]?.label ?? runtime;
 }

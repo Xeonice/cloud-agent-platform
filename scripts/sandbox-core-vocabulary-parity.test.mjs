@@ -16,6 +16,7 @@ import {
   PAIRS,
   readArrayMembers,
   findVocabularyDisagreements,
+  schemaEnumMembers,
 } from './sandbox-core-vocabulary-parity.mjs';
 
 const PAIR = [{ file: 'src/v.ts', array: 'VOCAB', schema: 'VocabSchema' }];
@@ -113,6 +114,84 @@ test('readArrayMembers reads a real declaration shape', () => {
 test('every pair names a distinct array', () => {
   // Two entries pointing at the same array would report a passing check twice
   // and leave a vocabulary unguarded.
-  const arrays = PAIRS.map((p) => p.array);
+  const arrays = PAIRS.flatMap((p) => p.arrays ?? [p.array]);
   assert.equal(new Set(arrays).size, arrays.length);
+});
+
+// ---------------------------------------------------------------------------
+// unlock-extension-axes 7.5: the merged source-kind pair rides three gate
+// mechanics that did not exist before — multi-array declarations (`arrays`,
+// members unioned), a non-sandbox-core `root`, and a discriminated-union
+// schema side. Each is exercised red and green.
+// ---------------------------------------------------------------------------
+
+const TIERED_PAIR = [
+  {
+    root: 'packages/contracts',
+    file: 'src/decl.ts',
+    arrays: ['MANAGED', 'EXTENSION'],
+    schema: 'DerivedSchema',
+  },
+];
+
+const tieredSource = (managed, extension) =>
+  `export const MANAGED = [\n${managed.map((m) => `  '${m}',`).join('\n')}\n] as const;\n` +
+  `export const EXTENSION = [\n${extension.map((m) => `  '${m}',`).join('\n')}\n] as const;\n`;
+
+test('a multi-array pair unions its declared tiers before comparing', () => {
+  const problems = findVocabularyDisagreements({
+    pairs: TIERED_PAIR,
+    readSource: () => tieredSource(['a', 'b'], ['x', 'y']),
+    readSchema: () => ['a', 'b', 'x', 'y'],
+  });
+  assert.deepEqual(problems, []);
+});
+
+test('a member missing from every tier fails, naming the union', () => {
+  const problems = findVocabularyDisagreements({
+    pairs: TIERED_PAIR,
+    readSource: () => tieredSource(['a'], ['x']),
+    readSchema: () => ['a', 'x', 'y'],
+  });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /DerivedSchema: has 'y', MANAGED ∪ EXTENSION does not/);
+});
+
+test('a tier declared on the pair but absent from the file fails loudly', () => {
+  const problems = findVocabularyDisagreements({
+    pairs: TIERED_PAIR,
+    readSource: () => `export const MANAGED = ['a'] as const;\n`,
+    readSchema: () => ['a'],
+  });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /EXTENSION: not found in packages\/contracts\/src\/decl\.ts/);
+});
+
+test('the pair root is forwarded to readSource', () => {
+  const roots = [];
+  findVocabularyDisagreements({
+    pairs: TIERED_PAIR,
+    readSource: (rel, root) => {
+      roots.push(root);
+      return tieredSource(['a'], ['x']);
+    },
+    readSchema: () => ['a', 'x'],
+  });
+  assert.deepEqual(roots, ['packages/contracts']);
+});
+
+test('schemaEnumMembers reads enums, discriminated unions, and rejects the rest', () => {
+  assert.deepEqual(schemaEnumMembers({ options: ['a', 'b'] }), ['a', 'b']);
+  assert.deepEqual(
+    schemaEnumMembers({
+      options: [
+        { shape: { kind: { value: 'a' } } },
+        { shape: { kind: { value: 'x' } } },
+      ],
+    }),
+    ['a', 'x'],
+  );
+  assert.equal(schemaEnumMembers(undefined), null);
+  assert.equal(schemaEnumMembers({ options: [{ shape: {} }] }), null);
+  assert.equal(schemaEnumMembers({ parse: () => undefined }), null);
 });

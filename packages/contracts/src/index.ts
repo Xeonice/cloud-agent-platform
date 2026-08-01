@@ -60,7 +60,13 @@ export * from './notifications.js';
 export * from './sandbox.js';
 
 // THE declaration of which agent runtimes exist; everything else derives from it
+// (+ the compile-time-total RUNTIME_METADATA policy table and the shape-named
+// transcript-read-strategy vocabulary)
 export * from './agent-runtime-id.js';
+
+// THE declaration of which preinstall skill ids exist (web copy / api installer
+// commands both key by it)
+export * from './skill-catalog.js';
 
 // Admin-managed sandbox runtime environments and task environment summaries
 export * from './provider-family.js';

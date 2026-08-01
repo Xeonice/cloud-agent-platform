@@ -11,6 +11,7 @@ import {
   ConfiguredDeploymentRuntimeModelEnvironmentResolver,
   ConfiguredManagedRuntimeModelProviderResolver,
   DefaultRuntimeModelEnvironmentResolver,
+  deploymentSnapshotSource,
 } from './runtime-model-environment.resolver';
 import {
   RuntimeModelCatalogOperationalError,
@@ -415,4 +416,55 @@ test('configured BoxLite deployment validates and snapshots one identical disk p
   });
   assert.deepEqual(validationResources, { diskSizeGb: 9 });
   assert.deepEqual(resolved.snapshot.resources, { diskSizeGb: 9 });
+});
+
+test('checksum fallback still writes a valid provider-snapshot source (D6 pin)', () => {
+  // unlock-extension-axes integration 7.4: the LIVE production writer of
+  // `provider-snapshot` is this fallback — a resolved checksum arriving with a
+  // configured source kind that matches no managed branch. Its output must be
+  // identical in shape to the pre-merge behavior and parse against the merged
+  // vocabulary.
+  const checksum = `sha256:${'a'.repeat(64)}`;
+  const unmatchedConfigured = {
+    kind: 'future-provider-source',
+    image: 'registry.example/cap/future:tag',
+  } as unknown as Parameters<typeof deploymentSnapshotSource>[0];
+
+  const checksumOnly = deploymentSnapshotSource(
+    unmatchedConfigured,
+    'registry.example/cap/future:tag',
+    null,
+    checksum,
+  );
+  assert.deepEqual(checksumOnly, {
+    kind: 'provider-snapshot',
+    locator: 'registry.example/cap/future:tag',
+    digest: null,
+    checksum,
+  });
+
+  const withDigest = deploymentSnapshotSource(
+    unmatchedConfigured,
+    'registry.example/cap/future:tag',
+    'sha256:resolved-digest',
+    checksum,
+  );
+  assert.deepEqual(withDigest, {
+    kind: 'provider-snapshot',
+    locator: 'registry.example/cap/future:tag',
+    digest: 'sha256:resolved-digest',
+    checksum,
+  });
+
+  // No checksum and no matching managed branch stays fail-closed.
+  assert.throws(
+    () =>
+      deploymentSnapshotSource(
+        unmatchedConfigured,
+        'registry.example/cap/future:tag',
+        null,
+        null,
+      ),
+    RuntimeModelCatalogOperationalError,
+  );
 });

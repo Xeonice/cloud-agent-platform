@@ -1,5 +1,9 @@
 import * as React from "react";
-import type { TaskResponse } from "@cap-console/contracts";
+import {
+  AGENT_RUNTIME_IDS,
+  RUNTIME_METADATA,
+  type TaskResponse,
+} from "@cap-console/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -93,6 +97,26 @@ describe("RuntimeCredentialAlert", () => {
         failure("codex", "runtime_auth_rejected"),
       ).title,
     ).toBe("Codex 登录凭据已失效");
+  });
+
+  it("derives copy from every declared runtime's metadata row (no per-runtime literals)", () => {
+    // Table-driven over the contracts declaration: a runtime added with a
+    // complete RUNTIME_METADATA row is covered here with zero test edits
+    // (frontend-console spec "a new runtime surfaces without console edits").
+    for (const runtime of AGENT_RUNTIME_IDS) {
+      const credential = RUNTIME_METADATA[runtime].credential;
+      const expired = runtimeAuthFailurePresentation(
+        failure(runtime, "runtime_auth_expired"),
+      );
+      expect(expired.title).toBe(credential.expiredTitle);
+      expect(expired.description).toBe(credential.description);
+      expect(expired.actionLabel).toBe(credential.actionLabel);
+      expect(expired.credentialRuntime).toBe(runtime);
+      expect(
+        runtimeAuthFailurePresentation(failure(runtime, "runtime_auth_rejected"))
+          .title,
+      ).toBe(credential.rejectedTitle);
+    }
   });
 
   it("renders nothing without a structured reconnect action", () => {

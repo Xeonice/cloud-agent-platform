@@ -8,9 +8,11 @@
  * runtime ARRAYS cannot: `validateEnum` consumes them as values, and a value
  * import would pull zod into a package whose whole point is having nothing.
  *
- * So ten vocabularies exist twice, on purpose. What was missing is any mechanism
- * keeping the two copies honest — until now they agreed because whoever last
- * edited one remembered the other. `provider-family.ts` records what that costs:
+ * So ten vocabularies exist twice, on purpose (an eleventh pair, the
+ * environment source-kind declaration vs its runtime-model derivation, lives
+ * entirely inside contracts — see the PAIRS note). What was missing is any
+ * mechanism keeping the two copies honest — until now they agreed because
+ * whoever last edited one remembered the other. `provider-family.ts` records what that costs:
  * the family list "was previously restated independently in four places whose
  * contents disagreed", two of them differing even in member ORDER, which is the
  * signature of independent hand-maintenance.
@@ -44,6 +46,13 @@ const ROOT = path.resolve(HERE, '..');
  * no counterpart to compare against: `SANDBOX_WORKSPACE_MATERIALIZATION_STAGES`
  * and `SANDBOX_PHYSICAL_CLEANUP_OUTCOMES` describe steps inside the sandbox that
  * no api response names. They are sandbox-core-only by design, not oversights.
+ *
+ * One pair (unlock-extension-axes D6) reconciles a vocabulary WITHIN contracts:
+ * the environment source-kind declaration (`sandbox-environment.ts`, managed +
+ * extension tiers — hence `arrays`, whose members are unioned) against the
+ * runtime-model snapshot union DERIVED from it (`root` overrides the default
+ * sandbox-core location; the schema side is a discriminated union whose member
+ * `kind` literals are the vocabulary).
  */
 export const PAIRS = [
   {
@@ -96,6 +105,15 @@ export const PAIRS = [
     array: 'SANDBOX_PROVISIONING_DIAGNOSTIC_COMMAND_KINDS',
     schema: 'TaskProvisioningDiagnosticCommandKindSchema',
   },
+  {
+    root: 'packages/contracts',
+    file: 'src/sandbox-environment.ts',
+    arrays: [
+      'SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS',
+      'SANDBOX_ENVIRONMENT_EXTENSION_SOURCE_KINDS',
+    ],
+    schema: 'RuntimeExecutionEnvironmentSourceSchema',
+  },
 ];
 
 /**
@@ -123,20 +141,30 @@ export function readArrayMembers(source, name) {
 export function findVocabularyDisagreements({ pairs, readSource, readSchema }) {
   const problems = [];
   for (const pair of pairs) {
-    const source = readSource(pair.file);
+    const root = pair.root ?? 'packages/sandbox-core';
+    const arrayNames = pair.arrays ?? [pair.array];
+    const arrayLabel = arrayNames.join(' ∪ ');
+    const source = readSource(pair.file, root);
     if (source == null) {
       problems.push(
         `${pair.file}: not readable — this gate names the files it protects, so a move must update PAIRS`,
       );
       continue;
     }
-    const arrayMembers = readArrayMembers(source, pair.array);
-    if (arrayMembers == null) {
-      problems.push(
-        `${pair.array}: not found in packages/sandbox-core/${pair.file} — a renamed or removed vocabulary must leave this list`,
-      );
-      continue;
+    let missingArray = false;
+    const arrayMembers = [];
+    for (const arrayName of arrayNames) {
+      const members = readArrayMembers(source, arrayName);
+      if (members == null) {
+        problems.push(
+          `${arrayName}: not found in ${root}/${pair.file} — a renamed or removed vocabulary must leave this list`,
+        );
+        missingArray = true;
+        continue;
+      }
+      arrayMembers.push(...members);
     }
+    if (missingArray) continue;
     const schemaMembers = readSchema(pair.schema);
     if (schemaMembers == null) {
       problems.push(
@@ -153,14 +181,14 @@ export function findVocabularyDisagreements({ pairs, readSource, readSchema }) {
     for (const member of sandbox) {
       if (!contract.has(member) && !extraInSandbox.includes(member)) {
         problems.push(
-          `${pair.array}: has '${member}', ${pair.schema} does not`,
+          `${arrayLabel}: has '${member}', ${pair.schema} does not`,
         );
       }
     }
     for (const member of contract) {
       if (!sandbox.has(member) && !extraInContract.includes(member)) {
         problems.push(
-          `${pair.schema}: has '${member}', ${pair.array} does not`,
+          `${pair.schema}: has '${member}', ${arrayLabel} does not`,
         );
       }
     }
@@ -170,7 +198,7 @@ export function findVocabularyDisagreements({ pairs, readSource, readSchema }) {
     for (const member of extraInSandbox) {
       if (!sandbox.has(member)) {
         problems.push(
-          `${pair.array}: '${member}' is declared an allowed widening but is not in the array`,
+          `${arrayLabel}: '${member}' is declared an allowed widening but is not in the array`,
         );
       }
     }
@@ -183,6 +211,22 @@ export function findVocabularyDisagreements({ pairs, readSource, readSchema }) {
     }
   }
   return problems;
+}
+
+/**
+ * Vocabulary members of a contracts dist export: a `z.enum`'s string options,
+ * or — for the derived source-kind pair — a `z.discriminatedUnion` whose member
+ * object schemas each carry their vocabulary member as the `kind` literal.
+ */
+export function schemaEnumMembers(schema) {
+  const options = schema?.options;
+  if (!Array.isArray(options)) return null;
+  if (options.every((option) => typeof option === 'string')) return options;
+  const kinds = options.map((option) => option?.shape?.kind?.value);
+  if (kinds.length > 0 && kinds.every((kind) => typeof kind === 'string')) {
+    return kinds;
+  }
+  return null;
 }
 
 async function main() {
@@ -199,14 +243,14 @@ async function main() {
 
   const problems = findVocabularyDisagreements({
     pairs: PAIRS,
-    readSource: (rel) => {
+    readSource: (rel, root = 'packages/sandbox-core') => {
       try {
-        return readFileSync(path.join(ROOT, 'packages/sandbox-core', rel), 'utf8');
+        return readFileSync(path.join(ROOT, root, rel), 'utf8');
       } catch {
         return null;
       }
     },
-    readSchema: (name) => contracts[name]?.options ?? null,
+    readSchema: (name) => schemaEnumMembers(contracts[name]),
   });
 
   if (problems.length === 0) {

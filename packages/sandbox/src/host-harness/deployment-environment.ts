@@ -26,10 +26,8 @@ import type { SandboxEnvironmentSourceDescriptor } from '@cap-console/sandbox-en
 import { provisionSandboxRequiredCapabilities } from '../provider-center/selection.js';
 import {
   DEFAULT_CLOUD_HTTP_CAPABILITIES,
+  configuredFamilyAllowsProviderFamily,
   explicitProviderFamilyLabel,
-  providerFamilyAllowsAio,
-  providerFamilyAllowsBoxLite,
-  providerFamilyAllowsCloudHttp,
   readConfiguredSandboxProviderFamily,
   readNumberEnv,
   readOptionalEnv,
@@ -111,7 +109,7 @@ export function resolveConfiguredProviderProvisioningPolicyForFamily(
   const transferLiveness = workspaceTransferLivenessSpread(env);
   if (
     args.providerFamily === 'aio' &&
-    providerFamilyAllowsAio(configuredFamily)
+    configuredFamilyAllowsProviderFamily(configuredFamily, 'aio')
   ) {
     readAioLocalSandboxConfig(env);
     const policy = snapshotSandboxProvisioningPolicy({
@@ -131,7 +129,7 @@ export function resolveConfiguredProviderProvisioningPolicyForFamily(
   }
   if (
     args.providerFamily === 'boxlite' &&
-    providerFamilyAllowsBoxLite(configuredFamily)
+    configuredFamilyAllowsProviderFamily(configuredFamily, 'boxlite')
   ) {
     const result = readBoxLiteProviderConfig(env);
     if (result.status !== 'valid') {
@@ -183,7 +181,7 @@ export function resolveConfiguredTaskProvisioningPolicy(
     candidates.push(Object.freeze({ order: candidates.length, ...candidate }));
   };
 
-  if (providerFamilyAllowsAio(configuredFamily)) {
+  if (configuredFamilyAllowsProviderFamily(configuredFamily, 'aio')) {
     const provisioningPolicy = snapshotSandboxProvisioningPolicy({
       resources: resolveSandboxResources({ explicit: args.resources }),
       workspaceMaterializationDeadlineMs:
@@ -214,7 +212,12 @@ export function resolveConfiguredTaskProvisioningPolicy(
   }
 
   const cloudBaseUrl = stringFromEnv(env, 'CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
-  if (cloudBaseUrl && providerFamilyAllowsCloudHttp(configuredFamily)) {
+  if (configuredFamily === 'cloud-http' && !cloudBaseUrl) {
+    throw new Error(
+      'CAP_SANDBOX_PROVIDER=cloud-http selected but CAP_SANDBOX_CLOUD_HTTP_BASE_URL is not configured',
+    );
+  }
+  if (cloudBaseUrl && configuredFamilyAllowsProviderFamily(configuredFamily, 'cloud-http')) {
     const provisioningPolicy = snapshotSandboxProvisioningPolicy({
       resources: resolveSandboxResources({ explicit: args.resources }),
       workspaceMaterializationDeadlineMs:
@@ -242,7 +245,7 @@ export function resolveConfiguredTaskProvisioningPolicy(
   }
   if (
     boxlite.status === 'valid' &&
-    providerFamilyAllowsBoxLite(configuredFamily)
+    configuredFamilyAllowsProviderFamily(configuredFamily, 'boxlite')
   ) {
     const provisioningPolicy = snapshotSandboxProvisioningPolicy({
       resources: resolveSandboxResources({
@@ -328,7 +331,10 @@ export function resolveConfiguredProviderIdForFamily(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const configuredFamily = readConfiguredSandboxProviderFamily(env);
-  if (providerFamily === 'aio' && providerFamilyAllowsAio(configuredFamily)) {
+  if (
+    providerFamily === 'aio' &&
+    configuredFamilyAllowsProviderFamily(configuredFamily, 'aio')
+  ) {
     // Provisioning still reads the base AIO config for network/readiness even
     // when a managed image overrides its image field.
     readAioLocalSandboxConfig(env);
@@ -336,7 +342,7 @@ export function resolveConfiguredProviderIdForFamily(
   }
   if (
     providerFamily === 'boxlite' &&
-    providerFamilyAllowsBoxLite(configuredFamily)
+    configuredFamilyAllowsProviderFamily(configuredFamily, 'boxlite')
   ) {
     const boxlite = readBoxLiteProviderConfig(env);
     if (boxlite.status === 'valid') return boxlite.config.providerId;
@@ -369,7 +375,7 @@ export function resolveConfiguredDeploymentEnvironmentTarget(
   }
 
   const candidates: Candidate[] = [];
-  if (providerFamilyAllowsAio(configuredFamily)) {
+  if (configuredFamilyAllowsProviderFamily(configuredFamily, 'aio')) {
     let target: ConfiguredDeploymentEnvironmentTarget | null = null;
     try {
       const config = readAioLocalSandboxConfig(env);
@@ -396,7 +402,12 @@ export function resolveConfiguredDeploymentEnvironmentTarget(
   }
 
   const cloudBaseUrl = stringFromEnv(env, 'CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
-  if (cloudBaseUrl && providerFamilyAllowsCloudHttp(configuredFamily)) {
+  if (configuredFamily === 'cloud-http' && !cloudBaseUrl) {
+    throw new Error(
+      'CAP_SANDBOX_PROVIDER=cloud-http selected but CAP_SANDBOX_CLOUD_HTTP_BASE_URL is not configured',
+    );
+  }
+  if (cloudBaseUrl && configuredFamilyAllowsProviderFamily(configuredFamily, 'cloud-http')) {
     candidates.push({
       order: candidates.length,
       providerId: stringFromEnv(env, 'CAP_SANDBOX_CLOUD_HTTP_ID') ?? 'cloud-http',
@@ -418,7 +429,10 @@ export function resolveConfiguredDeploymentEnvironmentTarget(
   if (configuredFamily === 'boxlite' && boxlite.status !== 'valid') {
     throw new Error('Configured BoxLite deployment source is unavailable.');
   }
-  if (boxlite.status === 'valid' && providerFamilyAllowsBoxLite(configuredFamily)) {
+  if (
+    boxlite.status === 'valid' &&
+    configuredFamilyAllowsProviderFamily(configuredFamily, 'boxlite')
+  ) {
     const source = resolveBoxLiteSandboxSource({
       config: boxlite.config,
       runtimeId,

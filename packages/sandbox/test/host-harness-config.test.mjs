@@ -123,6 +123,10 @@ await test('normalizes configured provider family and aliases', () => {
   assert.equal(mod.normalizeConfiguredSandboxProviderFamily('aio'), 'aio');
   assert.equal(mod.normalizeConfiguredSandboxProviderFamily('boxlite'), 'boxlite');
   assert.equal(
+    mod.normalizeConfiguredSandboxProviderFamily('cloud-http'),
+    'cloud-http',
+  );
+  assert.equal(
     mod.normalizeConfiguredSandboxProviderFamily('control-plane-only'),
     'control-plane',
   );
@@ -132,22 +136,94 @@ await test('normalizes configured provider family and aliases', () => {
   );
 });
 
-await test('explicit provider families constrain eligible providers', () => {
-  assert.equal(mod.providerFamilyAllowsAio('aio'), true);
-  assert.equal(mod.providerFamilyAllowsBoxLite('aio'), false);
-  assert.equal(mod.providerFamilyAllowsAio('boxlite'), false);
-  assert.equal(mod.providerFamilyAllowsBoxLite('boxlite'), true);
-  assert.equal(mod.providerFamilyAllowsCloudHttp('boxlite'), false);
-  assert.equal(mod.providerFamilyAllowsAio('control-plane'), false);
-  assert.equal(mod.providerFamilyAllowsBoxLite('control-plane'), false);
+await test('the allowance table matches the pre-change three-predicate results exactly', () => {
+  // Pre-change truth table of providerFamilyAllows{Aio,BoxLite,CloudHttp} for
+  // the four pre-existing configured families. The lookup conversion must be
+  // behavior-equivalent for them (spec:
+  // provider-family-allowance-is-one-total-lookup-table).
+  const legacyTruthTable = {
+    auto: { aio: true, boxlite: true, 'cloud-http': true },
+    aio: { aio: true, boxlite: false, 'cloud-http': false },
+    boxlite: { aio: false, boxlite: true, 'cloud-http': false },
+    'control-plane': { aio: false, boxlite: false, 'cloud-http': false },
+  };
+  for (const [configured, expected] of Object.entries(legacyTruthTable)) {
+    for (const [family, allowed] of Object.entries(expected)) {
+      assert.equal(
+        mod.configuredFamilyAllowsProviderFamily(configured, family),
+        allowed,
+        `${configured} -> ${family}`,
+      );
+    }
+  }
   assert.equal(mod.explicitProviderFamilyLabel('boxlite'), 'boxlite');
   assert.equal(mod.explicitProviderFamilyLabel('auto'), undefined);
 });
 
-await test('auto keeps capability selection family open', () => {
-  assert.equal(mod.providerFamilyAllowsAio('auto'), true);
-  assert.equal(mod.providerFamilyAllowsBoxLite('auto'), true);
-  assert.equal(mod.providerFamilyAllowsCloudHttp('auto'), true);
+await test('the operator vocabulary names cloud-http and the table stays total over it', () => {
+  assert.deepEqual([...mod.CONFIGURED_SANDBOX_PROVIDER_FAMILIES], [
+    'auto',
+    'aio',
+    'boxlite',
+    'cloud-http',
+    'control-plane',
+  ]);
+  // Explicit cloud-http admits exactly its own family, like the other
+  // explicit families.
+  assert.deepEqual(
+    [...mod.CONFIGURED_FAMILY_ALLOWED_PROVIDER_FAMILIES['cloud-http']],
+    ['cloud-http'],
+  );
+  assert.equal(
+    mod.configuredFamilyAllowsProviderFamily('cloud-http', 'aio'),
+    false,
+  );
+  assert.equal(mod.explicitProviderFamilyLabel('cloud-http'), 'cloud-http');
+  // Totality: every operator vocabulary member has a table row and the table
+  // carries no stray row.
+  assert.deepEqual(
+    Object.keys(mod.CONFIGURED_FAMILY_ALLOWED_PROVIDER_FAMILIES).sort(),
+    [...mod.CONFIGURED_SANDBOX_PROVIDER_FAMILIES].sort(),
+  );
+});
+
+await test('explicit cloud-http without an endpoint fails closed naming the missing configuration', () => {
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'cloud-http',
+      }),
+    /CAP_SANDBOX_PROVIDER=cloud-http selected but CAP_SANDBOX_CLOUD_HTTP_BASE_URL is not configured/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'cloud-http',
+      }),
+    /CAP_SANDBOX_CLOUD_HTTP_BASE_URL is not configured/,
+  );
+
+  // With the endpoint configured, explicit selection resolves the cloud-http
+  // family exclusively (no aio/boxlite candidate leaks in).
+  const cloud = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'cloud-http',
+    CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+    CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+  });
+  assert.equal(cloud.providerFamily, 'cloud-http');
+  assert.equal(cloud.providerId, 'cloud-http');
+
+  // Deployment model targets keep the existing cloud-http semantics: it never
+  // proves an immutable runtime source, even when explicitly selected.
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'cloud-http',
+        CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+      }),
+    /cannot prove an immutable runtime source/,
+  );
 });
 
 await test('BoxLite runtime required tools default and normalize overrides', () => {

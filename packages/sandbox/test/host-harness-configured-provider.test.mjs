@@ -1869,5 +1869,142 @@ await test('configured AIO environment lookup normalizes runtime identity', asyn
   });
 });
 
+await test('explicit cloud-http composes the cloud family exclusively and fails closed without an endpoint', async () => {
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'cloud-http',
+      CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox-cloud.example.test',
+    },
+    async () => {
+      const { host } = makeHost();
+      const router = mod.createConfiguredSandboxProvider(host);
+      const entries = router.registry.list();
+      assert.equal(entries.length, 1, 'no aio/boxlite candidate leaks in');
+      assert.equal(entries[0].id, 'cloud-http');
+      assert.equal(entries[0].location, 'cloud');
+    },
+  );
+
+  // Same explicit-family fail-closed semantics as boxlite: a selection that
+  // cannot be honoured throws an actionable error naming the missing
+  // configuration instead of silently falling back to another family.
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'cloud-http' }, async () => {
+    const { host } = makeHost();
+    assert.throws(
+      () => mod.createConfiguredSandboxProvider(host),
+      /CAP_SANDBOX_PROVIDER=cloud-http selected but CAP_SANDBOX_CLOUD_HTTP_BASE_URL is not configured/,
+    );
+  });
+});
+
+await test('the transcript seam dispatches the per-message-json-dir strategy without a registered runtime', async () => {
+  // D3: the second vocabulary member is real. A harness-supplied runtime
+  // declaring `per-message-json-dir` (no production registration exists) must
+  // dispatch to that strategy's implementation instead of hitting the former
+  // single-member refusal.
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'http://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_IMAGE: 'boxlite-image:v1',
+      BOXLITE_CAPABILITIES:
+        'command.exec,lifecycle.readopt,transcript.retained-read,transcript.retained-source',
+      BOXLITE_WORKSPACE_PATH: '/home/gem/workspace',
+    },
+    async () => {
+      const codexRuntime = makeRuntime('codex', {
+        filenameGlob: /(^|\/)session-.*\.jsonl$/,
+      });
+      const perMessageRuntime = makeRuntime('per-message', {
+        readKind: 'per-message-json-dir',
+        transcriptDir: '/home/gem/.opencode/messages',
+        filenameGlob: /(^|\/)message-.*\.json$/,
+        transcriptFormat: 'per-message-json',
+      });
+      const { host } = makeHost({
+        defaultRuntime: codexRuntime,
+        taskRuntime: codexRuntime,
+        resolve: (id) => (id === 'per-message' ? perMessageRuntime : codexRuntime),
+      });
+      const provider = onlyProvider(mod.createConfiguredSandboxProvider(host));
+      const client = new mod.FakeBoxLiteClient({
+        execHandler: (request) => {
+          const result = {
+            exitCode: 0,
+            output: '',
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          };
+          if (request.command === 'cat /etc/cap/sandbox-metadata.json') {
+            result.output = JSON.stringify({
+              schemaVersion: 1,
+              sandboxVersion: 'v1.2.3',
+              dependencies: { codex: '0.132.0' },
+            });
+          } else if (request.command.startsWith('find ')) {
+            // Deliberately unsorted: ascending path order is the strategy's job.
+            result.stdout = [
+              '/home/gem/.opencode/messages/message-002.json',
+              '/home/gem/.opencode/messages/skip.txt',
+              '/home/gem/.opencode/messages/message-001.json',
+            ].join('\n');
+          } else if (request.command.includes('message-001.json')) {
+            result.stdout = '{"role":"user"}\n';
+          } else if (request.command.includes('message-002.json')) {
+            result.stdout = '{"role":"assistant"}';
+          }
+          result.output ||= result.stdout;
+          return result;
+        },
+      });
+      provider.client = client;
+
+      await provider.provision({
+        taskId: 'per-message-task',
+        cloneSpec: null,
+        modelIntent: { kind: 'runtime-default' },
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
+      });
+      assert.deepEqual(
+        await provider.readRolloutFromContainer('per-message-task', 'per-message'),
+        {
+          format: 'per-message-json',
+          jsonl: '{"role":"user"}\n{"role":"assistant"}\n',
+        },
+      );
+      await provider.teardownSandbox('per-message-task');
+    },
+  );
+
+  // The AIO seam dispatches the member too; its container controller cannot
+  // enumerate per-message artifacts, and that PROVIDER gap fails loudly under
+  // its own name — distinguishable from the unknown-strategy refusal.
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const perMessageRuntime = makeRuntime('per-message', {
+      readKind: 'per-message-json-dir',
+    });
+    const { host } = makeHost({
+      defaultRuntime: perMessageRuntime,
+      taskRuntime: perMessageRuntime,
+    });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    await assert.rejects(
+      () =>
+        hooks.transcriptRead({
+          taskId: 'aio-per-message',
+          runtimeId: 'per-message',
+          controller: { readSingleNewestJsonl: async () => '{"unused":true}\n' },
+        }),
+      (error) =>
+        /AIO cannot enumerate per-message transcript artifacts/.test(
+          error?.message,
+        ) && !/cannot read transcripts with strategy/.test(error?.message),
+    );
+  });
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

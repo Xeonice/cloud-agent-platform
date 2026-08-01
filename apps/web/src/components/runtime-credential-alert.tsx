@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, CircleAlert } from "lucide-react";
 
-import type { TaskResponse } from "@cap-console/contracts";
+import { RUNTIME_METADATA, type TaskResponse } from "@cap-console/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils";
@@ -27,32 +27,26 @@ export interface RuntimeAuthFailurePresentation {
   credentialRuntime: RuntimeAuthFailure["runtime"];
 }
 
-/** User-facing recovery copy for a structured, secret-free runtime auth failure. */
+/**
+ * User-facing recovery copy for a structured, secret-free runtime auth failure.
+ *
+ * Copy is a LOOKUP into the failing runtime's contracts `RUNTIME_METADATA` row
+ * (unlock-extension-axes D2) — no runtime-identity branch: a runtime declared
+ * with a complete metadata row renders here with zero edits to this component.
+ * (The `code` ternary below discriminates the FAILURE code, not the runtime.)
+ */
 export function runtimeAuthFailurePresentation(
   failure: RuntimeAuthFailure,
 ): RuntimeAuthFailurePresentation {
-  if (failure.runtime === "claude-code") {
-    return {
-      title:
-        failure.code === "runtime_auth_expired"
-          ? "Claude Code 凭据已过期"
-          : "Claude Code 凭据已失效",
-      description:
-        "可更新订阅 setup-token 或 Anthropic API Key；本次任务不会自动重试。",
-      actionLabel: "更新 Claude Code 凭据",
-      credentialRuntime: "claude-code",
-    };
-  }
-
+  const credential = RUNTIME_METADATA[failure.runtime].credential;
   return {
     title:
       failure.code === "runtime_auth_expired"
-        ? "Codex 登录已过期"
-        : "Codex 登录凭据已失效",
-    description:
-      "可重新连接 Codex 官方账号或更新兼容提供方凭据；本次任务不会自动重试。",
-      actionLabel: "更新 Codex 凭据",
-    credentialRuntime: "codex",
+        ? credential.expiredTitle
+        : credential.rejectedTitle,
+    description: credential.description,
+    actionLabel: credential.actionLabel,
+    credentialRuntime: failure.runtime,
   };
 }
 

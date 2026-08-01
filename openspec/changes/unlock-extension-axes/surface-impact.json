@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "change": "unlock-extension-axes",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "derived",
+      "scope": "contracts 词表与策略表新增的传递可达面；无操作/工具/投影的形状变化",
+      "reason": "contracts 是四个公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射），本 change 的 contracts 改动（RUNTIME_METADATA 表/skill-catalog 词表新增、checksum record 化、source-kind 派生化）经文件级归因传递可达本面，故按制度声明 derived；行为与投影逐字节不变，由 public-surface-adversarial verify 的四条证据 lane（registry/restMetadata/mcpSdkMetadata/behavior）通过记录背书。"
+    },
+    "mcp": {
+      "status": "derived",
+      "scope": "contracts 词表与策略表新增的传递可达面；无操作/工具/投影的形状变化",
+      "reason": "contracts 是四个公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射），本 change 的 contracts 改动（RUNTIME_METADATA 表/skill-catalog 词表新增、checksum record 化、source-kind 派生化）经文件级归因传递可达本面，故按制度声明 derived；行为与投影逐字节不变，由 public-surface-adversarial verify 的四条证据 lane（registry/restMetadata/mcpSdkMetadata/behavior）通过记录背书。"
+    },
+    "openapi": {
+      "status": "derived",
+      "scope": "contracts 词表与策略表新增的传递可达面；无操作/工具/投影的形状变化",
+      "reason": "contracts 是四个公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射），本 change 的 contracts 改动（RUNTIME_METADATA 表/skill-catalog 词表新增、checksum record 化、source-kind 派生化）经文件级归因传递可达本面，故按制度声明 derived；行为与投影逐字节不变，由 public-surface-adversarial verify 的四条证据 lane（registry/restMetadata/mcpSdkMetadata/behavior）通过记录背书。"
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "scope": "contracts 词表与策略表新增的传递可达面；无操作/工具/投影的形状变化",
+      "reason": "contracts 是四个公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射），本 change 的 contracts 改动（RUNTIME_METADATA 表/skill-catalog 词表新增、checksum record 化、source-kind 派生化）经文件级归因传递可达本面，故按制度声明 derived；行为与投影逐字节不变，由 public-surface-adversarial verify 的四条证据 lane（registry/restMetadata/mcpSdkMetadata/behavior）通过记录背书。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段2扩展轴解锁（docs/refactor/03-extension-interfaces.md 定稿）：轴B——contracts 的 RuntimeArtifactChecksumsSchema 改 z.record、新增 RUNTIME_METADATA 全量表（Record<AgentRuntimeId,…> 编译期强制）替换 task-failure.ts 三处三元与 new-task-dialog/runtime-credential-alert 静默分支、runtime-credentials.tsx 集合驱动化、TranscriptReadStrategy 真派发架子；残存词表收敛三处（runtime-model-adapter-snapshot.ts 手写 union、tmux 会话协议双声明去重＝api 侧删 codex-launch.ts 副本改 import @cap-console/sandbox、SKILL_CATALOG 上移 contracts 两端同源）；轴A——ConfiguredSandboxProviderFamily 按 D14 框架保留独立声明+显式补 cloud-http+覆盖对账闸门 R8（含 provider-terminal-story 第五份词表）、providerFamilyAllows* 三函数改全量 Record；轴C——source-kind 词表合并为 sandbox-environment.ts 单一声明（runtime-model.ts 派生，先裁定 provider-snapshot 活分支与 boxlite-rootfs 历史快照的兼容语义）；新建 runtime-conformance 套件骨架（launch/lifecycle/transcript/headless/secret-canary 五 family + participation 账本）进 package-suites；cloud-http 参考控制面服务端最小实现（7 端点）供 conformance 对打。",
+      "reason": "为 opencode/pi agent 与第三 provider 接入扫清物理障碍；统一验收=新增扩展 1 声明+1 注册+查表数据零分支。约束：contracts 词表新增须在 repo-split Phase 1c 首发前落地（master plan 总则 3）。"
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument; its durable admission work item is committed with the winning REST task row."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured content remains the canonical initial Task while compatibility text retains the historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata continues to explain immediate asynchronous provisioning and polling without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    },
+    {
+      "operation": "runtimeModels.query",
+      "kind": "rate-limit-policy",
+      "detail": "REST applies a dedicated per-principal catalog throttle while MCP remains subject to the MCP transport limiter; both retain shared catalog-service capacity controls."
+    },
+    {
+      "operation": "tasks.transcript",
+      "kind": "mcp-output-schema-relaxation",
+      "detail": "The MCP SDK high-level registrar requires a root object output schema, so tools/list advertises an object derived from every canonical SessionHistory union variant while runtime structured content remains canonically validated."
+    },
+    {
+      "operation": "tasks.events",
+      "kind": "mcp-exclusion",
+      "detail": "Lifecycle SSE remains REST-only because MCP tools use request-response transport."
+    },
+    {
+      "operation": "schedules.delete",
+      "kind": "success-projection",
+      "detail": "REST keeps a 204 empty body while MCP returns an explicit deletion acknowledgement."
+    }
+  ],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": true
+  }
+}

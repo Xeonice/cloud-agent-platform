@@ -245,3 +245,116 @@ test('schedule retrying state carries stable catalog retry metadata', () => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// unlock-extension-axes D6 (integration 7.4): the source-kind merge is NOT a
+// behavior change. These pins hold the extension-tier semantics still.
+// ---------------------------------------------------------------------------
+
+const {
+  RuntimeExecutionEnvironmentSourceSchema,
+  SandboxEnvironmentSourceKindSchema,
+  SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS,
+  SANDBOX_ENVIRONMENT_EXTENSION_SOURCE_KINDS,
+} = contracts;
+
+test('resolver fallback provider-snapshot shapes parse identically post-merge', () => {
+  // The exact literal shapes `deploymentSnapshotSource` produces on its
+  // checksum fallback branch (runtime-model-environment.resolver.ts) — both
+  // with and without a resolved digest. Parsed results must be byte-equal to
+  // the input, exactly as before the vocabulary merge.
+  const checksumOnly = {
+    kind: 'provider-snapshot',
+    locator: 'registry.example/cap/runtime:tag',
+    digest: null,
+    checksum: `sha256:${'f'.repeat(64)}`,
+  };
+  const withDigest = {
+    ...checksumOnly,
+    digest: 'sha256:resolved-digest',
+  };
+  assert.deepEqual(
+    RuntimeExecutionEnvironmentSourceSchema.parse(checksumOnly),
+    checksumOnly,
+  );
+  assert.deepEqual(
+    RuntimeExecutionEnvironmentSourceSchema.parse(withDigest),
+    withDigest,
+  );
+});
+
+test('historical boxlite-rootfs sources stay readable and stay boxlite-bound', () => {
+  const historical = {
+    kind: 'boxlite-rootfs',
+    locator: '/var/lib/boxlite/rootfs/cap',
+    digest: null,
+    checksum: 'sha256:rootfs-checksum',
+  };
+  assert.deepEqual(
+    RuntimeExecutionEnvironmentSourceSchema.parse(historical),
+    historical,
+  );
+  // The read-path refinement is unchanged: a boxlite-rootfs snapshot still
+  // requires the boxlite provider family.
+  const base = {
+    schemaVersion: 1,
+    kind: 'deployment-default',
+    managedEnvironmentId: null,
+    validationId: null,
+    validationContractVersion: null,
+    provider: 'boxlite',
+    source: historical,
+    immutableIdentity: 'sha256:rootfs-checksum',
+    fingerprint: 'sha256:environment-fingerprint',
+    sandboxMetadata: {
+      schemaVersion: 1,
+      sandboxVersion: '1.2.3',
+      dependencies: { codex: '0.131.0' },
+    },
+    sandboxMetadataChecksum: `sha256:${'a'.repeat(64)}`,
+    cliVersion: '0.131.0',
+    cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+    resolvedAt: '2026-07-14T00:00:00.000Z',
+  };
+  assert.doesNotThrow(() =>
+    RuntimeExecutionEnvironmentSnapshotSchema.parse({
+      ...base,
+      providerFamily: 'boxlite',
+    }),
+  );
+  assert.throws(() =>
+    RuntimeExecutionEnvironmentSnapshotSchema.parse({
+      ...base,
+      providerFamily: 'aio',
+    }),
+  );
+});
+
+test('the derived union carries exactly the declared managed + extension kinds', () => {
+  const unionKinds = RuntimeExecutionEnvironmentSourceSchema.options
+    .map((option) => option.shape.kind.value)
+    .sort();
+  const declaredKinds = [
+    ...SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS,
+    ...SANDBOX_ENVIRONMENT_EXTENSION_SOURCE_KINDS,
+  ].sort();
+  // boxlite-rootfs retirement is NOT a side effect of this change: the member
+  // is still here, explicitly, as part of the declared extension tier.
+  assert.deepEqual(unionKinds, declaredKinds);
+  assert.deepEqual(declaredKinds, [
+    'aio-docker-image',
+    'boxlite-image',
+    'boxlite-rootfs',
+    'provider-snapshot',
+  ]);
+});
+
+test('managed source-kind schema is not widened by the extension tier', () => {
+  assert.deepEqual(
+    [...SandboxEnvironmentSourceKindSchema.options].sort(),
+    [...SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS].sort(),
+  );
+  for (const extensionKind of SANDBOX_ENVIRONMENT_EXTENSION_SOURCE_KINDS) {
+    assert.throws(() => SandboxEnvironmentSourceKindSchema.parse(extensionKind));
+  }
+});

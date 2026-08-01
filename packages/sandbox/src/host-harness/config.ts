@@ -1,3 +1,4 @@
+import type { SandboxProviderFamily } from '@cap-console/contracts';
 import {
   SANDBOX_PROVIDER_CAPABILITIES,
   type SandboxProviderCapability,
@@ -8,11 +9,39 @@ export const DEFAULT_CLOUD_HTTP_CAPABILITIES: readonly SandboxProviderCapability
   'terminal.websocket',
 ] as const;
 
+/**
+ * The family-named members of the operator vocabulary, proven by `satisfies`
+ * to be a SUBSET of the selectable provider-family vocabulary: an operator can
+ * only pin a family that actually exists, and a member here that stops being a
+ * provider family is a compile error.
+ */
+const OPERATOR_SELECTABLE_PROVIDER_FAMILIES = [
+  'aio',
+  'boxlite',
+  'cloud-http',
+] as const satisfies readonly SandboxProviderFamily[];
+
+/**
+ * The OPERATOR vocabulary for `CAP_SANDBOX_PROVIDER` — what a deployment may
+ * write to select provider composition.
+ *
+ * D14 ruling, recorded in place: this is a DELIBERATE independent declaration,
+ * not a derivation from the provider-family vocabulary. `auto` and
+ * `control-plane` are operator selections that are not provider families, and
+ * a family appears here only once an operator can meaningfully pin it. The two
+ * vocabularies are reconciled by the R8 parity gate
+ * (`scripts/operator-provider-vocabulary-parity.mjs`) rather than by
+ * derivation, so a family that becomes selectable without an operator spelling
+ * turns a gate red instead of silently being unnameable.
+ */
+export const CONFIGURED_SANDBOX_PROVIDER_FAMILIES = [
+  'auto',
+  ...OPERATOR_SELECTABLE_PROVIDER_FAMILIES,
+  'control-plane',
+] as const;
+
 export type ConfiguredSandboxProviderFamily =
-  | 'auto'
-  | 'aio'
-  | 'boxlite'
-  | 'control-plane';
+  (typeof CONFIGURED_SANDBOX_PROVIDER_FAMILIES)[number];
 
 export const DEFAULT_BOXLITE_RUNTIME_REQUIRED_TOOLS = [
   'bash',
@@ -89,19 +118,15 @@ export function normalizeConfiguredSandboxProviderFamily(
   raw: string | undefined | null,
 ): ConfiguredSandboxProviderFamily {
   const value = raw?.trim() || 'auto';
-  switch (value) {
-    case 'auto':
-    case 'aio':
-    case 'boxlite':
-    case 'control-plane':
-      return value;
-    case 'control-plane-only':
-      return 'control-plane';
-    default:
-      throw new Error(
-        `invalid CAP_SANDBOX_PROVIDER: ${raw} (expected auto|aio|boxlite|control-plane)`,
-      );
+  if (
+    (CONFIGURED_SANDBOX_PROVIDER_FAMILIES as readonly string[]).includes(value)
+  ) {
+    return value as ConfiguredSandboxProviderFamily;
   }
+  if (value === 'control-plane-only') return 'control-plane';
+  throw new Error(
+    `invalid CAP_SANDBOX_PROVIDER: ${raw} (expected ${CONFIGURED_SANDBOX_PROVIDER_FAMILIES.join('|')})`,
+  );
 }
 
 export function readConfiguredSandboxProviderFamily(
@@ -110,22 +135,32 @@ export function readConfiguredSandboxProviderFamily(
   return normalizeConfiguredSandboxProviderFamily(env.CAP_SANDBOX_PROVIDER);
 }
 
-export function providerFamilyAllowsAio(
-  family: ConfiguredSandboxProviderFamily,
-): boolean {
-  return family === 'auto' || family === 'aio';
-}
+/**
+ * ONE total allowance table (design D4): configured operator family → the
+ * provider families it admits into composition. This replaces the three
+ * `providerFamilyAllows*` boolean predicates — the Nth family no longer costs
+ * an Nth function, and because the Record is total over the operator
+ * vocabulary, a new configured family without a row here is a compile error
+ * rather than an allowance that silently reads as "deny".
+ */
+export const CONFIGURED_FAMILY_ALLOWED_PROVIDER_FAMILIES: Record<
+  ConfiguredSandboxProviderFamily,
+  readonly SandboxProviderFamily[]
+> = Object.freeze({
+  auto: ['aio', 'boxlite', 'cloud-http'],
+  aio: ['aio'],
+  boxlite: ['boxlite'],
+  'cloud-http': ['cloud-http'],
+  'control-plane': [],
+});
 
-export function providerFamilyAllowsBoxLite(
-  family: ConfiguredSandboxProviderFamily,
+export function configuredFamilyAllowsProviderFamily(
+  configured: ConfiguredSandboxProviderFamily,
+  providerFamily: SandboxProviderFamily,
 ): boolean {
-  return family === 'auto' || family === 'boxlite';
-}
-
-export function providerFamilyAllowsCloudHttp(
-  family: ConfiguredSandboxProviderFamily,
-): boolean {
-  return family === 'auto';
+  return CONFIGURED_FAMILY_ALLOWED_PROVIDER_FAMILIES[configured].includes(
+    providerFamily,
+  );
 }
 
 export function explicitProviderFamilyLabel(

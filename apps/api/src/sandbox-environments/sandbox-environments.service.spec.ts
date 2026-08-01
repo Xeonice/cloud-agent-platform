@@ -551,6 +551,12 @@ test('create rejects removed source kinds instead of applying compatibility shim
       kind: 'boxlite-rootfs',
       rootfsPath: '/var/lib/cap/rootfs/custom',
     },
+    // unlock-extension-axes D6: the extension tier (snapshot read/write only)
+    // must NOT widen the managed-create surface.
+    {
+      kind: 'provider-snapshot',
+      locator: 'registry.example/cap/runtime:tag',
+    },
     {
       kind: 'oci-upload',
       uploadId: 'upload-1',

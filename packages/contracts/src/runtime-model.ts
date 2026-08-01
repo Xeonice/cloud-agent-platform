@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { Sha256ChecksumSchema } from './artifact-checksum.js';
 import {
+  SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS,
   SandboxEnvironmentProviderFamilySchema,
   SandboxEnvironmentResourcesSchema,
+  type SandboxEnvironmentExtensionSourceKind,
 } from './sandbox-environment.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
 import { RuntimeSchema, TaskModelSelectorSchema } from './task.js';
@@ -52,49 +54,107 @@ export type RuntimeModelEffectiveEnvironment = z.infer<
 >;
 
 /**
+ * MANAGED snapshot source members DERIVE from the single source-kind
+ * declaration in `sandbox-environment.ts` (unlock-extension-axes D6): every
+ * managed kind shares this one immutable-image shape, so adding a managed kind
+ * to `SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS` surfaces in the snapshot union
+ * with NO second hand edit here.
+ */
+const makeManagedSourceMember = <Kind extends string>(kind: Kind) =>
+  z
+    .object({
+      kind: z.literal(kind),
+      locator: z.string().trim().min(1).max(2_048),
+      digest: z.string().trim().min(1).max(512),
+      checksum: z.null(),
+    })
+    .strict();
+
+type MapManagedSourceMembers<Kinds extends readonly string[]> = {
+  -readonly [Index in keyof Kinds]: ReturnType<
+    typeof makeManagedSourceMember<Kinds[Index] & string>
+  >;
+};
+type ManagedSourceMembers = MapManagedSourceMembers<
+  typeof SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS
+>;
+// The `.map` erases tuple positions, so re-assert them; the runtime value is a
+// 1:1 map over the declaration, and `_assertSourceKindsReconcile` below keeps
+// the assertion honest at compile time.
+const MANAGED_SOURCE_MEMBERS = SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS.map(
+  makeManagedSourceMember,
+) as unknown as ManagedSourceMembers;
+
+/**
+ * EXTENSION/LEGACY snapshot source members — explicitly modeled, one row per
+ * kind in the extension tier declared in `sandbox-environment.ts`. The
+ * `satisfies Record<...>` makes the table TOTAL over that declaration: a new
+ * extension kind without a row (or a row for an undeclared kind) is a compile
+ * error, so this side cannot drift.
+ *
+ * D6 semantics (see the ruling record at the declaration): `provider-snapshot`
+ * has a live production writer (the environment resolver's checksum fallback);
+ * `boxlite-rootfs` is read-path legacy kept pending its own retirement change.
+ */
+const EXTENSION_SOURCE_MEMBERS = {
+  'boxlite-rootfs': z
+    .object({
+      kind: z.literal('boxlite-rootfs'),
+      locator: z.string().trim().min(1).max(2_048),
+      digest: z.null(),
+      checksum: z.string().trim().min(1).max(512),
+    })
+    .strict(),
+  'provider-snapshot': z
+    .object({
+      kind: z.literal('provider-snapshot'),
+      locator: z.string().trim().min(1).max(2_048),
+      digest: z.string().trim().min(1).max(512).nullable(),
+      checksum: z.string().trim().min(1).max(512).nullable(),
+    })
+    .strict(),
+} as const satisfies Record<
+  SandboxEnvironmentExtensionSourceKind,
+  z.ZodTypeAny
+>;
+
+/**
  * Internal non-secret snapshot persisted with an explicit-model Task so catalog
  * validation and provisioning cannot observe different mutable images.
+ *
+ * Members = the derived managed tier + the explicitly modeled extension tier;
+ * reconciled against the declaration by the R5 parity gate
+ * (`scripts/sandbox-core-vocabulary-parity.mjs`).
  */
 export const RuntimeExecutionEnvironmentSourceSchema = z.discriminatedUnion(
   'kind',
   [
-    z
-      .object({
-        kind: z.literal('aio-docker-image'),
-        locator: z.string().trim().min(1).max(2_048),
-        digest: z.string().trim().min(1).max(512),
-        checksum: z.null(),
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal('boxlite-image'),
-        locator: z.string().trim().min(1).max(2_048),
-        digest: z.string().trim().min(1).max(512),
-        checksum: z.null(),
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal('boxlite-rootfs'),
-        locator: z.string().trim().min(1).max(2_048),
-        digest: z.null(),
-        checksum: z.string().trim().min(1).max(512),
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal('provider-snapshot'),
-        locator: z.string().trim().min(1).max(2_048),
-        digest: z.string().trim().min(1).max(512).nullable(),
-        checksum: z.string().trim().min(1).max(512).nullable(),
-      })
-      .strict(),
+    ...MANAGED_SOURCE_MEMBERS,
+    EXTENSION_SOURCE_MEMBERS['boxlite-rootfs'],
+    EXTENSION_SOURCE_MEMBERS['provider-snapshot'],
   ],
 );
 export type RuntimeExecutionEnvironmentSource = z.infer<
   typeof RuntimeExecutionEnvironmentSourceSchema
 >;
+
+/**
+ * Compile-time reconciliation: the union's kind set is EXACTLY the declared
+ * managed tier plus the declared extension tier — nothing more, nothing less.
+ * This is what licenses the tuple cast on `MANAGED_SOURCE_MEMBERS` above: any
+ * drift between the declaration and the derived union fails to compile here.
+ */
+type DeclaredSourceKind =
+  | (typeof SANDBOX_ENVIRONMENT_MANAGED_SOURCE_KINDS)[number]
+  | SandboxEnvironmentExtensionSourceKind;
+type _AssertSourceKindsReconcile = [
+  Exclude<DeclaredSourceKind, RuntimeExecutionEnvironmentSource['kind']>,
+  Exclude<RuntimeExecutionEnvironmentSource['kind'], DeclaredSourceKind>,
+] extends [never, never]
+  ? true
+  : never;
+const _assertSourceKindsReconcile: _AssertSourceKindsReconcile = true;
+void _assertSourceKindsReconcile;
 
 export const RuntimeExecutionEnvironmentSnapshotSchema = z
   .object({
