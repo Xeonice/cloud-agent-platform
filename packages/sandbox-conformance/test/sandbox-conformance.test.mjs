@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFile, execSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import http from 'node:http';
 
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
 const core = await import(new URL('../../sandbox-core/dist/index.js', import.meta.url).href);
@@ -1896,6 +1899,112 @@ await test('generated private Git fixture advertises one safe guest host with re
   } finally {
     await fixture.dispose();
   }
+  assert.equal(fixture.diagnostics().activeRequests, 0);
+  assert.equal(fixture.diagnostics().activeBackendProcesses, 0);
+});
+
+// Injection probe: the acquisition-time write-stream guard the fixture
+// installs on both of its write paths (the backend `child.stdin` and the CGI
+// `ServerResponse`) must swallow only whitelisted disconnect codes and let
+// every other error surface — the fixture stays failable.
+await test('generated private Git write-stream guard rethrows non-whitelisted errors', async () => {
+  for (const writePath of ['backend-child-stdin', 'cgi-response']) {
+    const stream = new EventEmitter();
+    mod.guardGeneratedPrivateGitWriteStream(stream);
+
+    const injected = Object.assign(
+      new Error(`injection probe for ${writePath}`),
+      { code: 'EACCES' },
+    );
+    assert.throws(
+      () => stream.emit('error', injected),
+      (error) => error === injected,
+      `${writePath}: a non-whitelisted code must surface`,
+    );
+
+    const uncoded = new Error(`uncoded injection probe for ${writePath}`);
+    assert.throws(
+      () => stream.emit('error', uncoded),
+      (error) => error === uncoded,
+      `${writePath}: an error without a code must surface`,
+    );
+
+    // Whitelisted disconnect codes (normal smart-HTTP client hang-up) are
+    // swallowed: emitting them must not throw.
+    for (const code of ['EPIPE', 'ECONNRESET']) {
+      stream.emit(
+        'error',
+        Object.assign(new Error(`disconnect for ${writePath}`), { code }),
+      );
+    }
+  }
+});
+
+// Deterministic adversarial simulation (F.4): a git client hanging up early is
+// normal smart-HTTP behavior; the fixture must survive it with no
+// uncaughtException and keep serving subsequent requests in this process.
+await test('generated private Git fixture survives early client disconnects and keeps serving', async () => {
+  const uncaught = [];
+  const onUncaught = (error) => uncaught.push(error);
+  process.on('uncaughtException', onUncaught);
+  const fixture = await mod.createGeneratedPrivateGitFixture({
+    largeBlobBytes: 2 * 1024 * 1024,
+  });
+  try {
+    // (a) Deterministic mirror of the pre-fix crash: SIGKILL a backend-shaped
+    // child (the fixture's `clientClosed` reaction to an early disconnect),
+    // block the event loop so Node has not observed the death, then perform
+    // the fixture's stdin write against the broken pipe. With the
+    // acquisition-time guard the asynchronous `write EPIPE` is swallowed
+    // instead of crashing the process (pre-fix this exact recipe exits 1).
+    const child = execFile('git', ['http-backend'], { encoding: 'buffer' }, () => {});
+    mod.guardGeneratedPrivateGitWriteStream(child.stdin);
+    child.kill('SIGKILL');
+    execSync('sleep 0.2');
+    assert.equal(
+      child.stdin?.destroyed,
+      false,
+      'the write must race ahead of Node observing the death',
+    );
+    child.stdin?.end(Buffer.alloc(64 * 1024));
+    await new Promise((resolve) => child.once('close', resolve));
+
+    // (b) Real early-disconnecting clients against the live fixture: send an
+    // authorized request, then destroy the client socket without reading the
+    // response, at several points of the exchange.
+    const authorization = `Basic ${Buffer.from(
+      `${fixture.basicAuth.username}:${fixture.basicAuth.password}`,
+    ).toString('base64')}`;
+    const infoRefsUrl = new URL(`${fixture.rootUrl}/info/refs?service=git-upload-pack`);
+    for (const disconnectAfterMs of [0, 1, 5, 20]) {
+      await new Promise((resolve) => {
+        const request = http.request(
+          infoRefsUrl,
+          { headers: { authorization } },
+          (response) => response.once('error', () => {}),
+        );
+        request.once('error', () => {});
+        request.once('close', resolve);
+        request.end();
+        setTimeout(() => request.destroy(), disconnectAfterMs);
+      });
+    }
+    for (let i = 0; i < 100; i += 1) {
+      const snapshot = fixture.diagnostics();
+      if (snapshot.activeRequests === 0 && snapshot.activeBackendProcesses === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    // (c) The fixture still serves a subsequent authorized request in the
+    // same test process.
+    const served = await fetch(infoRefsUrl, { headers: { authorization } });
+    assert.equal(served.status, 200);
+    assert.match(await served.text(), /git-upload-pack/u);
+  } finally {
+    await fixture.dispose();
+    process.off('uncaughtException', onUncaught);
+  }
+  assert.deepEqual(uncaught, [], 'early disconnects must not crash the fixture');
   assert.equal(fixture.diagnostics().activeRequests, 0);
   assert.equal(fixture.diagnostics().activeBackendProcesses, 0);
 });

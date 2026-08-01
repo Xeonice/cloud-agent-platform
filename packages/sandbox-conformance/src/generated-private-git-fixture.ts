@@ -14,6 +14,43 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_FIXTURE_HOST = '127.0.0.1';
+
+/**
+ * Disconnect codes a git client legitimately produces by hanging up early —
+ * normal smart-HTTP protocol behavior. Declared once and shared by every
+ * fixture write path (the backend `child.stdin` and the CGI `ServerResponse`).
+ */
+const TOLERATED_CLIENT_DISCONNECT_CODES: ReadonlySet<string> = new Set([
+  'EPIPE',
+  'ECONNRESET',
+]);
+
+/**
+ * Attach the fixture's whitelisted `'error'` listener to a writable stream at
+ * stream acquisition time, before any write is attempted — guarding only the
+ * write callback is insufficient because a closed peer surfaces its error
+ * asynchronously (nodejs/node#11918). Errors whose `code` is on the disconnect
+ * whitelist are swallowed; every other error is rethrown so real fixture
+ * defects still fail loudly. Exported so injection-probe tests can prove the
+ * rethrow path against the exact listener the fixture installs.
+ */
+export function guardGeneratedPrivateGitWriteStream(
+  stream: NodeJS.EventEmitter | null | undefined,
+): void {
+  stream?.on('error', (error: unknown) => {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (
+      typeof code === 'string' &&
+      TOLERATED_CLIENT_DISCONNECT_CODES.has(code)
+    ) {
+      return;
+    }
+    if (error instanceof Error) throw error;
+    throw new Error(
+      `Generated Git fixture write stream failed: ${String(error)}`,
+    );
+  });
+}
 const DEFAULT_LARGE_BLOB_BYTES = 4 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_BACKEND_OUTPUT_BYTES = 32 * 1024 * 1024;
@@ -667,6 +704,10 @@ async function startGitHttpServer(args: {
   let closing = false;
   let closePromise: Promise<void> | null = null;
   const server = createServer((request, response) => {
+    // Guard the CGI response write path at stream acquisition, before any
+    // write: the client can hang up at any moment, and a whitelisted
+    // disconnect during `writeCgiResponse` must not crash the fixture.
+    guardGeneratedPrivateGitWriteStream(response);
     if (closing) {
       response.writeHead(503, { connection: 'close' }).end();
       return;
@@ -857,6 +898,10 @@ async function runGitHttpBackend(args: {
       },
     );
   });
+  // Guard the backend write path at stream acquisition, before any write: an
+  // early client hang-up SIGKILLs the child (`clientClosed`) and the pending
+  // stdin write below then hits a broken pipe (F.4: `write EPIPE`).
+  guardGeneratedPrivateGitWriteStream(child.stdin);
   const settled = new Promise<void>((resolve) => {
     child.once('close', () => resolve());
   });

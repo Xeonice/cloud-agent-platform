@@ -405,6 +405,34 @@ function assertBoundedCanonicalPtyLines(input) {
   return { byteLengths, maxLineBytes };
 }
 
+/**
+ * Shared manual `Date.now` stub extracted from the two verified inline
+ * precedents in this file (the queued-production-budget and budget-recovery
+ * tests). Every time-budget margin asserted in this file must read this
+ * injected clock — never the real one — so CPU contention on a loaded host
+ * cannot move an elapsed-window measurement. Callbacks advance simulated time
+ * explicitly via `clock.advance(ms)`; the original `Date.now` is always
+ * restored in `finally`.
+ */
+async function withManualReleaseClock(startedAt, run) {
+  const originalDateNow = Date.now;
+  let now = startedAt;
+  const clock = {
+    advance(ms) {
+      now += ms;
+    },
+    elapsed() {
+      return now - startedAt;
+    },
+  };
+  Date.now = () => now;
+  try {
+    return await run(clock);
+  } finally {
+    Date.now = originalDateNow;
+  }
+}
+
 function createExactReleaseHarness({
   pair = ownershipPair(),
   socketBehavior = 'success',
@@ -1179,10 +1207,14 @@ await test('same-task owner plus eight viewers share one exact REST proof cohort
 await test('a silent cohort peer cannot block a successful peer from main exit and one final proof', async () => {
   const calls = [];
   const events = [];
+  let clock;
   const fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ path: url.pathname, method: init.method, body });
+    // Each REST call costs simulated budget on the injected clock; the margin
+    // assertion below therefore measures protocol work, not host scheduling.
+    clock.advance(10);
     if (url.pathname === '/v1/shell/sessions/create') {
       return response(200, {
         success: true,
@@ -1241,42 +1273,48 @@ await test('a silent cohort peer cannot block a successful peer from main exit a
   const fastNonces = ['fastinjector001', 'fastmain0000001'];
   const silentNonces = ['slowinjector001'];
   const timeoutMs = 120;
-  const startedAt = Date.now();
   const keepAlive = setTimeout(() => undefined, timeoutMs + 50);
-  const [fast, silent] = await Promise.all([
-    mod.releaseAioTerminalGuestPairExact({
-      fetch,
-      baseUrl: 'http://aio.test',
-      taskId: 'isolate-cohort',
-      pair: fastPair,
-      timeoutMs,
-      socketFactory: (_url, role) => {
-        events.push(`fast-${role}`);
-        const socket = new FakeReconnectSocket(role, fastPair, 'success');
-        fastSockets.push(socket);
-        return socket;
-      },
-      markerFactory: () => fastNonces.shift(),
-    }),
-    mod.releaseAioTerminalGuestPairExact({
-      fetch,
-      baseUrl: 'http://aio.test/',
-      taskId: 'isolate-cohort',
-      pair: silentPair,
-      timeoutMs,
-      socketFactory: (_url, role) => {
-        events.push(`slow-${role}`);
-        const socket = new FakeReconnectSocket(role, silentPair, 'silent');
-        silentSockets.push(socket);
-        return socket;
-      },
-      markerFactory: () => silentNonces.shift(),
-    }),
-  ]);
+  let fast;
+  let silent;
+  await withManualReleaseClock(30_000_000, async (manualClock) => {
+    clock = manualClock;
+    [fast, silent] = await Promise.all([
+      mod.releaseAioTerminalGuestPairExact({
+        fetch,
+        baseUrl: 'http://aio.test',
+        taskId: 'isolate-cohort',
+        pair: fastPair,
+        timeoutMs,
+        socketFactory: (_url, role) => {
+          events.push(`fast-${role}`);
+          clock.advance(10);
+          const socket = new FakeReconnectSocket(role, fastPair, 'success');
+          fastSockets.push(socket);
+          return socket;
+        },
+        markerFactory: () => fastNonces.shift(),
+      }),
+      mod.releaseAioTerminalGuestPairExact({
+        fetch,
+        baseUrl: 'http://aio.test/',
+        taskId: 'isolate-cohort',
+        pair: silentPair,
+        timeoutMs,
+        socketFactory: (_url, role) => {
+          events.push(`slow-${role}`);
+          clock.advance(10);
+          const socket = new FakeReconnectSocket(role, silentPair, 'silent');
+          silentSockets.push(socket);
+          return socket;
+        },
+        markerFactory: () => silentNonces.shift(),
+      }),
+    ]);
+  });
   clearTimeout(keepAlive);
   assert.deepEqual(fast, { kind: 'confirmed', cause: null });
   assert.deepEqual(silent, { kind: 'indeterminate', cause: 'timeout' });
-  assert.ok(Date.now() - startedAt < timeoutMs);
+  assert.ok(clock.elapsed() < timeoutMs, `elapsed=${clock.elapsed()}`);
   assert.deepEqual(
     fastSockets.map((socket) => socket.role),
     ['injector', 'main'],
@@ -1310,6 +1348,7 @@ await test('a silent cohort peer cannot block a successful peer from main exit a
 await test('different timeout groups for one task serialize on one lane and retain enqueue deadlines', async () => {
   const events = [];
   const proofPairCounts = [];
+  let clock;
   let activeControlSessions = 0;
   let maxActiveControlSessions = 0;
   const fetch = async (input, init = {}) => {
@@ -1335,7 +1374,10 @@ await test('different timeout groups for one task serialize on one lane and reta
         ),
       ].map((match) => match[1]);
       proofPairCounts.push(nonces.length);
-      await new Promise((resolve) => setTimeout(resolve, 15));
+      // Simulated 15ms proof service time on the injected clock: the queued
+      // 20ms-deadline release must expire by deadline arithmetic, not by
+      // racing real timers on a loaded host.
+      clock.advance(15);
       return response(200, {
         success: true,
         data: {
@@ -1354,7 +1396,7 @@ await test('different timeout groups for one task serialize on one lane and reta
       init.method === 'DELETE' &&
       url.pathname.startsWith('/v1/shell/sessions/')
     ) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      clock.advance(10);
       activeControlSessions -= 1;
       events.push('delete');
       const sessionId = decodeURIComponent(
@@ -1376,23 +1418,27 @@ await test('different timeout groups for one task serialize on one lane and reta
       closeNonce: `timeoutlane${String(index).padStart(4, '0')}`,
     }),
   );
-  const decisions = pairs.map((pair, index) => {
-    const nonces = [
-      `laneinjector${String(index).padStart(4, '0')}`,
-      `lanemain${String(index).padStart(8, '0')}`,
-    ];
-    return mod.releaseAioTerminalGuestPairExact({
-      fetch,
-      baseUrl: index === 1 ? 'http://aio.test/' : 'http://aio.test',
-      taskId: 'timeout-lane',
-      pair,
-      timeoutMs: timeouts[index],
-      socketFactory: (_url, role) =>
-        new FakeReconnectSocket(role, pair, 'success'),
-      markerFactory: () => nonces.shift(),
+  let settlements;
+  await withManualReleaseClock(40_000_000, async (manualClock) => {
+    clock = manualClock;
+    const decisions = pairs.map((pair, index) => {
+      const nonces = [
+        `laneinjector${String(index).padStart(4, '0')}`,
+        `lanemain${String(index).padStart(8, '0')}`,
+      ];
+      return mod.releaseAioTerminalGuestPairExact({
+        fetch,
+        baseUrl: index === 1 ? 'http://aio.test/' : 'http://aio.test',
+        taskId: 'timeout-lane',
+        pair,
+        timeoutMs: timeouts[index],
+        socketFactory: (_url, role) =>
+          new FakeReconnectSocket(role, pair, 'success'),
+        markerFactory: () => nonces.shift(),
+      });
     });
+    settlements = await Promise.all(decisions);
   });
-  const settlements = await Promise.all(decisions);
   assert.ok(
     settlements.slice(0, 3).every(
       (settlement) =>
@@ -1416,9 +1462,7 @@ await test('different timeout groups for one task serialize on one lane and reta
 });
 
 await test('a production-timeout cohort queued behind cleanup still retains both reconnects and proof', async () => {
-  const originalDateNow = Date.now;
-  const startedAt = 20_000_000;
-  let now = startedAt;
+  let clock;
   let activeControlSessions = 0;
   let maxActiveControlSessions = 0;
   let proofOrdinal = 0;
@@ -1442,7 +1486,7 @@ await test('a production-timeout cohort queued behind cleanup still retains both
     const url = new URL(String(input));
     const body = init.body ? JSON.parse(init.body) : undefined;
     if (url.pathname === '/v1/shell/sessions/create') {
-      now += 50;
+      clock.advance(50);
       activeControlSessions += 1;
       maxActiveControlSessions = Math.max(
         maxActiveControlSessions,
@@ -1455,7 +1499,7 @@ await test('a production-timeout cohort queued behind cleanup still retains both
       });
     }
     if (url.pathname === '/v1/shell/exec') {
-      now += 50;
+      clock.advance(50);
       proofOrdinal += 1;
       events.push(`proof-${proofOrdinal}`);
       const nonces = [
@@ -1482,7 +1526,7 @@ await test('a production-timeout cohort queued behind cleanup still retains both
       init.method === 'DELETE' &&
       url.pathname.startsWith('/v1/shell/sessions/')
     ) {
-      now += 4_500;
+      clock.advance(4_500);
       activeControlSessions -= 1;
       events.push('delete');
       const sessionId = decodeURIComponent(
@@ -1496,8 +1540,8 @@ await test('a production-timeout cohort queued behind cleanup still retains both
     throw new Error('unexpected queued-budget request');
   };
   let settlements;
-  try {
-    Date.now = () => now;
+  await withManualReleaseClock(20_000_000, async (manualClock) => {
+    clock = manualClock;
     const decisions = pairs.map((pair, index) => {
       const nonces = [
         `queuedinjector${index + 1}`,
@@ -1510,7 +1554,7 @@ await test('a production-timeout cohort queued behind cleanup still retains both
         pair,
         timeoutMs: index === 0 ? 20_000 : 19_999,
         socketFactory: (_url, role) => {
-          if (index === 1) now += 2_000;
+          if (index === 1) clock.advance(2_000);
           events.push(`pair-${index + 1}-${role}`);
           const socket = new FakeReconnectSocket(role, pair, 'success');
           const send = socket.send.bind(socket);
@@ -1526,14 +1570,12 @@ await test('a production-timeout cohort queued behind cleanup still retains both
       });
     });
     settlements = await Promise.all(decisions);
-  } finally {
-    Date.now = originalDateNow;
-  }
+  });
   assert.deepEqual(settlements, [
     { kind: 'confirmed', cause: null },
     { kind: 'confirmed', cause: null },
   ]);
-  assert.equal(now - startedAt, 13_200);
+  assert.equal(clock.elapsed(), 13_200);
   assert.equal(maxActiveControlSessions, 1);
   assert.equal(activeControlSessions, 0);
   assert.deepEqual(events, [
@@ -1837,45 +1879,73 @@ await test('exact reconnect release writes only after provider identity and igno
   });
   assert.equal(duplicateRestore.sockets[0].sent.length, 1);
 
-  const missing = createExactReleaseHarness({ socketBehavior: 'silent' });
-  const missingKeepAlive = setTimeout(() => undefined, 30);
-  const missingSettlement = await mod.releaseAioTerminalGuestPairExact({
-    fetch: missing.fetch,
-    baseUrl: 'http://aio.test',
-    taskId: 'release-task',
-    pair: missing.pair,
-    timeoutMs: 10,
-    socketFactory: missing.socketFactory,
-    markerFactory: () => 'identity00000002',
-  });
-  clearTimeout(missingKeepAlive);
-  assert.deepEqual(missingSettlement, {
-    kind: 'indeterminate',
-    cause: 'timeout',
-  });
-  assert.equal(missing.sockets[0].sent.length, 0);
+  // Frozen injected clock: the release's enqueue/phase deadline pre-checks
+  // read `Date.now`, so on a stalled host a 10ms real budget could expire
+  // before `socketFactory` ever ran and `sockets[0]` stayed undefined. With
+  // the stubbed clock those pre-checks are deterministic, the injector socket
+  // is always created, and the timeout settlement arrives solely through the
+  // product's real reconnect timer that nothing races.
+  await withManualReleaseClock(80_000_000, async () => {
+    const missing = createExactReleaseHarness({ socketBehavior: 'silent' });
+    let missingSocketCreated;
+    const missingSocketCreation = new Promise((resolve) => {
+      missingSocketCreated = resolve;
+    });
+    const missingKeepAlive = setTimeout(() => undefined, 30);
+    const missingSettlement = await mod.releaseAioTerminalGuestPairExact({
+      fetch: missing.fetch,
+      baseUrl: 'http://aio.test',
+      taskId: 'release-task',
+      pair: missing.pair,
+      timeoutMs: 10,
+      socketFactory: (url, role) => {
+        const socket = missing.socketFactory(url, role);
+        missingSocketCreated();
+        return socket;
+      },
+      markerFactory: () => 'identity00000002',
+    });
+    clearTimeout(missingKeepAlive);
+    // Deterministic synchronization point: socket creation is awaited before
+    // any assertion dereferences the created socket.
+    await missingSocketCreation;
+    assert.deepEqual(missingSettlement, {
+      kind: 'indeterminate',
+      cause: 'timeout',
+    });
+    assert.equal(missing.sockets[0].sent.length, 0);
 
-  const echo = createExactReleaseHarness({ socketBehavior: 'echo-only' });
-  const echoKeepAlive = setTimeout(() => undefined, 30);
-  const echoSettlement = await mod.releaseAioTerminalGuestPairExact({
-    fetch: echo.fetch,
-    baseUrl: 'http://aio.test',
-    taskId: 'release-task',
-    pair: echo.pair,
-    timeoutMs: 10,
-    socketFactory: echo.socketFactory,
-    markerFactory: () => 'identity00000003',
+    const echo = createExactReleaseHarness({ socketBehavior: 'echo-only' });
+    let echoSocketCreated;
+    const echoSocketCreation = new Promise((resolve) => {
+      echoSocketCreated = resolve;
+    });
+    const echoKeepAlive = setTimeout(() => undefined, 30);
+    const echoSettlement = await mod.releaseAioTerminalGuestPairExact({
+      fetch: echo.fetch,
+      baseUrl: 'http://aio.test',
+      taskId: 'release-task',
+      pair: echo.pair,
+      timeoutMs: 10,
+      socketFactory: (url, role) => {
+        const socket = echo.socketFactory(url, role);
+        echoSocketCreated();
+        return socket;
+      },
+      markerFactory: () => 'identity00000003',
+    });
+    clearTimeout(echoKeepAlive);
+    await echoSocketCreation;
+    assert.deepEqual(echoSettlement, {
+      kind: 'indeterminate',
+      cause: 'timeout',
+    });
+    assert.equal(echo.sockets[0].sent.length, 2);
+    assert.doesNotMatch(
+      echo.sockets[0].sent[0].data,
+      /CAP_AIO_INJECTOR_EXIT_identity00000003/u,
+    );
   });
-  clearTimeout(echoKeepAlive);
-  assert.deepEqual(echoSettlement, {
-    kind: 'indeterminate',
-    cause: 'timeout',
-  });
-  assert.equal(echo.sockets[0].sent.length, 2);
-  assert.doesNotMatch(
-    echo.sockets[0].sent[0].data,
-    /CAP_AIO_INJECTOR_EXIT_identity00000003/u,
-  );
 });
 
 await test('pre-identity subscriber races retry without repeating any input', async () => {
@@ -1919,42 +1989,87 @@ await test('pre-identity subscriber races retry without repeating any input', as
 });
 
 await test('staged reconnect input waits for live ordered ACKs and fails closed before execute', async () => {
-  for (const [socketBehavior, expectedCause, expectedFrames] of [
-    ['stage-no-ack', 'timeout', 2],
-    ['stage-restore-ack', 'timeout', 2],
-    ['stage-duplicate-ack', 'protocol-unconfirmed', 2],
-    ['stage-send-error', 'protocol-unconfirmed', 2],
-    ['loop-failed', 'protocol-unconfirmed', 1],
-  ]) {
-    const harness = createExactReleaseHarness({ socketBehavior });
-    const keepAlive = setTimeout(() => undefined, 50);
-    const settlement = await mod.releaseAioTerminalGuestPairExact({
-      fetch: harness.fetch,
-      baseUrl: 'http://aio.test',
-      taskId: 'release-task',
-      pair: harness.pair,
-      timeoutMs: 20,
-      socketFactory: harness.socketFactory,
-      markerFactory: () => 'staged00000001',
-    });
-    clearTimeout(keepAlive);
-    assert.deepEqual(settlement, {
-      kind: 'indeterminate',
-      cause: expectedCause,
-    });
-    assert.equal(harness.sockets.length, 1);
-    assert.equal(harness.sockets[0].sent.length, expectedFrames);
-    assert.equal(
-      harness.sockets[0].sent[0].data,
-      `${harness.pair.closeToken}\n`,
-    );
-    assert.equal(harness.sockets[0].stagedReleasePayload, '');
-    assert.ok(
-      harness.sockets[0].sent.every(
-        (frame) => Buffer.byteLength(frame.data, 'utf8') <= 1_024,
-      ),
-    );
-  }
+  // The release state machine (product `sendNextInputFrame` /
+  // `maybeAdvanceInput`) sends staged frame N+1 only after frame N's write
+  // callback and its live ACK observation, so staged emission order is
+  // guaranteed — the ACK expectation below is therefore order-pinned per sent
+  // frame (the exact ACK-request sequence, never a subset or a bare count).
+  const stagedStageReadyAck = `CAP_AIO_INJECTOR_STAGE_${createHash('sha256')
+    .update('CAP_AIO_INJECTOR_EXIT_staged00000001:stage:-1')
+    .digest('hex')
+    .slice(0, 24)}`;
+  await withManualReleaseClock(90_000_000, async () => {
+    for (const [socketBehavior, expectedCause, expectedAckRequests] of [
+      ['stage-no-ack', 'timeout', [[], [stagedStageReadyAck]]],
+      ['stage-restore-ack', 'timeout', [[], [stagedStageReadyAck]]],
+      [
+        'stage-duplicate-ack',
+        'protocol-unconfirmed',
+        [[], [stagedStageReadyAck]],
+      ],
+      [
+        'stage-send-error',
+        'protocol-unconfirmed',
+        [[], [stagedStageReadyAck]],
+      ],
+      ['loop-failed', 'protocol-unconfirmed', [[]]],
+    ]) {
+      const harness = createExactReleaseHarness({ socketBehavior });
+      let ackWindowClosed;
+      const ackObservationWindowClosed = new Promise((resolve) => {
+        ackWindowClosed = resolve;
+      });
+      const keepAlive = setTimeout(() => undefined, 50);
+      const settlement = await mod.releaseAioTerminalGuestPairExact({
+        fetch: harness.fetch,
+        baseUrl: 'http://aio.test',
+        taskId: 'release-task',
+        pair: harness.pair,
+        timeoutMs: 20,
+        socketFactory: (url, role) => {
+          const socket = harness.socketFactory(url, role);
+          const close = socket.close.bind(socket);
+          socket.close = () => {
+            close();
+            ackWindowClosed();
+          };
+          return socket;
+        },
+        markerFactory: () => 'staged00000001',
+      });
+      clearTimeout(keepAlive);
+      // Deterministic ACK-observation synchronization point: the product has
+      // closed its reconnect socket, so ACK adjudication is complete before
+      // any staged-ACK assertion runs.
+      await ackObservationWindowClosed;
+      assert.deepEqual(
+        settlement,
+        {
+          kind: 'indeterminate',
+          cause: expectedCause,
+        },
+        socketBehavior,
+      );
+      assert.equal(harness.sockets.length, 1, socketBehavior);
+      assert.deepEqual(
+        harness.sockets[0].sent.map((frame) =>
+          extractEchoSafeMarkers(frame.data),
+        ),
+        expectedAckRequests,
+        socketBehavior,
+      );
+      assert.equal(
+        harness.sockets[0].sent[0].data,
+        `${harness.pair.closeToken}\n`,
+      );
+      assert.equal(harness.sockets[0].stagedReleasePayload, '');
+      assert.ok(
+        harness.sockets[0].sent.every(
+          (frame) => Buffer.byteLength(frame.data, 'utf8') <= 1_024,
+        ),
+      );
+    }
+  });
 });
 
 await test('ACK and outcome duplicates remain rejected after more than 16KiB of intervening output', async () => {
@@ -2157,9 +2272,7 @@ await test('batched proof safely converges already-absent and detached-main part
 });
 
 await test('default partial recovery fits the simulated slow REST budget in one drained control session', async () => {
-  const originalDateNow = Date.now;
-  const startedAt = 10_000_000;
-  let now = startedAt;
+  let clock;
   const events = [];
   const execSessionIds = [];
   const proofCommands = [];
@@ -2174,7 +2287,7 @@ await test('default partial recovery fits the simulated slow REST budget in one 
     const url = new URL(String(input));
     const body = init.body ? JSON.parse(init.body) : undefined;
     if (url.pathname === '/v1/shell/sessions/create') {
-      now += 800;
+      clock.advance(800);
       controlSessionId = body.id;
       events.push('create');
       return response(200, {
@@ -2184,7 +2297,7 @@ await test('default partial recovery fits the simulated slow REST budget in one 
     }
     if (url.pathname === '/v1/shell/exec') {
       const pass = proofCommands.length;
-      now += pass === 0 ? 800 : 3_250;
+      clock.advance(pass === 0 ? 800 : 3_250);
       events.push(`exec-${pass + 1}`);
       execSessionIds.push(body.id);
       proofCommands.push(unwrapSingleQuotedShLc(body.command));
@@ -2209,7 +2322,7 @@ await test('default partial recovery fits the simulated slow REST budget in one 
       init.method === 'DELETE' &&
       url.pathname.startsWith('/v1/shell/sessions/')
     ) {
-      now += 4_575;
+      clock.advance(4_575);
       events.push('delete');
       const sessionId = decodeURIComponent(
         url.pathname.slice('/v1/shell/sessions/'.length),
@@ -2223,15 +2336,15 @@ await test('default partial recovery fits the simulated slow REST budget in one 
   };
   const releaseNonces = ['budgetinjector1', 'budgetmain00001'];
   let settlement;
-  try {
-    Date.now = () => now;
+  await withManualReleaseClock(10_000_000, async (manualClock) => {
+    clock = manualClock;
     settlement = await mod.releaseAioTerminalGuestPairExact({
       fetch,
       baseUrl: 'http://aio.test',
       taskId: 'budget-recovery',
       pair,
       socketFactory: (_url, role) => {
-        now += role === 'injector' ? 500 : 2_000;
+        clock.advance(role === 'injector' ? 500 : 2_000);
         return new FakeReconnectSocket(
           role,
           pair,
@@ -2240,12 +2353,10 @@ await test('default partial recovery fits the simulated slow REST budget in one 
       },
       markerFactory: () => releaseNonces.shift(),
     });
-  } finally {
-    Date.now = originalDateNow;
-  }
+  });
   assert.deepEqual(settlement, { kind: 'confirmed', cause: null });
-  assert.equal(now - startedAt, 11_925);
-  assert.ok(now - startedAt < 20_000);
+  assert.equal(clock.elapsed(), 11_925);
+  assert.ok(clock.elapsed() < 20_000);
   assert.deepEqual(events, ['create', 'exec-1', 'exec-2', 'delete']);
   assert.deepEqual(execSessionIds, [controlSessionId, controlSessionId]);
   assert.equal(proofCommands.length, 2);
@@ -2259,25 +2370,33 @@ await test('default partial recovery fits the simulated slow REST budget in one 
 });
 
 await test('exact reconnect release shares one deadline across every phase', async () => {
-  const harness = createExactReleaseHarness({ verificationDelayMs: 55 });
-  const keepAlive = setTimeout(() => undefined, 80);
-  const startedAt = Date.now();
-  const settlement = await mod.releaseAioTerminalGuestPairExact({
-    fetch: harness.fetch,
-    baseUrl: 'http://aio.test',
-    taskId: 'release-task',
-    pair: harness.pair,
-    timeoutMs: 40,
-    socketFactory: harness.socketFactory,
-    markerFactory: () => 'deadline00000001',
+  const harness = createExactReleaseHarness();
+  await withManualReleaseClock(50_000_000, async (clock) => {
+    const fetch = async (input, init) => {
+      // The REST proof spends a simulated 55ms of the shared 40ms budget on
+      // the injected clock, so the single-deadline overrun is decided by
+      // deadline arithmetic instead of a real slow response racing the host.
+      if (new URL(String(input)).pathname === '/v1/shell/exec') {
+        clock.advance(55);
+      }
+      return harness.fetch(input, init);
+    };
+    const settlement = await mod.releaseAioTerminalGuestPairExact({
+      fetch,
+      baseUrl: 'http://aio.test',
+      taskId: 'release-task',
+      pair: harness.pair,
+      timeoutMs: 40,
+      socketFactory: harness.socketFactory,
+      markerFactory: () => 'deadline00000001',
+    });
+    const elapsedMs = clock.elapsed();
+    assert.deepEqual(settlement, {
+      kind: 'indeterminate',
+      cause: 'timeout',
+    });
+    assert.ok(elapsedMs >= 30 && elapsedMs < 75, `elapsed=${elapsedMs}`);
   });
-  const elapsedMs = Date.now() - startedAt;
-  clearTimeout(keepAlive);
-  assert.deepEqual(settlement, {
-    kind: 'indeterminate',
-    cause: 'timeout',
-  });
-  assert.ok(elapsedMs >= 30 && elapsedMs < 75, `elapsed=${elapsedMs}`);
   assert.deepEqual(harness.sockets.map((socket) => socket.role), [
     'injector',
     'main',
@@ -2732,23 +2851,28 @@ await test('serialized stale release retains one bounded cleanup deadline', asyn
     records: new Map(records.map((record) => [record.path, record.content])),
   });
   const releaseTimeouts = [];
-  const startedAt = Date.now();
-  const settlement = await mod.sweepAioStaleTerminalSessions({
-    fetch: journal.fetch,
-    baseUrl: 'http://aio.test',
-    scope: scope(),
-    processFingerprint: 'a'.repeat(64),
-    timing: {
-      exactReleaseTimeoutMs: 12,
-      cleanupRetryDelayMs: 0,
-    },
-    guestPairReleaser: async ({ timeoutMs }) => {
-      releaseTimeouts.push(timeoutMs);
-      await new Promise((resolve) => setTimeout(resolve, timeoutMs + 2));
-      return { kind: 'confirmed', cause: null };
-    },
+  let settlement;
+  let elapsedMs;
+  await withManualReleaseClock(60_000_000, async (clock) => {
+    settlement = await mod.sweepAioStaleTerminalSessions({
+      fetch: journal.fetch,
+      baseUrl: 'http://aio.test',
+      scope: scope(),
+      processFingerprint: 'a'.repeat(64),
+      timing: {
+        exactReleaseTimeoutMs: 12,
+        cleanupRetryDelayMs: 0,
+      },
+      guestPairReleaser: async ({ timeoutMs }) => {
+        releaseTimeouts.push(timeoutMs);
+        // Overspending the granted slice on the injected clock exhausts the
+        // one bounded cleanup deadline deterministically.
+        clock.advance(timeoutMs + 2);
+        return { kind: 'confirmed', cause: null };
+      },
+    });
+    elapsedMs = clock.elapsed();
   });
-  const elapsedMs = Date.now() - startedAt;
   assert.equal(settlement.kind, 'indeterminate');
   assert.equal(settlement.cause, 'cleanup-unconfirmed');
   assert.equal(settlement.staleRecords, 2);
@@ -3301,16 +3425,22 @@ await test('journal-file deletion validates exact paths, bounds, base URLs, and 
     }),
   );
 
-  const startedAt = Date.now();
-  await assert.rejects(() =>
-    mod.deleteAioTerminalOwnershipRecordFilesExact({
-      fetch: async () => new Promise(() => {}),
-      baseUrl: 'http://aio.test',
-      paths: [reference.path],
-      requestTimeoutMs: 5,
-    }),
-  );
-  assert.equal(Date.now() - startedAt < 250, true);
+  await withManualReleaseClock(70_000_000, async (clock) => {
+    await assert.rejects(() =>
+      mod.deleteAioTerminalOwnershipRecordFilesExact({
+        fetch: async () => {
+          // The hanging request spends its whole bounded budget on the
+          // injected clock; the margin below no longer reads the real clock.
+          clock.advance(5);
+          return new Promise(() => {});
+        },
+        baseUrl: 'http://aio.test',
+        paths: [reference.path],
+        requestTimeoutMs: 5,
+      }),
+    );
+    assert.equal(clock.elapsed() < 250, true);
+  });
 });
 
 await test('confirmed session deletion with unconfirmed journal rm stays observable and secret-free', async () => {
