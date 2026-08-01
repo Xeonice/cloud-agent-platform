@@ -30,6 +30,10 @@ import {
   TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
   type TaskProvisioningDiagnosticsWriteGatePort,
 } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
+import {
+  DOMAIN_EVENT_BUS,
+  type DomainEventBusPort,
+} from '@/domain-events/domain-event-bus.port';
 
 /**
  * Guardrails module (integration 12.1b).
@@ -79,6 +83,15 @@ import {
         { token: TRANSCRIPT_SERVICE_TOKEN, optional: true },
         { token: TASK_PROVISIONING_DIAGNOSTIC_RECORDER, optional: true },
         { token: TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE, optional: true },
+        // add-domain-event-bus 4.2 — THIS provider is a `useFactory` with a
+        // POSITIONAL inject array, so the `@Optional()` decorator on the
+        // service's 11th constructor parameter does nothing here: Nest resolves
+        // what this array lists, in this order, and nothing else. Without this
+        // entry (and the matching factory parameter and argument below) the bus
+        // would be `undefined` on every production path while every test that
+        // constructs the service directly still passed one — publishing would be
+        // silently dead and nothing would go red.
+        { token: DOMAIN_EVENT_BUS, optional: true },
       ],
       useFactory: (
         moduleRef: ModuleRef,
@@ -90,6 +103,7 @@ import {
         transcripts?: ITranscriptCapture,
         provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort,
         provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,
+        bus?: DomainEventBusPort,
       ) =>
         new GuardrailsService(
           moduleRef,
@@ -102,6 +116,7 @@ import {
           transcripts,
           provisioningDiagnosticRecorder,
           provisioningDiagnosticWriteGate,
+          bus,
         ),
     },
     // persist-session-transcripts I.2 — re-provide the durable

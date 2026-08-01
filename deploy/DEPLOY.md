@@ -839,6 +839,51 @@ who can import can read any git repo under it.
 
 ---
 
+## 14. Registered cutover toggles (documented-only, no wiring)
+
+Refactor cutovers that change no behaviour get a **documented toggle** and
+nothing else — no runbook file, no `scripts/quick-deploy.sh` step, no compose
+edit. Registering them here is what stops them becoming branches nobody dares
+delete: every row names its default, its owner, and the change that removes it.
+
+| Variable | Default | Owner | Retirement condition |
+|---|---|---|---|
+| `CAP_DOMAIN_EVENT_PUBLISHING_ENABLED` | **publishing ON** — unset, or any unrecognised value, takes the new path | the 阶段 4 event-migration track owner: the change owner of `openspec/changes/add-domain-event-bus` and its five follow-on subscriber-migration changes — the same person who owns burning `scripts/ratchets/r11.json` to zero | Deleted by the LAST 阶段 4 change, the one that unties the `tasks` ↔ `guardrails` `forwardRef` cycle. That change removes the toggle, the composition-root branch it feeds, and this row together. |
+
+### `CAP_DOMAIN_EVENT_PUBLISHING_ENABLED` — what it does
+
+The api publishes in-process domain events (`TaskAdmitted`, `SandboxProvisioned`,
+`TaskRunStarted`, `TaskSettled`, `TaskSuperseded`) at existing lifecycle seams.
+The change that introduced them registers **zero subscribers** and removes **zero**
+existing direct calls, so with the toggle open the observable behaviour is
+unchanged — this is the "build the abstraction" step of a parallel change, not a
+behaviour switch.
+
+```bash
+# api env file (apps/api/.env, ../files/api.env, or the run-package .env)
+# Escape hatch ONLY — leave it unset in normal operation.
+CAP_DOMAIN_EVENT_PUBLISHING_ENABLED=false
+```
+
+- **Default is ON, and unset means ON.** Nothing to set at deploy time, nothing
+  to remember on upgrade. That is deliberate: the opposite shape (default OFF,
+  gated on a hand-applied attestation) is what made task-model selection fail
+  silently on every upgrade — see §11.6 for the machinery that had to be built
+  to undo it. This toggle consults **no attestation, no build identity, no
+  signature**; a boolean opens it.
+- **The escape hatch is read once, at construction.** Flipping the variable on a
+  running container changes nothing; recreate the api container to apply it.
+- **What closing it does:** the composition root simply does not bind the bus
+  provider, so every publish site short-circuits — zero publish calls, every
+  existing synchronous collaborator call still runs, and the lifecycle behaviour
+  is byte-identical to before the change. It is the same code path the api takes
+  in any deployment that never binds a bus, not a second escape-only branch.
+- **Rollback ladder:** (1) set the escape hatch and recreate `api`; (2) nothing
+  else is needed — the change persists nothing and adds no migration; (3) if you
+  want it gone entirely, roll back to the previous `CAP_VERSION` per §11.3.
+
+---
+
 ## Local dev (unaffected)
 
 ```bash

@@ -143,6 +143,13 @@ export * from './schedule.js';
 // and MCP capability parity tests.
 export * from './public-v1-operations.js';
 
+// Domain event catalog v1 (add-domain-event-bus): THE declaration of which
+// in-process domain events exist, their shared envelope, the five payload
+// schemas, the discriminated union the bus parses through, and the total
+// type→schema map. In-process/synchronous/not persisted — the catalog states
+// its own upgrade condition to an integration event.
+export * from './domain-event.js';
+
 // The exact zod instance every contracts schema is built on. Re-exported so a
 // CJS consumer (the api) can run `extendZodWithOpenApi` on the SAME class realm
 // the schemas inherit from — see ./zod-instance.ts for the ESM/CJS realm split.

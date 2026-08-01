@@ -23,6 +23,7 @@ import type {
   GitCloneSpec,
   SandboxProviderCapability,
   SandboxProvisionPlan,
+  SandboxResolvedEnvironmentMetadata,
   SandboxRunCleanupAuthorityProjection,
   SandboxWorkspaceProgressReporter,
   WorkspaceSource,
@@ -144,6 +145,43 @@ export interface InlineAdmissionOrchestratorPort {
 
   /** Stash the live connection handle the orchestrator hands to terminal teardown. */
   registerConnection(taskId: string, connection: SandboxConnection): void;
+
+  /**
+   * Publish `SandboxProvisioned` for this (legacy) provisioning path
+   * (add-domain-event-bus 4.9).
+   *
+   * Declared here rather than injecting the bus into this pipeline for two
+   * reasons. The payload must be assembled identically to the durable path's, so
+   * both go through one builder on the orchestrator side; and publishing must be
+   * unable to disturb provisioning, so it goes through the orchestrator's single
+   * swallowing publish seam. Everything this method needs is a value the caller
+   * already holds — no lookup is performed to satisfy it.
+   *
+   * Returns `void` and never throws: it is an observation, not a step.
+   */
+  publishSandboxProvisioned(source: {
+    readonly taskId: string;
+    readonly connection: SandboxConnection;
+    readonly selectedRun: SelectedSandboxRun | null | undefined;
+    readonly plan: {
+      readonly runtimeId: string;
+      readonly executionMode: 'interactive-pty' | 'headless-exec';
+      readonly environment?: SandboxResolvedEnvironmentMetadata | null;
+    };
+  }): void;
+
+  /**
+   * Publish the run-level `TaskSuperseded` for ONE pipeline run
+   * (add-domain-event-bus 4.10).
+   *
+   * Called at most once per run, from the run's single exit, never from the
+   * individual internal supersession checks — a run that passes several of those
+   * observed ONE supersession, and publishing per check would report a task as
+   * superseded up to nine times. `fenceToken` is the transition token this run
+   * was fenced with: the losing side's own token, which is all an observer here
+   * holds. No superseder identity is passed because no observation point has one.
+   */
+  publishRunSupersession(taskId: string, fenceToken: string): void;
 
   /** Whether a terminal gateway has been resolved yet. */
   hasTerminalGateway(): boolean;

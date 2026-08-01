@@ -68,7 +68,7 @@ function fixtureManifest(overrides = {}) {
     contexts: {
       'task-execution': { directories: ['tasks'] },
       'sandbox-provisioning': { directories: ['sandbox'] },
-      'platform-ops': { directories: ['prisma'] },
+      'platform-ops': { directories: ['prisma', 'domain-events'] },
     },
     crossContextRules: {
       machineReadable: {
@@ -76,6 +76,10 @@ function fixtureManifest(overrides = {}) {
         compositionFileSuffix: '.module.ts',
         compositionRootFiles: ['main.ts', 'app.module.ts'],
         sharedKernelDirectories: ['prisma'],
+        domainEventSubscription: {
+          busDirectory: 'domain-events',
+          busPortFiles: ['domain-events/domain-event-bus.port.ts'],
+        },
       },
     },
     prismaPlacement: {
@@ -137,6 +141,43 @@ test('a cross-context import of another context internals is reported', () => {
   assert.match(violations[0].file, /tasks\/tasks\.service\.ts$/);
   assert.match(violations[0].detail, /@\/sandbox\/sandbox\.service/);
   assert.equal(violations[0].line, 1);
+});
+
+// ------------------------------------------- domain-event subscription (归因)
+test('a subscriber reaching the bus through its declared port is legal and unreported', () => {
+  const found = scan({
+    'tasks/tasks.service.ts':
+      "import { DOMAIN_EVENT_BUS } from '@/domain-events/domain-event-bus.port';\n",
+    'domain-events/domain-event-bus.port.ts': 'export const DOMAIN_EVENT_BUS = 1;\n',
+  });
+  assert.deepEqual(kinds(found, 'cross-context-import'), []);
+});
+
+test('a subscriber bypassing the bus port is attributed as a domain-event subscription', () => {
+  const found = scan({
+    'tasks/tasks.service.ts':
+      "import { Bus } from '@/domain-events/domain-event-bus.service';\n",
+    'domain-events/domain-event-bus.service.ts': 'export const Bus = 1;\n',
+  });
+  const violations = kinds(found, 'cross-context-import');
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].detail, /domain-event subscription/);
+  assert.match(violations[0].detail, /domain-events\/domain-event-bus\.port\.ts/);
+  // Attribution never widens the legal set: this is still a violation, and the
+  // legal forms it names are the same three.
+  assert.match(violations[0].detail, /legal forms are still/);
+});
+
+test('the subscription encoding is attribution only — a port file that widens the rule is rejected', () => {
+  const widened = fixtureManifest();
+  widened.crossContextRules.machineReadable.domainEventSubscription.busPortFiles = [
+    'domain-events/domain-event-bus.ts',
+  ];
+  const result = gate({ 'tasks/tasks.service.ts': 'export const S = 1;\n' }, {
+    manifest: widened,
+  });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.problems.join('\n'), /busPortFiles must each end with/);
 });
 
 test('the three legal cross-context forms are not reported', () => {
@@ -262,6 +303,16 @@ test('a manifest missing a declaration block fails closed rather than dropping a
   });
   assert.equal(second.exitCode, 1);
   assert.match(second.problems.join('\n'), /fileClassification/);
+
+  // The reserved slot, once filled, is a declaration like any other: dropping
+  // it must be loud, not a quietly unattributed subscription.
+  const withoutSubscription = fixtureManifest();
+  delete withoutSubscription.crossContextRules.machineReadable.domainEventSubscription;
+  const third = gate({ 'tasks/tasks.service.ts': 'export const S = 1;\n' }, {
+    manifest: withoutSubscription,
+  });
+  assert.equal(third.exitCode, 1);
+  assert.match(third.problems.join('\n'), /domainEventSubscription/);
 });
 
 test('a directory belonging to no context fails closed instead of grading as clean', () => {
@@ -391,6 +442,14 @@ test('the real manifest carries every block this gate interprets', () => {
   assert.ok(manifest.layers.fileClassification.rules.length > 0);
   assert.ok(manifest.crossContextRules.machineReadable.sharedKernelDirectories.length > 0);
   assert.ok(manifest.prismaPlacement.symbols.includes('@prisma/client'));
+  const subscription = manifest.crossContextRules.machineReadable.domainEventSubscription;
+  assert.ok(subscription.busPortFiles.length > 0);
+  // The bus directory is claimed by a context in the SAME manifest — an
+  // attribution pointing at an unmapped directory would attribute nothing.
+  const claimed = Object.values(manifest.contexts).some((context) =>
+    (context.directories ?? []).includes(subscription.busDirectory),
+  );
+  assert.equal(claimed, true, 'the declared bus directory must belong to a context');
 });
 
 test('v1 is neither wrapped nor replaced, and keeps its own paired script and CI step', () => {

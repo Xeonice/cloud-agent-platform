@@ -18,6 +18,7 @@ import { RuntimesModule } from './runtimes/runtimes.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
+import { DomainEventsModule } from './domain-events/domain-events.module';
 import { SettingsModule } from './settings/settings.module';
 import { ForgeModule } from './forge/forge.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
@@ -117,6 +118,18 @@ import { ConsoleBuildGuard } from './auth/console-build.guard';
     // correlation + secret redaction. First so it backs every other module's
     // Logger; main.ts promotes it to the app logger via `useLogger`.
     LoggerModule.forRoot(buildLoggerOptions()),
+    // add-domain-event-bus 4.11 — the in-process domain event bus. `@Global()`,
+    // like `AuditModule`'s recorder: publishers (guardrails, tasks, the inline
+    // pipeline through its orchestrator) inject it BY TOKEN with `@Optional()`
+    // and never import this module, so binding it here adds no edge to the
+    // module graph and cannot create a cycle.
+    //
+    // The cutover lives INSIDE this module: it evaluates
+    // `CAP_DOMAIN_EVENT_PUBLISHING_ENABLED` once while loading and, when closed,
+    // simply omits the bus provider. Rollback then runs the same
+    // `this.bus === undefined` path the pre-change tests already cover, rather
+    // than a rollback-only branch nothing exercises.
+    DomainEventsModule,
     PrismaModule,
     TaskProvisioningDiagnosticsModule,
     CredsModule,

@@ -168,8 +168,32 @@ export class InlineAdmissionPipeline implements InlineAdmissionPort {
    * Provision the sandbox and start the run, synchronously, inside the accepting
    * request. Returns the same transition result the orchestrator would have
    * returned when this code was inlined in `startRunningAfterCapacity`.
+   *
+   * THE RUN-LEVEL SUPERSESSION EXIT (add-domain-event-bus 4.10). The provisioning
+   * body below returns `superseded` from nine different early-return points, and
+   * one run can pass several of them — the fence is re-checked before and after
+   * every await. Publishing at each check would report a single supersession up
+   * to nine times, so the body stays untouched and this one wrapper turns "this
+   * run ended superseded" into exactly one event. Any other outcome publishes
+   * nothing.
    */
   async run(
+    taskId: string,
+    transitionToken: string,
+    diagnosticAttempt?: BegunTaskProvisioningDiagnosticObserver,
+  ): Promise<AdmissionTransitionResult | 'failed'> {
+    const outcome = await this.runProvisioning(
+      taskId,
+      transitionToken,
+      diagnosticAttempt,
+    );
+    if (outcome === 'superseded') {
+      this.orchestrator.publishRunSupersession(taskId, transitionToken);
+    }
+    return outcome;
+  }
+
+  private async runProvisioning(
     taskId: string,
     transitionToken: string,
     diagnosticAttempt?: BegunTaskProvisioningDiagnosticObserver,
@@ -449,6 +473,22 @@ export class InlineAdmissionPipeline implements InlineAdmissionPort {
           this.orchestrator.clearAdmissionRuntime(taskId);
           return 'superseded';
         }
+        // Legacy `SandboxProvisioned` (add-domain-event-bus 4.9), 2 of the 2
+        // provisioning paths. Deliberately BELOW both post-provision fence
+        // checks above: each of those discards the sandbox it just created, and
+        // an attempt whose sandbox is torn down as superseded or terminal
+        // provisioned nothing anybody may observe. Publishing next to
+        // `registerConnection` would have been the obvious placement and would
+        // have announced sandboxes that no longer exist.
+        //
+        // Both arguments are values this seam already holds — the connection it
+        // registered and the selected run it already read. No new lookup.
+        this.orchestrator.publishSandboxProvisioned({
+          taskId,
+          connection,
+          selectedRun,
+          plan: provisionPlan,
+        });
         // 4.2 — hand the handle through to the terminal gateway so it dials the
         // sandbox terminal OUT and registers the session (replacing the previous
         // dial-back-registers-the-session flow). Idempotent on the gateway side;

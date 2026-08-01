@@ -40,10 +40,16 @@ import {
   taskResponseSchema,
   type CreateTaskBody,
   type Deliver,
+  type DomainEvent,
+  type DomainEventType,
   type Runtime,
   type TaskResponse,
   type TaskStatus,
 } from '@cap-console/contracts';
+import {
+  DOMAIN_EVENT_BUS,
+  type DomainEventBusPort,
+} from '@/domain-events/domain-event-bus.port';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
@@ -523,7 +529,54 @@ export class TasksService
     @Optional()
     @Inject(TASK_ADMISSION_CANCELLATION_TOKEN)
     private readonly taskAdmissionCancellation?: TaskAdmissionCancellationPort,
+    /**
+     * The in-process domain event bus (add-domain-event-bus 4.7/4.8). Trailing
+     * and optional, like every collaborator above it: the specs that construct
+     * this service positionally pass only `db.prisma()`, so a new trailing
+     * optional parameter reaches none of them.
+     *
+     * Unlike `GuardrailsService`, this provider is an ordinary class provider,
+     * so `@Optional()` here is the whole wiring — `tasks.module.ts` needs no
+     * edit. When the cutover toggle is closed the bus provider is simply not
+     * bound and every publish below short-circuits.
+     */
+    @Optional()
+    @Inject(DOMAIN_EVENT_BUS)
+    private readonly bus?: DomainEventBusPort,
   ) {}
+
+  /**
+   * THE publish seam for this service (add-domain-event-bus 4.7/4.8).
+   *
+   * `this.bus?.` covers "no bus bound"; the `try` covers "bound but throwing".
+   * An admission decision, a capacity reservation, or a lifecycle CAS may not be
+   * failed by an observer of it, so a publish error is logged and swallowed
+   * here — the reservation has already committed by the time this runs.
+   */
+  private publishDomainEvent(event: DomainEvent): void {
+    try {
+      this.bus?.publish(event);
+    } catch (error) {
+      this.logger.warn(
+        `publishing domain event ${event.type} for task ${event.taskId} failed (lifecycle unaffected): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** The envelope every published event carries; `eventId` is fresh per call. */
+  private domainEventEnvelope<TType extends DomainEventType>(
+    type: TType,
+    taskId: string,
+  ): { eventId: string; occurredAt: string; type: TType; taskId: string } {
+    return {
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      type,
+      taskId,
+    };
+  }
 
   /**
    * Ordered startup coordinator for legacy recovery and durable admission.
@@ -2131,6 +2184,36 @@ export class TasksService
           request.userId,
         ),
       );
+      // Durable `TaskAdmitted` (add-domain-event-bus 4.7), 1 of the 2 admission
+      // paths. Gated on exactly the condition the audit above uses — a COMMITTED
+      // transition — so the event and the audit trail can never disagree about
+      // whether this reservation admitted anything. A reservation that found the
+      // task already at its target (`transitioned: false`) admitted nothing here
+      // and publishes nothing, and neither does a refused or superseded one.
+      //
+      // `fenceToken` is the transition token minted FOR THIS RESERVATION, never
+      // `request.leaseToken`: the lease token belongs to the admission-work
+      // lease's lifetime, not to this transition, and substituting it would make
+      // this publisher silently mean something different from the legacy one.
+      this.publishDomainEvent({
+        ...this.domainEventEnvelope('task.admitted', request.taskId),
+        admissionMode: 'durable',
+        outcome: result.status,
+        fenceToken: request.transitionToken,
+      });
+    }
+    if (result.outcome === 'superseded') {
+      // Durable `TaskSuperseded` (add-domain-event-bus 4.8), observation point 1
+      // of 3. Every route to this outcome — no authority row, a later lifecycle
+      // status, or a CAS that changed no rows — learned about the supersession
+      // the same way: something else won and this reservation was not it. The
+      // payload therefore carries only what the LOSER holds. There is no
+      // superseder field because no branch above has a handle on the winner.
+      this.publishDomainEvent({
+        ...this.domainEventEnvelope('task.superseded', request.taskId),
+        observationPoint: 'durable_capacity_reservation',
+        fenceToken: request.transitionToken,
+      });
     }
     return result;
   }
@@ -2390,6 +2473,31 @@ export class TasksService
     );
   }
 
+  /**
+   * Record that THIS attempt observed itself superseded, and report it
+   * (add-domain-event-bus 4.8) — observation point 2 of 3.
+   *
+   * Written as one method with one return so that both routes to `superseded`
+   * inside {@link performAdmissionTransition} publish identically and, because
+   * each is a `return`, at most once per call. `observedStatus` is the lifecycle
+   * state this attempt actually read — the most specific true thing an observer
+   * of a lost race holds. Still no superseder: a status is not an identity, and
+   * this code never learns who won.
+   */
+  private observeAdmissionSupersession(
+    id: string,
+    transitionToken: string,
+    observedStatus: TaskStatus,
+  ): 'superseded' {
+    this.publishDomainEvent({
+      ...this.domainEventEnvelope('task.superseded', id),
+      observationPoint: 'durable_admission_transition',
+      fenceToken: transitionToken,
+      observedStatus,
+    });
+    return 'superseded';
+  }
+
   private async performAdmissionTransition(
     id: string,
     next: Extract<TaskStatus, 'queued' | 'running'>,
@@ -2431,7 +2539,10 @@ export class TasksService
 
       if (persistedToken === transitionToken) {
         await this.recordAudit(() => this.audit?.recordTransition(id, next, userId));
-        return current === next ? 'transitioned' : 'superseded';
+        if (current === next) return 'transitioned';
+        // Our token IS the persisted one, yet the task has moved on: this
+        // attempt's transition happened and was then overtaken.
+        return this.observeAdmissionSupersession(id, transitionToken, current);
       }
       if (current === next) return 'already-transitioned';
 
@@ -2442,7 +2553,9 @@ export class TasksService
         next === 'queued'
           ? current === 'pending'
           : current === 'pending' || current === 'queued';
-      if (!eligible) return 'superseded';
+      if (!eligible) {
+        return this.observeAdmissionSupersession(id, transitionToken, current);
+      }
       assertTransition(current, next);
 
       let changed: { count: number };

@@ -8,10 +8,23 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type {
+  DomainEvent,
+  DomainEventEnvironmentSnapshot,
+  DomainEventProviderFamily,
+  DomainEventSandboxReference,
+  DomainEventType,
   TaskProvisioningDiagnosticCleanupSummary,
   TaskProvisioningStage,
   TaskStatus,
 } from '@cap-console/contracts';
+import {
+  SANDBOX_PROVIDER_FAMILIES,
+  TERMINAL_TASK_STATUSES,
+} from '@cap-console/contracts';
+import {
+  DOMAIN_EVENT_BUS,
+  type DomainEventBusPort,
+} from '@/domain-events/domain-event-bus.port';
 import {
   AdmissionTransitionIndeterminateError,
   TASK_OPERATIONS,
@@ -50,6 +63,7 @@ import {
   type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
   type SandboxRunCleanupAuthorityProjection,
+  type SandboxResolvedEnvironmentMetadata,
   type SandboxProviderCapability,
   type SandboxWorkspaceProgressEvent,
   type SandboxWorkspaceProgressReporter,
@@ -353,6 +367,102 @@ export interface GuardrailsReadoptOptions {
  */
 export type GuardrailsReadoptResult = 'attached' | 'absent' | 'superseded';
 
+/**
+ * What either provisioning path holds when it publishes `SandboxProvisioned`.
+ *
+ * Structural on purpose: the durable seam passes the plan it built and the run
+ * it re-read strictly, the legacy pipeline passes the same two values through
+ * its orchestrator port. Neither has to fetch anything to satisfy this shape,
+ * which is the "no new data pipeline" rule expressed as a type.
+ */
+export interface SandboxProvisionedEventSource {
+  readonly taskId: string;
+  readonly connection: SandboxConnection;
+  readonly selectedRun: SelectedSandboxRun | null | undefined;
+  readonly plan: {
+    readonly runtimeId: string;
+    readonly executionMode: 'interactive-pty' | 'headless-exec';
+    readonly environment?: SandboxResolvedEnvironmentMetadata | null;
+  };
+}
+
+/**
+ * ── `SandboxProvisioned` payload builders (add-domain-event-bus 4.5 / 4.9) ────
+ *
+ * ONE copy, shared by BOTH provisioning paths — the durable one publishes from
+ * this file directly, the legacy pipeline publishes through
+ * `publishSandboxProvisioned` on its orchestrator port. Two hand-maintained
+ * copies is precisely the drift this payload exists to prevent: the whole point
+ * of the event is that a subscriber cannot tell which path provisioned the
+ * sandbox except by reading `admissionMode`.
+ *
+ * All three are pure functions of values the seam already holds. No provider
+ * call, no database read, no resolver — the requirement, written as code.
+ */
+function domainEventProviderFamily(
+  source: SandboxProvisionedEventSource,
+): DomainEventProviderFamily {
+  const observed =
+    source.selectedRun?.environment?.providerFamily ??
+    source.plan.environment?.providerFamily;
+  // `SandboxEnvironmentProviderFamily` is deliberately open (a third party may
+  // register a family this build has never heard of) while the event vocabulary
+  // is closed. Narrowing THROUGH the single declaration keeps the two from
+  // drifting and, more importantly, keeps an unknown family from failing
+  // validation and dropping an otherwise perfectly good event: `unknown` is the
+  // honest answer, and the schema admits it for exactly this reason.
+  return (SANDBOX_PROVIDER_FAMILIES as readonly string[]).includes(
+    observed as string,
+  )
+    ? (observed as DomainEventProviderFamily)
+    : 'unknown';
+}
+
+function domainEventSandboxReference(
+  source: SandboxProvisionedEventSource,
+): DomainEventSandboxReference {
+  return {
+    baseUrl: source.connection.baseUrl,
+    wsUrl: source.connection.wsUrl,
+    // Optional in the schema because the legacy seam's selected-run lookup is
+    // allowed to come back empty; the connection above always exists at both
+    // publish points.
+    ...(source.selectedRun?.providerId === undefined
+      ? {}
+      : { providerId: source.selectedRun.providerId }),
+    ...(source.selectedRun?.providerSandboxId === undefined
+      ? {}
+      : { providerSandboxId: source.selectedRun.providerSandboxId }),
+  };
+}
+
+function domainEventEnvironmentSnapshot(
+  source: SandboxProvisionedEventSource,
+): DomainEventEnvironmentSnapshot {
+  const environment = source.plan.environment ?? undefined;
+  return {
+    // Required: both paths hold them unconditionally as provision-context fields.
+    runtimeId: source.plan.runtimeId,
+    executionMode: source.plan.executionMode,
+    // Optional: the pinned environment exists only for an explicit model intent,
+    // so a runtime-default task legitimately carries none of these.
+    ...(environment?.environmentId === undefined
+      ? {}
+      : { environmentId: environment.environmentId }),
+    ...(environment?.name === undefined ? {} : { name: environment.name }),
+    ...(environment?.sourceKind === undefined
+      ? {}
+      : { sourceKind: environment.sourceKind }),
+    ...(environment?.sourceRef === undefined
+      ? {}
+      : { sourceRef: environment.sourceRef }),
+    ...(environment?.digest === undefined ? {} : { digest: environment.digest }),
+    ...(environment?.checksum === undefined
+      ? {}
+      : { checksum: environment.checksum }),
+  };
+}
+
 @Injectable()
 export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(GuardrailsService.name);
@@ -545,6 +655,24 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     @Optional()
     @Inject(TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE)
     private readonly provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,
+    /**
+     * The in-process domain event bus (add-domain-event-bus D12). ELEVENTH and
+     * LAST on purpose: nine specs outside this directory construct this service
+     * positionally and pass only the leading arguments, so anything but a
+     * trailing optional parameter would break them — and not breaking them IS
+     * the characterization baseline.
+     *
+     * Optional in the strongest sense: when the cutover toggle is closed the
+     * composition root does not bind the bus provider at all, so production
+     * rollback and those nine specs run the SAME `this.bus === undefined` path.
+     * Every publish site therefore reads `this.bus?.publish(...)` through
+     * {@link publishDomainEvent}, which additionally swallows a throwing bus so
+     * no lifecycle transition, teardown, or slot release can ever be failed by
+     * an observer.
+     */
+    @Optional()
+    @Inject(DOMAIN_EVENT_BUS)
+    private readonly bus?: DomainEventBusPort,
   ) {
 
     // The inline pipeline's whole coupling to this orchestrator, written out
@@ -576,6 +704,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           this.buildWorkspaceProgressChain(options),
         registerConnection: (taskId, connection) => {
           this.connections.set(taskId, connection);
+        },
+        // add-domain-event-bus 4.9/4.10 — the pipeline publishes THROUGH this
+        // adapter rather than holding the bus itself. That keeps one error
+        // boundary and one payload builder for both provisioning paths, and it
+        // keeps the pipeline's dependency list honest: the bus stays part of the
+        // coupling written out here, not a new import in that directory.
+        publishSandboxProvisioned: (source) =>
+          this.publishSandboxProvisioned('legacy', source),
+        publishRunSupersession: (taskId, fenceToken) => {
+          this.publishDomainEvent({
+            ...this.domainEventEnvelope('task.superseded', taskId),
+            observationPoint: 'inline_pipeline_run',
+            fenceToken,
+          });
         },
         hasTerminalGateway: () => this.gateway !== undefined,
         openTerminalSession: (connection, selectedRun) => {
@@ -689,6 +831,73 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   setMaxConcurrentTasks(maxConcurrentTasks: number): void {
     this.semaphore.setMaxConcurrentTasks(maxConcurrentTasks);
+  }
+
+  /**
+   * THE publish seam for this service and for the inline pipeline it owns
+   * (add-domain-event-bus 4.2).
+   *
+   * Two guarantees, both load-bearing:
+   *  - `this.bus?.` — with no bus bound (cutover closed, or the positional
+   *    construction used by the nine out-of-directory specs) this is a no-op
+   *    that touches nothing.
+   *  - the `try` — the bus contract says `publish` does not throw, but a
+   *    lifecycle transition may not depend on an observer keeping its contract.
+   *    A throwing bus is logged and swallowed here, so the terminal transition,
+   *    the teardown, the runner-minutes close and the slot release all proceed
+   *    exactly as they did before this change.
+   *
+   * Being synchronous and non-throwing is also what makes it safe to call from
+   * inside the readoption commit window, which forbids `await` between its final
+   * terminal check and the committed restore.
+   */
+  private publishDomainEvent(event: DomainEvent): void {
+    try {
+      this.bus?.publish(event);
+    } catch (error) {
+      this.logger.warn(
+        `publishing domain event ${event.type} for task ${event.taskId} failed (lifecycle unaffected): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * THE `SandboxProvisioned` publish, shared by both provisioning paths
+   * (add-domain-event-bus 4.5 / 4.9).
+   *
+   * The durable path calls it inline; the legacy inline pipeline calls it
+   * through its orchestrator port, which is that pipeline's single declared
+   * coupling surface. Routing both through one method is what makes the two
+   * paths' payloads identical by construction rather than by review — a
+   * subscriber must not be able to tell the paths apart except by reading
+   * `admissionMode`.
+   */
+  private publishSandboxProvisioned(
+    admissionMode: 'durable' | 'legacy',
+    source: SandboxProvisionedEventSource,
+  ): void {
+    this.publishDomainEvent({
+      ...this.domainEventEnvelope('sandbox.provisioned', source.taskId),
+      admissionMode,
+      providerFamily: domainEventProviderFamily(source),
+      sandbox: domainEventSandboxReference(source),
+      environment: domainEventEnvironmentSnapshot(source),
+    });
+  }
+
+  /** The envelope every published event carries; `eventId` is fresh per call. */
+  private domainEventEnvelope<TType extends DomainEventType>(
+    type: TType,
+    taskId: string,
+  ): { eventId: string; occurredAt: string; type: TType; taskId: string } {
+    return {
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      type,
+      taskId,
+    };
   }
 
   /**
@@ -1039,6 +1248,23 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       await lease.authorize();
 
       this.connections.set(taskId, connection);
+      // Durable `SandboxProvisioned` (add-domain-event-bus 4.5), 1 of the 2
+      // provisioning paths. Ordering is the requirement, not an accident: it is
+      // published only after `provision(...)` returned, after the ownership
+      // re-verification above proved this attempt still holds the fence, and
+      // after the connection was registered. A provision that throws, is
+      // cancelled, unwinds for a detaching transfer, or loses that re-check
+      // never reaches this line, so those attempts publish nothing.
+      //
+      // Every value comes from what this seam ALREADY holds — the provision plan
+      // it just built and the selected run it just re-read. No new provider call,
+      // no new database read, no new resolver.
+      this.publishSandboxProvisioned('durable', {
+        taskId,
+        connection,
+        selectedRun,
+        plan: provisionPlan,
+      });
       await lease.checkpoint('agent_launch');
       await lease.authorize();
       const gateway = this.gateway;
@@ -1388,15 +1614,36 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     params: GuardrailParams,
   ): Promise<'running' | 'queued'> {
     const outcome = this.semaphore.offer(taskId);
+    // The token this admission is fenced with, minted here so the publish below
+    // can carry the SAME one the transition used (D10).
+    const transitionToken = randomUUID();
 
     if (outcome === 'running') {
-      const started = await this.startRunning(taskId, params);
+      const started = await this.startRunning(taskId, params, transitionToken);
       if (started === 'failed') {
         this.semaphore.release(taskId);
         throw new Error(`task ${taskId} could not transition to running`);
       }
       if (started === 'already-transitioned' || started === 'superseded') {
         this.semaphore.release(taskId);
+      }
+      // Legacy `TaskAdmitted` (add-domain-event-bus 4.6), 1 of the 2 admission
+      // paths. Published only for a transition THIS call committed: a superseded
+      // attempt, or one another actor had already transitioned, admitted nothing
+      // here and publishing for it would fabricate an admission — the same rule
+      // the durable publisher applies to its own reservation, so the two
+      // publishers cannot disagree about what `TaskAdmitted` means.
+      //
+      // Once per admission, not once per caller: this runs inside the untracked
+      // admission that `admit()` stores in `admissionsInFlight`, so concurrent
+      // callers joining that promise publish nothing of their own.
+      if (started === 'transitioned') {
+        this.publishDomainEvent({
+          ...this.domainEventEnvelope('task.admitted', taskId),
+          admissionMode: 'legacy',
+          outcome: 'running',
+          fenceToken: transitionToken,
+        });
       }
     } else {
       // Park the guardrail params so they arm when the slot frees and this queued
@@ -1412,6 +1659,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         taskId,
         'queued',
         params.userId,
+        transitionToken,
       );
       if (queuedTransition === 'failed') {
         this.pendingGuardrails.delete(taskId);
@@ -1422,6 +1670,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         this.pendingGuardrails.delete(taskId);
         this.semaphore.release(taskId);
         throw new Error(`task ${taskId} queued admission was superseded`);
+      }
+      // The queued half of the same legacy publish point, under the same
+      // committed-only rule as the running half above.
+      if (queuedTransition === 'transitioned') {
+        this.publishDomainEvent({
+          ...this.domainEventEnvelope('task.admitted', taskId),
+          admissionMode: 'legacy',
+          outcome: 'queued',
+          fenceToken: transitionToken,
+        });
       }
     }
     return outcome;
@@ -1564,6 +1822,17 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
       this.connections.set(taskId, connection);
       this.runnerMinutes.recordStart(taskId);
+      // Run-start publish point 1 of 3 (add-domain-event-bus 4.3). Adjacent to
+      // the recordStart above, which is neither replaced nor moved. NO
+      // `admissionMode`: readoption restores a run after a restart and genuinely
+      // does not know which admission path originally admitted it — `startPoint`
+      // already says where this run start came from, and guessing the mode would
+      // be fabricated data. Synchronous and non-throwing, so it does not violate
+      // the no-await rule this commit window runs under.
+      this.publishDomainEvent({
+        ...this.domainEventEnvelope('task.run_started', taskId),
+        startPoint: 'readoption',
+      });
       // Recovery accounting intentionally ignores a lowered ceiling and never
       // fires the fresh-admission callback.
       this.semaphore.restoreRunning(taskId);
@@ -2031,11 +2300,29 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * teardown). Idempotent.
    */
   fenceTerminal(taskId: string, status?: TaskStatus): void {
+    // THE one `TaskSettled` seam (add-domain-event-bus 4.4). Computed BEFORE the
+    // status is recorded below, so this method's existing idempotency extends to
+    // publishing: a repeat fence with the same status re-runs the fence but
+    // publishes nothing. Callers that fence without a status (teardown-only
+    // paths) settle nothing and therefore publish nothing.
+    // Narrowed through TERMINAL_TASK_STATUSES — the SAME declaration the event
+    // schema's `status` is built from — so the publish guard and the schema
+    // cannot disagree about what "terminal" means, and no cast is needed.
+    const settledStatus = TERMINAL_TASK_STATUSES.find(
+      (terminal) =>
+        terminal === status && this.terminalTaskStatuses.get(taskId) !== status,
+    );
     this.terminalTasks.add(taskId);
     if (status !== undefined) this.terminalTaskStatuses.set(taskId, status);
     this.inlineAdmission.abortProvisioning(taskId);
     this.clearTimers(taskId);
     this.runnerMinutes.recordEnd(taskId);
+    if (settledStatus !== undefined) {
+      this.publishDomainEvent({
+        ...this.domainEventEnvelope('task.settled', taskId),
+        status: settledStatus,
+      });
+    }
   }
 
   async onTerminal(taskId: string, status?: TaskStatus): Promise<void> {
@@ -2559,8 +2846,15 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async startRunning(
     taskId: string,
     params: GuardrailParams = {},
+    /*
+     * The token this admission is fenced with. Defaulted so the queued-promotion
+     * caller is unchanged; `admitUntracked` passes one in because it must PUBLISH
+     * that token on `TaskAdmitted` (add-domain-event-bus 4.6/D10) and the
+     * canonical fence token is the token that actually fenced the transition —
+     * not a second one minted for the event.
+     */
+    transitionToken = randomUUID(),
   ): Promise<AdmissionTransitionResult | 'failed'> {
-    const transitionToken = randomUUID();
     const transition = await this.safeAdmissionTransition(
       taskId,
       'running',
@@ -2621,6 +2915,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
     // Begin the runner-minutes interval the moment the task enters RUNNING (5.4).
     this.runnerMinutes.recordStart(taskId);
+    // Run-start publish point 2 of 3 (add-domain-event-bus 4.3): the legacy
+    // inline path. Adjacent to the recordStart above, which is neither replaced
+    // nor moved. This seam knows its admission path statically.
+    this.publishDomainEvent({
+      ...this.domainEventEnvelope('task.run_started', taskId),
+      startPoint: 'legacy_capacity',
+      admissionMode: 'legacy',
+    });
     if (params.deadlineMs !== undefined) {
       this.deadlines.armAfter(taskId, params.deadlineMs);
     }
@@ -2944,6 +3246,19 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
 
 
+  /**
+   * Tear down the process-local runtime of a discarded admission attempt.
+   *
+   * ⚠ THE SECOND `recordEnd` IS NOT A SETTLEMENT (add-domain-event-bus 4.4, D11).
+   * This runs when a superseded or abandoned attempt gives its runtime back; the
+   * task itself usually has NO terminal status yet and will be settled later, for
+   * real, by {@link fenceTerminal}. Publishing `TaskSettled` here — the obvious
+   * "one event per recordEnd" symmetry — would fabricate a settlement for a task
+   * that is still alive, and a subsequent real settlement would then be the
+   * second event for that task. The mapping is 2 `recordEnd` call sites to 1
+   * `TaskSettled`, deliberately, and the spec carries it as a negative
+   * requirement so a later change cannot "fix" the asymmetry.
+   */
   private clearAdmissionRuntime(taskId: string): void {
     this.clearTimers(taskId);
     this.runnerMinutes.recordEnd(taskId);
@@ -2969,6 +3284,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     const idleMs = params?.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
     if (idleMs !== undefined) this.idle.start(taskId, idleMs);
     this.runnerMinutes.recordStart(taskId);
+    // Run-start publish point 3 of 3 (add-domain-event-bus 4.3): the durable
+    // path. Adjacent to the recordStart above, which is neither replaced nor
+    // moved. It sits AFTER the two `durableRuntimeArmed` early-returns above, so
+    // re-arming an already-armed task returns before reaching this line and no
+    // second event is published for that run.
+    this.publishDomainEvent({
+      ...this.domainEventEnvelope('task.run_started', taskId),
+      startPoint: 'durable_arm',
+      admissionMode: 'durable',
+    });
     if (params?.deadlineMs !== null && params?.deadlineMs !== undefined) {
       this.deadlines.armAfter(taskId, params.deadlineMs);
     }

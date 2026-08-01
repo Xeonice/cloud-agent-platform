@@ -127,6 +127,7 @@
         "metrics",
         "runner-metrics",
         "audit",
+        "domain-events",
         "mail",
         "observability",
         "settings",
@@ -138,6 +139,7 @@
       "notes": {
         "$comment": "决策7：本上下文豁免战术 DDD，保持事务脚本形态",
         "audit": "横切订阅者；阶段4后经事件订阅消费 task-execution，terminal detail 例外走显式调用",
+        "domain-events": "进程内领域事件总线（add-domain-event-bus）。归 platform-ops 而非 task-execution：总线是横切机制而非任务领域概念，与 audit/metrics/observability 同列。目录必须与代码同 commit 声明——layout v2 对无人认领目录是 exit 1，不是 finding",
         "prisma": "基础设施，全上下文可见（fan-in 127），不受跨上下文规则约束",
         "crypto": "共享内核（shared kernel），同 prisma 豁免"
       }
@@ -156,11 +158,16 @@
       "跨上下文触碰对方聚合的 Prisma 表（跨聚合写库）"
     ],
     "machineReadable": {
-      "$comment": "上面 allowed 散文的机器可读编码，零新增语义（enforce-boundaries-from-manifest）。『领域事件订阅』没有条目——阶段4之前无事件总线可判，等事件落地再补声明，不在脚本里猜。",
+      "$comment": "上面 allowed 散文的机器可读编码，零新增语义（enforce-boundaries-from-manifest）。『领域事件订阅』的槽位由 domainEventSubscription 兑现（add-domain-event-bus，阶段4事件总线落地）——它是纯归因，不放行任何形态：订阅者 import 总线依旧只经 portFileSuffix 合法，本块从不扩大合法集。",
       "portFileSuffix": ".port.ts",
       "compositionFileSuffix": ".module.ts",
       "compositionRootFiles": ["main.ts", "app.module.ts"],
-      "sharedKernelDirectories": ["prisma", "crypto", "observability"]
+      "sharedKernelDirectories": ["prisma", "crypto", "observability"],
+      "domainEventSubscription": {
+        "$comment": "『领域事件订阅』散文的机器可读编码——**纯归因，零新增放行语义**。声明总线目录与其 port 文件，闸门据此把一条跨上下文 import 判读为『领域事件订阅』（而不是笼统的 port import），并在订阅者绕开 port 直接 import 总线实现时点名这个形态。合法性仍然只由 portFileSuffix / compositionFileSuffix / sharedKernelDirectories 决定：busPortFiles 的每一项都必须以 portFileSuffix 结尾，闸门会断言这一点——一旦某个写法需要新的放行语义，那就是落位形态错了，回 design D13 重议而不是放宽本块。",
+        "busDirectory": "domain-events",
+        "busPortFiles": ["domain-events/domain-event-bus.port.ts"]
+      }
     }
   },
   "prismaPlacement": {

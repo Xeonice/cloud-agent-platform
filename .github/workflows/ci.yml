@@ -370,6 +370,16 @@ jobs:
       - name: Context layout gate (v2, report)
         run: pnpm test:context-layout-v2
 
+      # R11: the guardrails dependency budget. 阶段4 turns five cross-cutting
+      # concerns guardrails calls directly into event subscribers one change at
+      # a time; this counts, per collaborator, how many references are left and
+      # holds them to the committed baseline. Fail-closed BOTH ways — a count
+      # above baseline is a migration that added debt, a count below it is a
+      # removal whose baseline shrink did not land in the same commit, which is
+      # how a fixed violation silently regrows to a stale ceiling.
+      - name: Dependency budget ratchet (R11)
+        run: pnpm test:dependency-budget
+
       # R9: the four 工件02 D-table security seams exist and each has exactly
       # one implementation. A second `assertSafeProviderUrl` is how an SSRF gate
       # gets bypassed without anyone editing the gate.
