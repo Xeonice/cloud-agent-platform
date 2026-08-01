@@ -347,6 +347,42 @@ jobs:
       - name: Console CORS-header gate
         run: pnpm test:cors-headers
 
+      # The four gates derived from the boundary declarations
+      # (enforce-boundaries-from-manifest). They ride the EXISTING required job
+      # as new steps rather than new jobs: branch protection pins required
+      # checks by display name, so a new job needs a manual protection-rule
+      # update before it can block anything — a gate that reports and never
+      # gates. Every `name:` above and below is byte-identical to its
+      # pre-change value.
+      #
+      # This one is the disable-immune half of the two enforcement loops. ESLint
+      # reads the same manifest for the editor and pre-commit; this script reads
+      # it and walks the tree itself, so an `eslint-disable`, a dynamic
+      # `import('…')` and a `window.fetch` spelling are all still red here.
+      - name: Boundaries manifest gate
+        run: pnpm test:boundaries
+
+      # Report mode (阶段3): counts every cross-context, layer-direction and
+      # Prisma-placement finding against the committed ratchet baseline. v1
+      # (`API module layout gate` above) is untouched and keeps running — this
+      # asks the architectural questions v1 cannot, and 阶段6 flips it to
+      # blocking by burning the baseline down.
+      - name: Context layout gate (v2, report)
+        run: pnpm test:context-layout-v2
+
+      # R9: the four 工件02 D-table security seams exist and each has exactly
+      # one implementation. A second `assertSafeProviderUrl` is how an SSRF gate
+      # gets bypassed without anyone editing the gate.
+      - name: Security seam assertions
+        run: pnpm test:security-seams
+
+      # R10: the "What this subtree may depend on" section of each governed
+      # CLAUDE.md is reconciled against the manifest's A table. Agent-facing docs
+      # that quietly disagree with the enforced rules are a confident wrong
+      # answer, which is worse than no answer.
+      - name: Agent docs dependency reconciliation
+        run: pnpm test:agent-docs
+
       # App suites through the task graph. Previously three hand-named `pnpm
       # --filter` steps, which is the same allowlist failure mode one level up —
       # a new app owning tests would simply not run here. The directory filter

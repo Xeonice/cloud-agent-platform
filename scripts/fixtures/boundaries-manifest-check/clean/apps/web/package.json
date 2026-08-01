@@ -1,0 +1,5 @@
+{
+  "name": "@cap-console/web",
+  "private": true,
+  "$comment": "FIXTURE package manifest — it is what makes apps/web a package, which is how the gate knows an import resolving back inside it crosses no boundary."
+}

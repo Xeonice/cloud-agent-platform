@@ -1,0 +1,31 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — test data, not the repository declaration.",
+  "seamRules": [
+    {
+      "id": "S1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#C S1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web/src"
+      ],
+      "transports": [
+        "apps/web/src/lib/api/real.ts",
+        "apps/web/src/lib/ws-client.ts"
+      ],
+      "egress": {
+        "calls": [
+          "fetch"
+        ],
+        "constructors": [
+          "WebSocket"
+        ],
+        "receivers": [
+          "window",
+          "globalThis",
+          "self"
+        ]
+      }
+    }
+  ]
+}

@@ -15,6 +15,19 @@ This directory is the entry point for a cluster:
   └── sandbox-conformance            the suite every provider must pass
 ```
 
+## What this subtree may depend on
+
+`@cap-console/contracts` · `@cap-console/sandbox-core` ·
+`@cap-console/sandbox-environment` · `@cap-console/sandbox-cloud-http` ·
+`@cap-console/sandbox-provider-aio` · `@cap-console/sandbox-provider-boxlite` ·
+`@cap-console/sandbox-conformance`
+
+Downward, into the cluster it fronts — never sideways or up. 工件02 A 表 P4 is
+the rule underneath that: a package may not reach into `apps/*`, so nothing here
+may import the api it serves. The declaration above is reconciled against
+`docs/refactor/boundaries-manifest.json` by
+`scripts/claude-md-dependency-reconcile.mjs`.
+
 ## The invariant this cluster exists to hold
 
 **One shared interface, N implementations.** A provider is added by implementing

@@ -1,0 +1,17 @@
+{
+  "$comment": "Fixture: an A-table entry with `provenance` removed. An entry that cannot say which table row it transcribes is malformed data, not a usable rule.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "appliesTo": ["apps/web/src"],
+      "forbid": {
+        "packagePatterns": ["@cap-console/api"],
+        "allowTypeImports": false
+      },
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

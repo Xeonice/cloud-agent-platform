@@ -1,7 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "stream",
-  "globalDependencies": ["packages/tsconfig/**/*.json", "**/.env"],
+  "globalDependencies": [
+    "packages/tsconfig/**/*.json",
+    "**/.env",
+    "docs/refactor/boundaries-manifest.json"
+  ],
   "globalPassThroughEnv": ["CAP_PUBLIC_SURFACE_EVIDENCE_PATH"],
   "tasks": {
     "build": {

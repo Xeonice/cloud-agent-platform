@@ -1,13 +1,22 @@
 # packages/contracts — the shared protocol
 
-The one package both sides depend on. 45 modules. Zod schemas plus the types
-inferred from them, covering REST bodies, the WebSocket frame protocol, and the
-vocabularies that say which kinds of things exist.
+The one package both sides depend on. Roughly four dozen modules. Zod schemas
+plus the types inferred from them, covering REST bodies, the WebSocket frame
+protocol, and the vocabularies that say which kinds of things exist.
 
 Depended on by: `@cap-console/web`, `@cap-console/api`, `@cap-console/ui`,
 `@cap-console/sandbox`, `@cap-console/sandbox-hooks`.
 
-Depends on: nothing but tooling config.
+## What this subtree may depend on
+
+None — nothing but tooling config.
+
+This is the leaf everything else stands on, and 工件02 A 表 P5 says so as a rule:
+no internal package may be imported from here. Everyone depends on this package,
+so anything it depended on would become a dependency of both runtimes at once.
+The declaration above is reconciled against
+`docs/refactor/boundaries-manifest.json` by
+`scripts/claude-md-dependency-reconcile.mjs`.
 
 ## Why edits here cost more than they look
 

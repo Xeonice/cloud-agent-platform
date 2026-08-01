@@ -6,10 +6,12 @@
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./boundaries": "./boundaries.js"
   },
   "files": [
-    "index.js"
+    "index.js",
+    "boundaries.js"
   ],
   "dependencies": {
     "@eslint/js": "^9.27.0",

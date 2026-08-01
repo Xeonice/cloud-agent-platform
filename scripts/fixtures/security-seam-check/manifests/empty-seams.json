@@ -1,0 +1,6 @@
+{
+  "$comment": "Fixture: a manifest whose D table is empty. A gate with nothing to assert must fail rather than pass vacuously.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "securitySeams": []
+}

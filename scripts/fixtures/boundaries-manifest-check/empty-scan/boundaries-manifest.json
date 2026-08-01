@@ -1,0 +1,20 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — its scan root names a directory that does not exist here, so the gate must fail rather than report a clean tree.",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web-that-moved"
+      ],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api"
+        ],
+        "allowTypeImports": false
+      }
+    }
+  ]
+}

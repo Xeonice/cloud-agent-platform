@@ -1,0 +1,1771 @@
+{
+  "cross-context-import:apps/api/src/accounts/accounts.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/accounts/accounts.controller.ts:17 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/api-keys/api-keys.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/api-keys/api-keys.controller.ts:23 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/audit/audit.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/audit/audit.controller.ts:13 imports '@/terminal/terminal.gateway'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/audit/audit.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/audit/audit.service.ts:24 imports '@/task-failure/task-failure'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/auth-otp/email-otp.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth-otp/email-otp.service.ts:5 imports '@/mail/mail.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/auth-otp/otp.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/auth-otp/otp.controller.ts:20 imports '@/http/zod-validation.pipe'",
+      "apps/api/src/auth-otp/otp.controller.ts:23 imports '@/mail/mail.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/auth-password/password.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth-password/password.controller.ts:19 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/auth/auth-session.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/auth/auth-session.controller.ts:9 imports '@/mail/mail.service'",
+      "apps/api/src/auth/auth-session.controller.ts:10 imports '@/mail/smtp-config.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/guardrails/guardrails.service.ts": {
+    "count": 9,
+    "samples": [
+      "apps/api/src/guardrails/guardrails.service.ts:80 imports '@/forge/forge-target-resolver'",
+      "apps/api/src/guardrails/guardrails.service.ts:81 imports '@/forge/forge-registry'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/inline-admission/inline-admission-state.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission-state.ts:26 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/inline-admission/inline-admission.entry.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission.entry.ts:21 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/inline-admission/inline-admission.pipeline.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission.pipeline.ts:46 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier'",
+      "apps/api/src/inline-admission/inline-admission.pipeline.ts:49 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/inline-admission/inline-admission.port.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission.port.ts:34 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/mail/smtp.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/mail/smtp.controller.ts:24 imports '@/principal/authenticated-request'",
+      "apps/api/src/mail/smtp.controller.ts:25 imports '@/principal/admin'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/mcp-tokens/mcp-tokens.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp-tokens/mcp-tokens.controller.ts:26 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/mcp/mcp-tools.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp/mcp-tools.ts:60 imports '@/runtime-models/runtime-model-preflight.error'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/mcp/mcp.server.ts": {
+    "count": 10,
+    "samples": [
+      "apps/api/src/mcp/mcp.server.ts:26 imports '@/tasks/tasks.service'",
+      "apps/api/src/mcp/mcp.server.ts:27 imports '@/sandbox/sandbox.module'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/metrics/metrics.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/metrics/metrics.service.ts:8 imports '@/guardrails/guardrails.service'",
+      "apps/api/src/metrics/metrics.service.ts:9 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/observability/logger.options.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/observability/logger.options.ts:8 imports '@/principal/authenticated-request'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/public-surface/public-v1-operation.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/public-surface/public-v1-operation.ts:31 imports '@/principal/authenticated-request'",
+      "apps/api/src/public-surface/public-v1-operation.ts:32 imports '@/principal/operator-principal'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/rate-limit/create-throttle.guard.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/rate-limit/create-throttle.guard.ts:5 imports '@/principal/operator-principal'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/rate-limit/principal.throttler-guard.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/rate-limit/principal.throttler-guard.ts:3 imports '@/principal/operator-principal'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/rate-limit/runtime-model-catalog-throttle.guard.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/rate-limit/runtime-model-catalog-throttle.guard.ts:10 imports '@/principal/operator-principal'",
+      "apps/api/src/rate-limit/runtime-model-catalog-throttle.guard.ts:16 imports '@/runtime-models/runtime-model-preflight.error'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/repos/console-account.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/console-account.ts:2 imports '@/principal/authenticated-request'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/repos/github-import.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/repos/github-import.controller.ts:11 imports '@/principal/authenticated-request'",
+      "apps/api/src/repos/github-import.controller.ts:16 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/repos/repo-copy.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/repos/repo-copy.controller.ts:19 imports '@/principal/authenticated-request'",
+      "apps/api/src/repos/repo-copy.controller.ts:23 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/repos/repos.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/repos/repos.controller.ts:14 imports '@/auth/auth.guard'",
+      "apps/api/src/repos/repos.controller.ts:15 imports '@/principal/operator-principal'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/runtime-models/codex-compatible-model.adapter.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/codex-compatible-model.adapter.ts:1 imports '@/settings/model-discovery.client'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/runtime-models/prisma-runtime-model-credential.resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/prisma-runtime-model-credential.resolver.ts:4 imports '@/settings/assert-safe-provider-url'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/runtime-models/runtime-model-environment.resolver.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-environment.resolver.ts:19 imports '@/sandbox-environments/sandbox-environments.service'",
+      "apps/api/src/runtime-models/runtime-model-environment.resolver.ts:20 imports '@/sandbox-environments/sandbox-environments.validator'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/runtimes/runtimes.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtimes/runtimes.controller.ts:2 imports '@/principal/authenticated-request'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/sandbox-environments/sandbox-environments.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/sandbox-environments/sandbox-environments.controller.ts:24 imports '@/principal/authenticated-request'",
+      "apps/api/src/sandbox-environments/sandbox-environments.controller.ts:25 imports '@/principal/admin'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/sandbox/prisma-provision-lookup.ts": {
+    "count": 4,
+    "samples": [
+      "apps/api/src/sandbox/prisma-provision-lookup.ts:29 imports '@/forge/forge-target-resolver'",
+      "apps/api/src/sandbox/prisma-provision-lookup.ts:30 imports '@/forge/forge-registry'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/sandbox/runtime-material-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/runtime-material-resolver.ts:4 imports '@/settings/assert-safe-provider-url'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/sandbox/workspace-source-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/workspace-source-resolver.ts:10 imports '@/repo-store/repo-store.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/scheduled-tasks/scheduled-tasks.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/scheduled-tasks/scheduled-tasks.controller.ts:27 imports '@/auth/auth.guard'",
+      "apps/api/src/scheduled-tasks/scheduled-tasks.controller.ts:28 imports '@/principal/operator-principal'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/scheduled-tasks/scheduled-tasks.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/scheduled-tasks/scheduled-tasks.service.ts:35 imports '@/runtime-models/runtime-model-preflight.error'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/self-update/self-update.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/self-update/self-update.controller.ts:13 imports '@/principal/authenticated-request'",
+      "apps/api/src/self-update/self-update.controller.ts:14 imports '@/principal/admin'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/self-update/self-update.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/self-update/self-update.service.ts:6 imports '@/sandbox-environments/sandbox-environments.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/settings/forge-credential.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/forge-credential.service.ts:18 imports '@/forge/forge-registry'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/settings/settings-logic.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/settings-logic.ts:404 imports '@/task-concurrency/limit'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/settings/settings.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/settings/settings.controller.ts:52 imports '@/principal/authenticated-request'",
+      "apps/api/src/settings/settings.controller.ts:53 imports '@/principal/admin'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/settings/settings.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/settings.service.ts:23 imports '@/guardrails/guardrails.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier.ts:18 imports '@/forge/task-branch-resolver'",
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier.ts:22 imports '@/admission-coordination/task-admission.types'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-console.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-console.controller.ts:10 imports '@/principal/authenticated-request'",
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-console.controller.ts:11 imports '@/http/zod-validation.pipe'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service.ts:7 imports '@/public-surface/public-surface-error'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/tasks/session-cast.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/session-cast.controller.ts:17 imports '@/session-recording/recording-policy'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/tasks/session-history.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/session-history.controller.ts:2 imports '@/sandbox/sandbox.module'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/tasks/session-transcript.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/tasks/session-transcript.service.ts:10 imports '@/sandbox/parse-transcript'",
+      "apps/api/src/tasks/session-transcript.service.ts:11 imports '@/sandbox/transcript-source'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/tasks/task-transcript-reader.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/task-transcript-reader.ts:14 imports '@/sandbox/parse-transcript'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/tasks/tasks.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/tasks/tasks.controller.ts:19 imports '@/http/zod-validation.pipe'",
+      "apps/api/src/tasks/tasks.controller.ts:20 imports '@/auth/auth.guard'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/tasks/tasks.service.ts": {
+    "count": 8,
+    "samples": [
+      "apps/api/src/tasks/tasks.service.ts:74 imports '@/sandbox/sandbox-run-owner.service'",
+      "apps/api/src/tasks/tasks.service.ts:75 imports '@/sandbox-environments/sandbox-environments.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/terminal/terminal.gateway.ts": {
+    "count": 7,
+    "samples": [
+      "apps/api/src/terminal/terminal.gateway.ts:136 imports '@/agent-runtime/agent-runtime.integration'",
+      "apps/api/src/terminal/terminal.gateway.ts:148 imports '@/auth/auth-session.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/public-list-pages.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/v1/public-list-pages.ts:10 imports '@/tasks/task-response'",
+      "apps/api/src/v1/public-list-pages.ts:14 imports '@/repos/repo-response'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-events.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/v1/v1-events.controller.ts:12 imports '@/audit/audit.service'",
+      "apps/api/src/v1/v1-events.controller.ts:13 imports '@/principal/authenticated-request'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-repos.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/v1/v1-repos.controller.ts:11 imports '@/repos/repos.service'",
+      "apps/api/src/v1/v1-repos.controller.ts:12 imports '@/principal/authenticated-request'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-runtime-models.controller.ts": {
+    "count": 4,
+    "samples": [
+      "apps/api/src/v1/v1-runtime-models.controller.ts:9 imports '@/principal/authenticated-request'",
+      "apps/api/src/v1/v1-runtime-models.controller.ts:16 imports '@/runtime-models/runtime-model-catalog.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-schedules.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/v1/v1-schedules.controller.ts:17 imports '@/auth/auth.guard'",
+      "apps/api/src/v1/v1-schedules.controller.ts:19 imports '@/scheduled-tasks/scheduled-tasks.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-task-provisioning-diagnostics.controller.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/v1/v1-task-provisioning-diagnostics.controller.ts:7 imports '@/principal/authenticated-request'",
+      "apps/api/src/v1/v1-task-provisioning-diagnostics.controller.ts:14 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-tasks.controller.ts": {
+    "count": 3,
+    "samples": [
+      "apps/api/src/v1/v1-tasks.controller.ts:14 imports '@/tasks/tasks.service'",
+      "apps/api/src/v1/v1-tasks.controller.ts:15 imports '@/principal/operator-principal'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "cross-context-import:apps/api/src/v1/v1-transcript.controller.ts": {
+    "count": 6,
+    "samples": [
+      "apps/api/src/v1/v1-transcript.controller.ts:1 imports '@/tasks/tasks.service'",
+      "apps/api/src/v1/v1-transcript.controller.ts:2 imports '@/sandbox/sandbox.module'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+  },
+  "layer-direction:apps/api/src/terminal/provider-terminal-story.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/terminal/provider-terminal-story.service.ts:24 'application' imports './terminal.gateway' which is 'interface'",
+      "apps/api/src/terminal/provider-terminal-story.service.ts:25 'application' imports './terminal.gateway' which is 'interface'"
+    ],
+    "change": "阶段 4（工件01 已声明 terminal.gateway 编排职责在阶段4后只剩协议翻译）"
+  },
+  "prisma-outside-store:apps/api/src/accounts/accounts.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/accounts/accounts.controller.ts:16 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/accounts/accounts.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/accounts/accounts.service.ts:10 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/admin-seed/admin-reveal.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/admin-seed/admin-reveal.controller.ts:8 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/admin-seed/admin-seed.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/admin-seed/admin-seed.service.ts:9 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/api-keys/api-keys.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/api-keys/api-keys.service.ts:15 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/audit/audit.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/audit/audit.service.ts:11 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/auth-otp/email-otp.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth-otp/email-otp.service.ts:4 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/auth-password/password.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth-password/password.service.ts:3 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/auth/auth-session.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/auth-session.controller.ts:5 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/auth/auth-session.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/auth-session.service.ts:4 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/forge/forge-registry.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/forge-registry.ts:2 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/forge/forge-target-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/forge-target-resolver.ts:2 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/forge/task-branch-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/task-branch-resolver.ts:6 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/guardrails/guardrails.module.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/guardrails.module.ts:12 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/guardrails/guardrails.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/guardrails.service.ts:23 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/guardrails/retention-cleaner.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/retention-cleaner.ts:10 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/inline-admission/inline-admission.pipeline.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission.pipeline.ts:41 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mail/mail.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mail/mail.service.ts:3 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mail/smtp-config.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mail/smtp-config.service.ts:5 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mail/smtp-env-migration.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mail/smtp-env-migration.service.ts:7 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mail/smtp.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mail/smtp.controller.ts:26 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mcp-tokens/mcp-tokens.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp-tokens/mcp-tokens.service.ts:8 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mcp/mcp.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp/mcp.controller.ts:45 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/mcp/mcp.server.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp/mcp.server.ts:38 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/repo-store/repo-store.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repo-store/repo-store.service.ts:7 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/repos/github-import.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/github-import.service.ts:15 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/repos/local-import.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/local-import.service.ts:9 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/repos/repo-copy.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/repo-copy.service.ts:13 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/repos/repos.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/repos/repos.service.ts:10 reaches Prisma outside a store file",
+      "apps/api/src/repos/repos.service.ts:29 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/runtime-models/prisma-runtime-model-credential.resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/prisma-runtime-model-credential.resolver.ts:3 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/runtime-models/runtime-model-environment.resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-environment.resolver.ts:18 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/runtime-models/runtime-models.module.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-models.module.ts:3 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox-environments/sandbox-environments.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox-environments/sandbox-environments.controller.ts:26 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox-environments/sandbox-environments.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/sandbox-environments/sandbox-environments.service.ts:41 reaches Prisma outside a store file",
+      "apps/api/src/sandbox-environments/sandbox-environments.service.ts:42 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox/prisma-claude-auth-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/prisma-claude-auth-source.ts:3 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox/prisma-codex-auth-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/prisma-codex-auth-source.ts:3 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox/prisma-provision-lookup.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/prisma-provision-lookup.ts:28 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox/sandbox-run-owner.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/sandbox/sandbox-run-owner.service.ts:45 reaches Prisma outside a store file",
+      "apps/api/src/sandbox/sandbox-run-owner.service.ts:47 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox/sandbox.module.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/sandbox.module.ts:44 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/sandbox/workspace-source-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/workspace-source-resolver.ts:9 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/scheduled-tasks/scheduled-tasks.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/scheduled-tasks/scheduled-tasks.service.ts:29 reaches Prisma outside a store file",
+      "apps/api/src/scheduled-tasks/scheduled-tasks.service.ts:31 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/settings/forge-credential.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/forge-credential.service.ts:17 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/settings/settings.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/settings.service.ts:22 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-console-query.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-console-query.service.ts:15 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service.ts:26 reaches Prisma outside a store file",
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service.ts:29 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.service.ts:27 reaches Prisma outside a store file",
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.service.ts:30 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/tasks/session-transcript.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/session-transcript.service.ts:17 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/tasks/tasks.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/tasks/tasks.service.ts:47 reaches Prisma outside a store file",
+      "apps/api/src/tasks/tasks.service.ts:48 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/terminal/provider-terminal-story.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/terminal/provider-terminal-story.service.ts:23 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/v1/idempotency.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/v1/idempotency.service.ts:4 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/v1/public-list-pages.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/v1/public-list-pages.ts:9 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/v1/v1-repos.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/v1/v1-repos.controller.ts:10 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "prisma-outside-store:apps/api/src/v1/v1-tasks.controller.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/v1/v1-tasks.controller.ts:13 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化）"
+  },
+  "unclassified-file:apps/api/src/admission-coordination/parked-admission-triage.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/admission-coordination/parked-admission-triage.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/admission-coordination/task-admission.types.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/admission-coordination/task-admission.types.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/agent-runtime.integration.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/agent-runtime.integration.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/agent-runtime.registry.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/agent-runtime.registry.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/claude-code-runtime.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/claude-code-runtime.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/claude-transcript.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/claude-transcript.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/claude-tui-session.fixture.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/claude-tui-session.fixture.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/codex-runtime.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/codex-runtime.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/runtime-model-rejection-evidence.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/runtime-model-rejection-evidence.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/runtime-output-failure-classifier.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/runtime-output-failure-classifier.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/agent-runtime/task-model-launch.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/agent-runtime/task-model-launch.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/audit/audit-mapping.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/audit/audit-mapping.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/audit/task-created-audit.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/audit/task-created-audit.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth-otp/otp-email-template.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth-otp/otp-email-template.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth/argon2.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/argon2.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth/auth-config.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/auth-config.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth/origin-checked-ws-adapter.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/origin-checked-ws-adapter.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth/request-origin.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/request-origin.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth/session-cookie.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/session-cookie.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/auth/session-token.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/auth/session-token.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/creds/index.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/creds/index.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/creds/session-credential.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/creds/session-credential.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/crypto/constant-time.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/crypto/constant-time.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/crypto/secret-storage.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/crypto/secret-storage.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/crypto/settings-crypto.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/crypto/settings-crypto.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/forge-registry.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/forge-registry.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/forge-target-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/forge-target-resolver.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/git-runtime-preflight.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/git-runtime-preflight.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/gitee-forge.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/gitee-forge.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/github-forge.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/github-forge.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/gitlab-forge.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/gitlab-forge.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/remote-refs-command-runner.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/remote-refs-command-runner.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/remote-refs-probe.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/remote-refs-probe.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/remote-refs-secret-store.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/remote-refs-secret-store.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/forge/task-branch-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/forge/task-branch-resolver.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/circuit-breaker.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/circuit-breaker.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/deadline-watcher.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/deadline-watcher.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/idle-tracker.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/idle-tracker.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/retention-cleaner.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/retention-cleaner.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/sandbox-retention-store.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/sandbox-retention-store.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/semaphore.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/semaphore.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/guardrails/transfer-progress-throttle.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/guardrails/transfer-progress-throttle.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/inline-admission/inline-admission-state.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission-state.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/inline-admission/inline-admission.entry.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission.entry.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/inline-admission/inline-admission.pipeline.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/inline-admission/inline-admission.pipeline.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/mcp/mcp-tools.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp/mcp-tools.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/mcp/mcp.server.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/mcp/mcp.server.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/observability/log-context.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/observability/log-context.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/observability/logger.options.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/observability/logger.options.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/openapi/openapi.registry.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/openapi/openapi.registry.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/principal/admin.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/principal/admin.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/principal/authenticated-request.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/principal/authenticated-request.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/principal/legacy-token.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/principal/legacy-token.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/principal/operator-principal.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/principal/operator-principal.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/public-surface/public-error-mappings.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/public-surface/public-error-mappings.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/public-surface/public-surface-error.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/public-surface/public-surface-error.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/public-surface/public-v1-operation.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/public-surface/public-v1-operation.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/rate-limit/principal.throttler-guard.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/rate-limit/principal.throttler-guard.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/rate-limit/throttler.options.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/rate-limit/throttler.options.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repo-store/repo-store-git.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repo-store/repo-store-git.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repos/console-account.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/console-account.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repos/github-import.logic.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/github-import.logic.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repos/github-repos.client.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/github-repos.client.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repos/local-import-errors.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/local-import-errors.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repos/local-import.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/local-import.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/repos/repo-response.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/repos/repo-response.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runner-metrics/metrics-projection.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runner-metrics/metrics-projection.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runner-metrics/runner-minutes.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runner-metrics/runner-minutes.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/claude-model-capability-evidence.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/claude-model-capability-evidence.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/claude-model-capability-manifest.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/claude-model-capability-manifest.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/claude-subscription-model.adapter.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/claude-subscription-model.adapter.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/codex-compatible-model.adapter.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/codex-compatible-model.adapter.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/codex-official-model.adapter.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/codex-official-model.adapter.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/configured-runtime-model-taskless-probe.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/configured-runtime-model-taskless-probe.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/owner-fair-probe-scheduler.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/owner-fair-probe-scheduler.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-adapter-snapshot.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-adapter-snapshot.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-catalog-cache.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-catalog-cache.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-catalog.types.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-catalog.types.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-catalog.util.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-catalog.util.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-errors.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-errors.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-preflight.error.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-preflight.error.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/runtime-models/runtime-model-snapshot.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/runtime-models/runtime-model-snapshot.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox-environments/sandbox-environments.validator.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox-environments/sandbox-environments.validator.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/claude-transcript-parser.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/claude-transcript-parser.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/env-claude-auth-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/env-claude-auth-source.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/env-codex-auth-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/env-codex-auth-source.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/parse-transcript.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/parse-transcript.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/prisma-claude-auth-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/prisma-claude-auth-source.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/prisma-codex-auth-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/prisma-codex-auth-source.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/prisma-provision-lookup.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/prisma-provision-lookup.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/rollout-parser.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/rollout-parser.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/runtime-material-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/runtime-material-resolver.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/sandbox-approval-enforcer.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/sandbox-approval-enforcer.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/skill-allowlist.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/skill-allowlist.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/transcript-call-pairing.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/transcript-call-pairing.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/transcript-source.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/transcript-source.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/sandbox/workspace-source-resolver.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/sandbox/workspace-source-resolver.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/session-recording/recording-policy.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/session-recording/recording-policy.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/assert-safe-provider-url.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/assert-safe-provider-url.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/claude-credential-probe.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/claude-credential-probe.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/codex-app-server-client.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/codex-app-server-client.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/codex-device-login-runner.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/codex-device-login-runner.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/docker-codex-device-login-runner.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/docker-codex-device-login-runner.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/index.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/index.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/model-discovery.client.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/model-discovery.client.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/settings/settings-logic.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/settings/settings-logic.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/surface-parity/evidence.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/surface-parity/evidence.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-admission/admission-mode-policy.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-admission/admission-mode-policy.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-admission/fenced-task-admission.processor.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-admission/fenced-task-admission.processor.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-admission/task-admission-gate.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-admission/task-admission-gate.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-admission/task-admission-runtime.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-admission/task-admission-runtime.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-admission/task-admission.worker.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-admission/task-admission.worker.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-concurrency/limit.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-concurrency/limit.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-failure/task-failure.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-failure/task-failure.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-lifecycle/task-lifecycle.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-lifecycle/task-lifecycle.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-log.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-log.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.projection.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.projection.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/tasks/prepared-task-create.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/prepared-task-create.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/tasks/task-repo-copy-gate.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/task-repo-copy-gate.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/tasks/task-response.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/task-response.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/tasks/task-transcript-reader.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/tasks/task-transcript-reader.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/terminal/agent-terminal-pty.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/terminal/agent-terminal-pty.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/terminal/backpressure.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/terminal/backpressure.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/terminal/cast-writer.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/terminal/cast-writer.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/terminal/snapshot.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/terminal/snapshot.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/terminal/terminal-query-observer.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/terminal/terminal-query-observer.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/v1/keyset-pagination.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/v1/keyset-pagination.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/v1/public-list-pages.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/v1/public-list-pages.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/write-lock/index.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/write-lock/index.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  },
+  "unclassified-file:apps/api/src/write-lock/write-lock.types.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/write-lock/write-lock.types.ts matches no file→layer rule"
+    ],
+    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
+  }
+}

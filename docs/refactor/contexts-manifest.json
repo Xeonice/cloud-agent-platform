@@ -1,10 +1,37 @@
 {
-  "$comment": "工件01：上下文地图（机器可读）。消费者：scripts/api-module-layout-check v2（阶段3报告模式、阶段6拦截模式）、阶段6目录归拢。散文版与边缘裁定理由见 01-contexts-manifest.md 与 08-ddd-target-architecture.md §A。修改本文件 = 架构决策，须经 change 留痕。",
+  "$comment": "工件01：上下文地图（机器可读）。消费者：scripts/context-layout-check-v2.mjs（阶段3报告模式、阶段6拦截模式）、apps/api/src/sandbox/sandbox-package-boundary.test.mjs（scope 即扫描根）、阶段6目录归拢。散文版与边缘裁定理由见 01-contexts-manifest.md 与 08-ddd-target-architecture.md §A。修改本文件 = 架构决策，须经 change 留痕。",
   "version": 1,
   "scope": "apps/api/src",
+  "scopeAlias": "@/",
   "layers": {
     "$comment": "上下文内部层序。import 只允许从左往右：interface→application→domain/store。domain 不得 import 任何层；store 只被 application import；Prisma 只允许出现在 store 层文件（*.store.ts）。",
-    "order": ["interface", "application", "domain", "store"]
+    "order": ["interface", "application", "domain", "store"],
+    "allowedImports": {
+      "$comment": "上面那句散文的机器可读编码，零新增语义（enforce-boundaries-from-manifest）：同层恒合法；左→右单向；『store 只被 application import』故 interface→store 缺席；『domain 不得 import 任何层』故 domain 只剩同层；store 最右无下游故只剩同层。层方向只判同上下文内部的 import，跨上下文由 crossContextRules 判定。",
+      "interface": ["interface", "application", "domain"],
+      "application": ["application", "domain", "store"],
+      "domain": ["domain"],
+      "store": ["store"]
+    },
+    "fileClassification": {
+      "$comment": "文件→层判定规则的唯一声明（enforce-boundaries-from-manifest）——脚本是纯解释器，不得留第二份副本。按 rules 顺序取首个命中的文件名后缀；命中不了的文件报 unclassified，绝不静默跳过。composition 是 DI 组装伪层（沿用 layout v1 的 *.module.ts 豁免），不出现在 order 里也不参与层方向判定。",
+      "unclassifiedLayer": "unclassified",
+      "compositionLayer": "composition",
+      "rules": [
+        { "suffix": ".module.ts", "layer": "composition", "why": "Nest DI 组装，沿用 layout v1 的 composition exemption" },
+        { "suffix": "/main.ts", "layer": "composition", "why": "Nest bootstrap 组合根" },
+        { "suffix": ".controller.ts", "layer": "interface" },
+        { "suffix": ".gateway.ts", "layer": "interface" },
+        { "suffix": ".resolver.ts", "layer": "interface" },
+        { "suffix": ".guard.ts", "layer": "interface" },
+        { "suffix": ".filter.ts", "layer": "interface" },
+        { "suffix": ".pipe.ts", "layer": "interface" },
+        { "suffix": ".middleware.ts", "layer": "interface" },
+        { "suffix": ".service.ts", "layer": "application" },
+        { "suffix": ".port.ts", "layer": "domain" },
+        { "suffix": ".store.ts", "layer": "store" }
+      ]
+    }
   },
   "contexts": {
     "task-execution": {
@@ -127,7 +154,20 @@
     "forbidden": [
       "跨上下文直接 import 具体 *.service.ts / 实现类",
       "跨上下文触碰对方聚合的 Prisma 表（跨聚合写库）"
-    ]
+    ],
+    "machineReadable": {
+      "$comment": "上面 allowed 散文的机器可读编码，零新增语义（enforce-boundaries-from-manifest）。『领域事件订阅』没有条目——阶段4之前无事件总线可判，等事件落地再补声明，不在脚本里猜。",
+      "portFileSuffix": ".port.ts",
+      "compositionFileSuffix": ".module.ts",
+      "compositionRootFiles": ["main.ts", "app.module.ts"],
+      "sharedKernelDirectories": ["prisma", "crypto", "observability"]
+    }
+  },
+  "prismaPlacement": {
+    "$comment": "『Prisma 只允许出现在 store 层文件』的机器可读编码（enforce-boundaries-from-manifest）：符号命中即算一处，store 文件与共享内核目录豁免。",
+    "storeFileSuffix": ".store.ts",
+    "symbols": ["@prisma/client", "PrismaService"],
+    "exemptDirectories": ["prisma", "crypto", "observability"]
   },
   "pendingDecisions": []
 }

@@ -1,0 +1,33 @@
+{
+  "$comment": "Fixture manifest for scripts/security-seam-check.test.mjs — the shape of docs/refactor/boundaries-manifest.json's D table, reduced to two seams. Not a copy of the real manifest and never read by the gate in production.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "securitySeams": [
+    {
+      "id": "origin-computation",
+      "seam": "Origin 计算",
+      "path": "apps/api/src/auth/request-origin.ts",
+      "uniqueness": {
+        "pattern": "export function isTrustedRequestOrigin",
+        "scanRoots": ["apps/api/src"],
+        "excludes": ["**/*.legacy-spec.ts"],
+        "expectedCount": 1
+      },
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "credential-decryption",
+      "seam": "凭据加密读取",
+      "path": "apps/api/src/crypto/secret-storage.ts",
+      "uniqueness": {
+        "pattern": "export function decryptStored",
+        "scanRoots": ["apps/api/src"],
+        "excludes": [],
+        "expectedCount": 1
+      },
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — the same tolerance as boundaries-manifest.json, written next to the rule instead of in the top-level list. A tolerance is data wherever the manifest chose to put it, so the outcome must be identical.",
+  "seamRules": [
+    {
+      "id": "S1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#C S1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web/src"
+      ],
+      "transports": [
+        "apps/web/src/lib/api/real.ts"
+      ],
+      "egress": {
+        "calls": [
+          "fetch"
+        ],
+        "constructors": [],
+        "receivers": [
+          "window",
+          "globalThis",
+          "self"
+        ]
+      },
+      "exemptions": [
+        {
+          "path": "apps/web/src/lib/mock-session.ts",
+          "reason": "mock half of the capabilities switch — structural, not a debt to repay",
+          "owner": "console",
+          "change": "enforce-boundaries-from-manifest"
+        }
+      ]
+    }
+  ]
+}

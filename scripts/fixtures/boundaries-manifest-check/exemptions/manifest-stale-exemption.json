@@ -1,0 +1,28 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — an exemption for a file that no longer violates anything. The manifest is the ledger for the pre-existing sites, so a stale entry has to be reported: without that, moving a debt out of the ESLint suppressions file would have traded a shrink-only ratchet for a permanent free pass.",
+  "seamRules": [
+    {
+      "id": "S1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#C S1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": ["apps/web/src"],
+      "transports": ["apps/web/src/lib/api/real.ts"],
+      "egress": { "calls": ["fetch"], "receivers": ["window", "globalThis", "self"] },
+      "exemptions": [
+        {
+          "path": "apps/web/src/lib/mock-session.ts",
+          "reason": "mock half of the capabilities switch — structural, not a debt to repay",
+          "owner": "console",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "path": "apps/web/src/components/already-fixed.tsx",
+          "reason": "the site this covered was consolidated into the seam",
+          "owner": "console",
+          "change": "enforce-boundaries-from-manifest"
+        }
+      ]
+    }
+  ]
+}

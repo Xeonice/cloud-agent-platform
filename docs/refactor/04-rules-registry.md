@@ -51,16 +51,16 @@
 
 | ID | 约束 | 声明源 | 执行器 | 阶段 |
 |---|---|---|---|---|
-| R1 | 包级边界（P1–P8） | 工件 02 A 表 | ESLint 生成器 + CI 同源闸门 | 3 |
-| R2 | app 内 seam（S1–S3） | 工件 02 C 表 | 同上 | 3 |
+| R1 | 包级边界（P1–P8） | 工件 02 A 表 → `docs/refactor/boundaries-manifest.json` | ESLint 生成器（`packages/eslint-config/boundaries.js`，15 个 eslint.config 全接）+ CI 同源闸门（`scripts/boundaries-manifest-check.mjs`） | 3 ✅ 已落地（enforce-boundaries-from-manifest：两个消费者各自直读同一 manifest、互不派生；解释器不经 ESLint 管线故 disable 注释无效；manifest 进 turbo globalDependencies 防缓存回放） |
+| R2 | app 内 seam（S1–S3） | 工件 02 C 表 → `docs/refactor/boundaries-manifest.json` | 同上 | 3 ✅ 已落地（enforce-boundaries-from-manifest：S1 发现式出网扫描 + S2 capabilities seam 旁路禁令；存量落 manifest 三字段豁免、闸门对失效豁免报红＝shrink-only；S3 按引用登记，不派生第二份执行） |
 | R3 | dockerode 全域禁令 | 工件 02 S3 | G11 扩域 | 1 ✅ 已落地（close-gate-blindspots：全 src 符号扫描 + `scripts/ratchets/r3.json` 共享 comparator） |
 | R4 | G2/G3 fail-closed 化 | 本文件 A.1/A.5 | 脚本改造 | 1 ✅ 已落地（close-gate-blindspots：G2 补集 + G3 能力发现，均零扫描即败） |
 | R5 | 词表单一声明（source-kind 等并入 G4 PAIRS） | 工件 03 A 表 | G4 扩容 | 2 |
 | R6 | facade 导出白名单 | 工件 02 P7 | 导出面快照测试 | 1 ✅ 已落地（close-gate-blindspots：`packages/sandbox/test/facade-surface.gate.mjs`，`export *` 即红） |
-| R7 | 跨上下文 + 层方向 + Prisma 位置 | contexts-manifest.json | layout v2 | 3 报告 / 6 拦截 |
+| R7 | 跨上下文 + 层方向 + Prisma 位置 | contexts-manifest.json（含文件→层判定，本次补齐） | layout v2（`scripts/context-layout-check-v2.mjs`） | 3 报告 ✅ 已落地（enforce-boundaries-from-manifest：三类检查 + unclassified 报告，基线活测写入 `scripts/ratchets/r7.json` 走共享 comparator；v1 闸门字节不动） / 6 拦截 |
 | R8 | 操作员词表覆盖对账 | 工件 03 B.2 | 新 parity 脚本 | 2 |
-| R9 | 安全 seam 唯一实现 | 工件 02 D 表 | seam 存在性断言 | 3 |
-| R10 | CLAUDE.md 依赖清单对账 | 工件 02 E 节 | 对账脚本 | 3 |
+| R9 | 安全 seam 唯一实现 | 工件 02 D 表 → `docs/refactor/boundaries-manifest.json` `securitySeams` | seam 存在性断言（`scripts/security-seam-check.mjs`） | 3 ✅ 已落地（enforce-boundaries-from-manifest：4 个 seam 的路径与唯一性谓词全是 manifest 数据、脚本内零副本；文件缺失/多实现/空集/空扫描一律红） |
+| R10 | CLAUDE.md 依赖清单对账 | 工件 02 E 节 + A 表 | 对账脚本（`scripts/claude-md-dependency-reconcile.mjs`） | 3 ✅ 已落地（enforce-boundaries-from-manifest：4 份 governed CLAUDE.md 的依赖段与 A 表比对，段落缺失/不可解析 fail-closed；contracts 与 sandbox 两份段落本次补齐） |
 | R11 | 依赖预算（guardrails→五关注点只降不升） | 工件 08 §C | ratchet | 4 |
 | R12 | 事件 payload 用 contracts zod 声明 | 工件 08 §C | G5/G6 自然覆盖 | 4 |
 

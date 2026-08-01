@@ -1,0 +1,20 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — test data, not the repository declaration.",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web"
+      ],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api"
+        ],
+        "allowTypeImports": false
+      }
+    }
+  ]
+}

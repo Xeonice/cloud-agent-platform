@@ -1,0 +1,4 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — parsable, well-formed, and declaring nothing. It must not read as a clean tree.",
+  "packageRules": []
+}
