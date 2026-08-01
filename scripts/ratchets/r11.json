@@ -1,0 +1,77 @@
+{
+  "guardrails-symbol-reference:this.audit": {
+    "count": 9,
+    "samples": [
+      "guardrails.service.ts:988 this.audit?.recordProvisioningProgress(",
+      "guardrails.service.ts:1794 if (this.audit) {",
+      "guardrails.service.ts:1798 this.audit?.recordExited(taskId, status.code, status.abnormal, tail),",
+      "guardrails.service.ts:2483 this.audit?.recordChangeRequest(taskId, {",
+      "guardrails.service.ts:3204 this.audit?.recordForceFailed(taskId, cause),",
+      "guardrails.service.ts:3453 if (!this.audit) {",
+      "guardrails.service.ts:3462 recorded = await this.audit.recordProvisioningFailure(",
+      "guardrails.service.ts:3481 if (!this.audit) {",
+      "guardrails.service.ts:3490 recorded = await this.audit.recordTaskCancellation(taskId);"
+    ],
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "symbol": "this.audit",
+    "concern": "audit（普通路径改订阅；terminal detail 的回执型调用按非事件准入规则留作 CALL）"
+  },
+  "guardrails-symbol-reference:this.runnerMinutes": {
+    "count": 6,
+    "samples": [
+      "guardrails.service.ts:1566 this.runnerMinutes.recordStart(taskId);",
+      "guardrails.service.ts:2038 this.runnerMinutes.recordEnd(taskId);",
+      "guardrails.service.ts:2623 this.runnerMinutes.recordStart(taskId);",
+      "guardrails.service.ts:2949 this.runnerMinutes.recordEnd(taskId);",
+      "guardrails.service.ts:2971 this.runnerMinutes.recordStart(taskId);",
+      "guardrails.service.ts:3555 return this.runnerMinutes.intervals();"
+    ],
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "symbol": "this.runnerMinutes",
+    "concern": "runner 计费（recordStart/recordEnd 改订阅）"
+  },
+  "guardrails-symbol-reference:provisioningDiagnosticRecorder": {
+    "count": 4,
+    "samples": [
+      "guardrails.service.ts:544 private readonly provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort,",
+      "guardrails.service.ts:589 this.provisioningDiagnosticRecorder,",
+      "guardrails.service.ts:2648 const recorder = this.provisioningDiagnosticRecorder;",
+      "guardrails.service.ts:2716 const recorder = this.provisioningDiagnosticRecorder;"
+    ],
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "symbol": "provisioningDiagnosticRecorder",
+    "concern": "diagnostics（开通诊断记录改订阅）"
+  },
+  "guardrails-symbol-reference:provisioningDiagnosticWriteGate": {
+    "count": 4,
+    "samples": [
+      "guardrails.service.ts:547 private readonly provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,",
+      "guardrails.service.ts:590 this.provisioningDiagnosticWriteGate,",
+      "guardrails.service.ts:2647 const gate = this.provisioningDiagnosticWriteGate;",
+      "guardrails.service.ts:2715 const gate = this.provisioningDiagnosticWriteGate;"
+    ],
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "symbol": "provisioningDiagnosticWriteGate",
+    "concern": "diagnostics（写闸门 isEnabled(): boolean 是回执型协作，燃尽方式随 recorder 一并重议）"
+  },
+  "guardrails-symbol-reference:this.transcripts": {
+    "count": 2,
+    "samples": [
+      "guardrails.service.ts:1841 if (!this.transcripts) return;",
+      "guardrails.service.ts:1843 await this.transcripts.capture(taskId);"
+    ],
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "symbol": "this.transcripts",
+    "concern": "transcript 收尾（capture 改订阅）"
+  },
+  "guardrails-symbol-reference:metrics-projection": {
+    "count": 2,
+    "samples": [
+      "guardrails.service.ts:94 import type { SemaphoreProjectionSource } from '@/runner-metrics/metrics-projection';",
+      "guardrails.service.ts:3536 semaphoreProjection(): SemaphoreProjectionSource {"
+    ],
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "symbol": "SemaphoreProjectionSource",
+    "concern": "metrics（投影源类型；guardrails 停止导出投影即归零）"
+  }
+}

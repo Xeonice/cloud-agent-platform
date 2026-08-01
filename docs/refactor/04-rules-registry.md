@@ -61,7 +61,7 @@
 | R8 | 操作员词表覆盖对账 | 工件 03 B.2 | 新 parity 脚本 | 2 |
 | R9 | 安全 seam 唯一实现 | 工件 02 D 表 → `docs/refactor/boundaries-manifest.json` `securitySeams` | seam 存在性断言（`scripts/security-seam-check.mjs`） | 3 ✅ 已落地（enforce-boundaries-from-manifest：4 个 seam 的路径与唯一性谓词全是 manifest 数据、脚本内零副本；文件缺失/多实现/空集/空扫描一律红） |
 | R10 | CLAUDE.md 依赖清单对账 | 工件 02 E 节 + A 表 | 对账脚本（`scripts/claude-md-dependency-reconcile.mjs`） | 3 ✅ 已落地（enforce-boundaries-from-manifest：4 份 governed CLAUDE.md 的依赖段与 A 表比对，段落缺失/不可解析 fail-closed；contracts 与 sandbox 两份段落本次补齐） |
-| R11 | 依赖预算（guardrails→五关注点只降不升） | 工件 08 §C | ratchet | 4 |
+| R11 | 依赖预算（guardrails→五关注点只降不升） | 工件 08 §C | ratchet（`scripts/ratchets/r11-dependency-budget.mjs` + 基线 `scripts/ratchets/r11.json`，CI step「Dependency budget ratchet (R11)」） | 4 ✅ 基线已播种（add-domain-event-bus：六个 collaborator 键位、种子取本树**活测**而非文档抄录，`this.audit` 9 / `this.runnerMinutes` 6 / `provisioningDiagnosticRecorder` 4 / `provisioningDiagnosticWriteGate` 4 / `this.transcripts` 2 / metrics-projection 2；统计口径＝**按符号引用**计，键前缀 `guardrails-symbol-reference:` 就地写死；走共享 comparator 双向 fail-closed；燃尽由阶段 4 五个订阅迁移 change 逐条删条目，最后删文件） |
 | R12 | 事件 payload 用 contracts zod 声明 | 工件 08 §C | G5/G6 自然覆盖 | 4 |
 
 ## D. ratchet 通用机制

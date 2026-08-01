@@ -18,7 +18,16 @@
  *                                      declaration; this script holds no copy);
  *   - `layers.allowedImports`        — which layer may import which layer;
  *   - `crossContextRules.machineReadable` — port suffix, DI-composition
- *                                      exemption, shared-kernel directories;
+ *                                      exemption, shared-kernel directories,
+ *                                      and the domain-event-subscription
+ *                                      ATTRIBUTION block (it names the bus
+ *                                      directory and its port file so a
+ *                                      subscriber's cross-context import is
+ *                                      scored as a domain-event subscription
+ *                                      instead of guessed at — it grants no
+ *                                      legal form the port suffix did not
+ *                                      already grant, and the gate asserts
+ *                                      that);
  *   - `prismaPlacement`              — store-file suffix, Prisma symbols,
  *                                      exempt directories.
  *
@@ -169,6 +178,22 @@ export function assertManifestShape(manifest) {
     Array.isArray(cross?.sharedKernelDirectories),
     '`crossContextRules.machineReadable.sharedKernelDirectories`',
   );
+  const subscription = isObject(cross?.domainEventSubscription)
+    ? cross.domainEventSubscription
+    : null;
+  need(
+    subscription !== null,
+    '`crossContextRules.machineReadable.domainEventSubscription`',
+  );
+  need(
+    typeof subscription?.busDirectory === 'string' &&
+      subscription.busDirectory.trim() !== '',
+    '`crossContextRules.machineReadable.domainEventSubscription.busDirectory`',
+  );
+  need(
+    Array.isArray(subscription?.busPortFiles) && subscription.busPortFiles.length > 0,
+    '`crossContextRules.machineReadable.domainEventSubscription.busPortFiles` (non-empty)',
+  );
   const prisma = isObject(manifest.prismaPlacement) ? manifest.prismaPlacement : null;
   need(prisma !== null, '`prismaPlacement`');
   need(typeof prisma?.storeFileSuffix === 'string', '`prismaPlacement.storeFileSuffix`');
@@ -182,6 +207,24 @@ export function assertManifestShape(manifest) {
     throw new Error(
       `${MANIFEST_REL}: missing declaration(s) ${missing.join(', ')} — ` +
         'the gate refuses to run with a check class silently switched off',
+    );
+  }
+
+  // The domain-event-subscription block is ATTRIBUTION, never permission: each
+  // bus port file it names must already be legal under the port-suffix rule, so
+  // declaring them widens nothing. A bus whose entry point needed a new legal
+  // form would be a placement error to fix at the bus, not a reason to loosen
+  // the manifest.
+  const widened = manifest.crossContextRules.machineReadable.domainEventSubscription.busPortFiles.filter(
+    (file) =>
+      typeof file !== 'string' ||
+      !file.endsWith(manifest.crossContextRules.machineReadable.portFileSuffix),
+  );
+  if (widened.length > 0) {
+    throw new Error(
+      `${MANIFEST_REL}: domainEventSubscription.busPortFiles must each end with ` +
+        `'${manifest.crossContextRules.machineReadable.portFileSuffix}' — the encoding attributes a form, ` +
+        `it never grants one; offending: ${widened.join(', ')}`,
     );
   }
 }
@@ -333,6 +376,8 @@ export function analyzeLayout({ root = ROOT, manifest = loadManifest(root) } = {
     for (const dir of context.directories ?? []) contextOf.set(dir, name);
   }
   const sharedKernel = new Set(cross.sharedKernelDirectories);
+  const busDirectory = cross.domainEventSubscription.busDirectory;
+  const busPortFiles = cross.domainEventSubscription.busPortFiles;
   const compositionRoots = new Set(cross.compositionRootFiles);
   const prismaExempt = new Set(prismaRules.exemptDirectories);
 
@@ -411,11 +456,19 @@ export function analyzeLayout({ root = ROOT, manifest = loadManifest(root) } = {
           isComposition ||
           sharedKernel.has(targetDir);
         if (!legal) {
+          const legalForms = `a '${cross.portFileSuffix}' interface, DI composition, or the shared kernel`;
+          // Attribution, not permission: an illegal reach INTO the declared bus
+          // directory is a domain-event subscription that bypassed the bus
+          // port, and saying so is what the reserved manifest slot buys. The
+          // legal set is unchanged either way.
           findings.push({
             kind: 'cross-context-import',
             file: shown,
             line: edge.line,
-            detail: `imports '${edge.specifier}' — context '${ownContext}' reaching into '${targetContext}' internals; legal forms are a '${cross.portFileSuffix}' interface, DI composition, or the shared kernel`,
+            detail:
+              targetDir === busDirectory
+                ? `imports '${edge.specifier}' — a domain-event subscription reaching '${targetContext}' past the declared bus port(s) ${busPortFiles.join(', ')}; legal forms are still ${legalForms}`
+                : `imports '${edge.specifier}' — context '${ownContext}' reaching into '${targetContext}' internals; legal forms are ${legalForms}`,
           });
         }
         continue;

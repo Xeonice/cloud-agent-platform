@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "change": "add-domain-event-bus",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "derived",
+      "scope": "领域事件 payload schema 新增的传递可达面；零操作/工具/投影形状变化",
+      "reason": "contracts 是四公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射）；本 change 在 contracts 新增领域事件 payload schema（R12：事件 payload 用 contracts zod 声明），经文件级归因传递可达本面，故按制度声明 derived。事件总线是进程内的、不落库、不过任何传输，无操作/工具/投影的形状变化——由 public-surface-adversarial verify 的四条证据 lane 背书。"
+    },
+    "mcp": {
+      "status": "derived",
+      "scope": "领域事件 payload schema 新增的传递可达面；零操作/工具/投影形状变化",
+      "reason": "contracts 是四公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射）；本 change 在 contracts 新增领域事件 payload schema（R12：事件 payload 用 contracts zod 声明），经文件级归因传递可达本面，故按制度声明 derived。事件总线是进程内的、不落库、不过任何传输，无操作/工具/投影的形状变化——由 public-surface-adversarial verify 的四条证据 lane 背书。"
+    },
+    "openapi": {
+      "status": "derived",
+      "scope": "领域事件 payload schema 新增的传递可达面；零操作/工具/投影形状变化",
+      "reason": "contracts 是四公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射）；本 change 在 contracts 新增领域事件 payload schema（R12：事件 payload 用 contracts zod 声明），经文件级归因传递可达本面，故按制度声明 derived。事件总线是进程内的、不落库、不过任何传输，无操作/工具/投影的形状变化——由 public-surface-adversarial verify 的四条证据 lane 背书。"
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "scope": "领域事件 payload schema 新增的传递可达面；零操作/工具/投影形状变化",
+      "reason": "contracts 是四公开面的物料库（CLASSIFIER_SURFACE_MAP.contracts 保守映射）；本 change 在 contracts 新增领域事件 payload schema（R12：事件 payload 用 contracts zod 声明），经文件级归因传递可达本面，故按制度声明 derived。事件总线是进程内的、不落库、不过任何传输，无操作/工具/投影的形状变化——由 public-surface-adversarial verify 的四条证据 lane 背书。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段4第一刀（docs/refactor/08-ddd-target-architecture.md §C 为图纸）：进程内同步领域事件总线（DomainEventBus 窄 port + DI token，best-effort、不落库、零 migration）；contracts 新增五个事件的 payload schema（TaskAdmitted/SandboxProvisioned/TaskRunStarted/TaskSettled/TaskSuperseded）；在既有发布点（admission worker/inline、provisioning 编排、guardrails 残余编排、终态转移、tasks supersede）接入发布调用，五个横切订阅者本 change 内保持既有同步调用不变（双写过渡，后续 change 逐个切订阅）；cutover 开关框架（env，默认新路径、逃生口回旧路径，模板=TASK_ADMISSION_V2_CUTOVER）；非事件清单三项（terminal audit detail 回执、admission work 状态转移、diagnostics write-gate）显式记录并加守护，防后续 change 误把带回执的调用改成事件。",
+      "reason": "阶段4（领域事件+guardrails 解耦）的机制底座：先立总线与事件目录，后续 change 一个横切关注点一个地从 guardrails 的同步调用改订阅。本 change 不移除任何既有调用，因此 guardrails 行为零变化。"
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument; its durable admission work item is committed with the winning REST task row."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured content remains the canonical initial Task while compatibility text retains the historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata continues to explain immediate asynchronous provisioning and polling without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    },
+    {
+      "operation": "runtimeModels.query",
+      "kind": "rate-limit-policy",
+      "detail": "REST applies a dedicated per-principal catalog throttle while MCP remains subject to the MCP transport limiter; both retain shared catalog-service capacity controls."
+    },
+    {
+      "operation": "tasks.transcript",
+      "kind": "mcp-output-schema-relaxation",
+      "detail": "The MCP SDK high-level registrar requires a root object output schema, so tools/list advertises an object derived from every canonical SessionHistory union variant while runtime structured content remains canonically validated."
+    },
+    {
+      "operation": "tasks.events",
+      "kind": "mcp-exclusion",
+      "detail": "Lifecycle SSE remains REST-only because MCP tools use request-response transport."
+    },
+    {
+      "operation": "schedules.delete",
+      "kind": "success-projection",
+      "detail": "REST keeps a 204 empty body while MCP returns an explicit deletion acknowledgement."
+    }
+  ],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}

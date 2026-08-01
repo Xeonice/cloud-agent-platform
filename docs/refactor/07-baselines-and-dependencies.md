@@ -47,7 +47,7 @@
 | 跨上下文具体 .service import（R7） | ~~112 处~~ → **136 处 / 61 文件**（活测，见下） | 阶段 4–6 燃尽 |
 | 层方向逆行（R7） | 2 处 / 1 文件（terminal application → interface） | 阶段 4 |
 | 判不出层的文件（R7 unclassified） | 132 文件 / 共 278 个受管文件 | 阶段 6 归拢 |
-| guardrails→五关注点直接 import（R11） | 阶段 4 开工时实测 | 阶段 4 |
+| guardrails→五关注点直接 import（R11） | ~~阶段 4 开工时实测~~ → **27 处符号引用 / 6 个 collaborator**（活测，见 E.2） | 阶段 4 燃尽 |
 | mock/real seam 旁路（S2） | ≥2 组件（api-stream-panel、session-cast-log） | 阶段 3 起 |
 | `as never` cast（代码质量随行） | ~11 处（task-response / sandbox-environments.service 集中） | 阶段 5 顺带 |
 | controller 直查 Prisma | 5 处 | 阶段 5 立修（量小直接清零） |
@@ -91,3 +91,33 @@ comparator `scripts/ratchets/comparator.mjs` 比对。与盘点快照差异及�
 （`layers.fileClassification` / `layers.allowedImports` /
 `crossContextRules.machineReadable` / `prismaPlacement`），脚本是纯解释器。
 重测 = 重跑该脚本；基线增减必须与修复同 PR（comparator 的 fail-on-stale 语义）。
+
+### E.2 R11 播种（add-domain-event-bus，2026-08-01）
+
+上表 R11 行由 `node scripts/ratchets/r11-dependency-budget.mjs` 在本 change 自己
+的树上**活测**得出——**不是**从工件 08 §C 或主计划抄录的数字，落库基线
+`scripts/ratchets/r11.json`：**6 个 collaborator 条目 / 27 处符号引用**。
+
+| collaborator（条目键去掉 `guardrails-symbol-reference:` 前缀） | 计数符号 | 种子 | 归零责任（阶段 4） |
+|---|---|---|---|
+| `this.audit` | `this.audit` | 9 | audit 普通路径改订阅 |
+| `this.runnerMinutes` | `this.runnerMinutes` | 6 | runner 计费改订阅 |
+| `provisioningDiagnosticRecorder` | `provisioningDiagnosticRecorder` | 4 | diagnostics 改订阅 |
+| `provisioningDiagnosticWriteGate` | `provisioningDiagnosticWriteGate` | 4 | diagnostics 改订阅（回执型协作随 recorder 重议） |
+| `this.transcripts` | `this.transcripts` | 2 | transcript 收尾改订阅 |
+| `metrics-projection` | `SemaphoreProjectionSource` | 2 | metrics 改订阅 |
+
+统计口径**按符号引用**计，不按调用点：被测文件里该符号的每一次文本出现算一处，
+构造注入参数、向下透传、类型标注一并计入。这比数调用严格，且正是阶段 4 的完成
+判据——guardrails **不再提到**这个 collaborator，而不只是最后一个 `await` 消失。
+口径写在条目键前缀里（`guardrails-symbol-reference:`），只读基线文件的人不会把
+它误读成调用点计数。
+
+collaborator 清单的唯一声明在检查器里（`COLLABORATORS`），基线文件只持有可容忍
+计数——与 r7.json 只持有 layout 闸门产出键的计数同构。这样条目**燃尽删除之后
+仍在测量**：某个 collaborator 归零删条目、后续又被重新引入时，比对结果是「有违规
+无基线条目」的红，而不是无人测量的绿。全部条目归零时删除 `r11.json` 本身，R11
+转为常规禁止。
+
+重测 = 重跑该脚本（CI step「Dependency budget ratchet (R11)」）；与 R7 同规矩，
+基线增减必须与改动同 commit——低于基线的陈旧条目同样红。
