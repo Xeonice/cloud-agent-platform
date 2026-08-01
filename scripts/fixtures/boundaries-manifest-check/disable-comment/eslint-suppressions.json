@@ -1,0 +1,6 @@
+{
+  "$comment": "FIXTURE decoy. This is the shape ESLint's bulk-suppressions file takes, placed where a gate that consumed it would find it. The interpreter's declared inputs are the manifest and the source — if this file ever silenced the violation in silenced.tsx, the two enforcement loops would no longer be independent.",
+  "apps/web/src/components/silenced.tsx": {
+    "no-restricted-imports": { "count": 1 }
+  }
+}

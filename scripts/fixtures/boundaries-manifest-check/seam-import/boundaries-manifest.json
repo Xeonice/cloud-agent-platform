@@ -1,0 +1,27 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — test data, not the repository declaration.",
+  "seamRules": [
+    {
+      "id": "S2",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#C S2",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web/src/components"
+      ],
+      "target": {
+        "path": "apps/web/src/lib/api/real.ts",
+        "specifiers": []
+      },
+      "allowTypeImports": true,
+      "allowNames": [
+        {
+          "name": "ApiError",
+          "reason": "error classifier — it selects no transport, so importing it is not a bypass",
+          "owner": "console",
+          "change": "enforce-boundaries-from-manifest"
+        }
+      ]
+    }
+  ]
+}

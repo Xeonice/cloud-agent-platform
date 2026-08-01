@@ -1,0 +1,362 @@
+{
+  "$comment": "工件02：边界清单（机器可读）。A 表包级规则 P1–P8、C 表 seam 规则 S1–S3、D 表安全 seam 四条，逐条转写自 docs/refactor/02-boundaries-manifest.md，每条的 `provenance` 指向其表行。规则内容只在这一处：消费者恰两个且互不派生——packages/eslint-config 的规则工厂（lint 时直读本文件）与 scripts/ 的独立 CI 解释器（自己重扫全树），两者都不得内嵌规则数据、不得读对方的输出、不得生成中间产物。修改本文件 = 架构决策，须经 OpenSpec change 留痕（同 docs/refactor/contexts-manifest.json 契约）。散文版与裁定理由见 02-boundaries-manifest.md。",
+  "version": 1,
+  "source": "docs/refactor/02-boundaries-manifest.md",
+  "change": "enforce-boundaries-from-manifest",
+  "conventions": {
+    "$comment": "字段语义。消费者按本节解释下面的条目；本节不含规则数据。",
+    "provenance": "本条转写的工件02 表行（`<path>:<line>`）。条目缺 `provenance` 或 `change` 即畸形：消费者必须 fail-closed，点名该条目与缺失字段。",
+    "enforcement": {
+      "manifest": "规则数据在本文件，由两个消费者各自独立派生执行。",
+      "existing-gate": "规则已由 `enforcedBy` 列出的既有执行器落地；本文件只做引用登记，故意不含可执行规则数据——ESLint 层与 CI 解释器都不得为其派生第二份执行。"
+    },
+    "appliesTo": "消费方身份：仓根相对的源码扫描根（目录，可含 `*` 段）。解析出零文件即败。",
+    "forbid.packagePatterns": "被禁的包名 pattern（不是文件系统 zone）——全仓 import 一律走 `@cap-console/*` 包名，包名 pattern 因此免疫 tsconfig alias 解析。",
+    "forbid.paths": "被禁的目标目录（仓根相对）。两个消费者各自派生：ESLint 层派生为 specifier 文本 pattern（如 `**/apps/api/**`），解释器层解析 specifier 后按解析结果是否落在该目录下判定。只判跨包越界——解析结果落在消费方自身包内的 import 永不构成违规。",
+    "forbid.allowTypeImports": "true = 只禁值 import，`import type` 放行（type-only 语义）；false = 值与类型一律禁。",
+    "exemption": "豁免/放行条目恰好带三个可复核字段 `reason`、`owner`、`change`（外加定位键 `path` 或 `name`）——per-file seam 豁免、被容忍的出网点、规则内的 allowlist 条目一律同此。缺任一字段的条目不得被采纳：消费者点名该条目与缺失字段并非零退出，既不静默应用也不静默丢弃。",
+    "uniqueness": "安全 seam 的唯一性谓词：在 `scanRoots` 下（排除 `excludes`）匹配 `pattern` 的实现处数必须等于 `expectedCount`；消费方的 import 不构成实现，故谓词按定义处写法书写。",
+    "securitySeams": "工件02 D 表登记的「单一计算」接缝——上下文/目录重排时必须保持唯一实现，禁止第二份。规则：安全 seam 的移动必须在同一 change 内更新 D 表 + 对应锚定测试，闸门断言「seam 声明的文件存在且唯一」（docs/refactor/02-boundaries-manifest.md:50-51）。"
+  },
+  "packageRules": [
+    {
+      "id": "P1",
+      "statement": "`apps/web` 禁止 import `@cap-console/api`、`@cap-console/sandbox*`、`apps/api/*` 任何路径",
+      "status": "事实成立，无机制",
+      "enforcement": "manifest",
+      "appliesTo": ["apps/web/src"],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api",
+          "@cap-console/api/*",
+          "@cap-console/sandbox",
+          "@cap-console/sandbox/*",
+          "@cap-console/sandbox-*",
+          "@cap-console/sandbox-*/*"
+        ],
+        "paths": ["apps/api"],
+        "allowTypeImports": false
+      },
+      "message": "apps/web 不得触达 api 或 sandbox 系列（工件02 A 表 P1）。",
+      "derivation": "`@cap-console/sandbox*` 展开为 facade 包与全部 `sandbox-*` 包的包名 pattern；`apps/api/* 任何路径` 落 `forbid.paths`。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:16",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P2",
+      "statement": "`apps/api` 禁止 import `@cap-console/web`、`@cap-console/ui`、`apps/web/*`",
+      "status": "事实成立，无机制",
+      "enforcement": "manifest",
+      "appliesTo": ["apps/api/src"],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/web",
+          "@cap-console/web/*",
+          "@cap-console/ui",
+          "@cap-console/ui/*"
+        ],
+        "paths": ["apps/web"],
+        "allowTypeImports": false
+      },
+      "message": "apps/api 不得触达控制台前端（工件02 A 表 P2）。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:17",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P3",
+      "statement": "`apps/api` 对 sandbox 系列只准 import facade `@cap-console/sandbox`（+ devDep conformance 仅测试）",
+      "status": "有闸门（sandbox-package-boundary），阶段 1 扩域",
+      "enforcement": "existing-gate",
+      "enforcedBy": ["apps/api/src/sandbox/sandbox-package-boundary.test.mjs"],
+      "note": "已落地规则按引用登记：本条不含可执行规则数据，ESLint 规则工厂与 CI 解释器都不得为 P3 派生第二份执行。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:18",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P4",
+      "statement": "`packages/*` 禁止 import `apps/*`",
+      "status": "事实成立，无机制",
+      "enforcement": "manifest",
+      "appliesTo": ["packages/*/src"],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api",
+          "@cap-console/api/*",
+          "@cap-console/web",
+          "@cap-console/web/*",
+          "@cap-console/www",
+          "@cap-console/www/*"
+        ],
+        "paths": ["apps"],
+        "allowTypeImports": false
+      },
+      "message": "packages/* 不得依赖 apps/*（工件02 A 表 P4）。",
+      "derivation": "`apps/*` 的包身份即三个 app 包名（web/api/www），路径形态另由 `forbid.paths` 覆盖。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:19",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P5",
+      "statement": "`packages/contracts` 禁止 import 任何内部包",
+      "status": "事实成立，无机制",
+      "enforcement": "manifest",
+      "appliesTo": ["packages/contracts/src"],
+      "forbid": {
+        "packagePatterns": ["@cap-console/*"],
+        "paths": ["apps", "packages"],
+        "allowTypeImports": false
+      },
+      "message": "packages/contracts 是叶子：不得 import 任何内部包（工件02 A 表 P5）。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:20",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P6",
+      "statement": "`packages/sandbox-core` 保持零运行时依赖；contracts 仅 `import type`（D14 类型层）",
+      "status": "有一半机制（词表 parity），type-only 无守护",
+      "enforcement": "manifest",
+      "appliesTo": ["packages/sandbox-core/src"],
+      "forbid": {
+        "packagePatterns": ["@cap-console/*"],
+        "paths": ["apps", "packages"],
+        "allowTypeImports": true
+      },
+      "message": "packages/sandbox-core 零运行时依赖：内部包只准 `import type`，值 import 会拖进运行时依赖（工件02 A 表 P6）。",
+      "derivation": "「零运行时依赖」的可执行语义 = 值 import 一律禁、type-only 放行（`import type` 在 emit 期被抹除）；这正是 contracts 作为 D14 类型层被特许的形态。type-only 区分对两个消费者同为硬要求：ESLint 侧用 allowTypeImports，解释器侧复刻 import kind 判定。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:21",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P7",
+      "statement": "facade `packages/sandbox` 的导出面显式白名单，禁止 `export *` 泄漏 provider 内部符号（R6）",
+      "status": "✅ 已落地（close-gate-blindspots 2.3–2.6）：`src/index.ts` 全命名导出（provider 符号仅 apps/api 经 barrel 实际触达的 26 个，逐条 phase-7a 注记）；闸门 `packages/sandbox/test/facade-surface.gate.mjs` 对账 committed `expected-facade-surface.json`，`export *` 即红，随包 test script 进 CI；scripts/ 金丝雀等非 api 消费者直连 provider 包 dist，不走白名单",
+      "enforcement": "existing-gate",
+      "enforcedBy": [
+        "packages/sandbox/test/facade-surface.gate.mjs",
+        "packages/sandbox/test/expected-facade-surface.json"
+      ],
+      "note": "已落地规则按引用登记：本条不含可执行规则数据，ESLint 规则工厂与 CI 解释器都不得为 P7 派生第二份执行。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:22",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P8",
+      "statement": "`apps/www` 与控制台/后端零 runtime 依赖",
+      "status": "事实成立（刻意），无机制",
+      "enforcement": "manifest",
+      "appliesTo": [
+        "apps/www/app",
+        "apps/www/components",
+        "apps/www/lib",
+        "apps/www/scripts"
+      ],
+      "forbid": {
+        "packagePatterns": ["@cap-console/*"],
+        "paths": ["apps", "packages"],
+        "allowTypeImports": true
+      },
+      "message": "apps/www 与控制台/后端零 runtime 依赖：宣传站不得值 import 任何内部包（工件02 A 表 P8）。",
+      "derivation": "规则原文限定 runtime，故只禁值 import；扫描根是 www 的源码目录，工具链 devDep（eslint-config/tsconfig）只出现在配置文件，不在扫描根内。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:23",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ],
+  "seamRules": [
+    {
+      "id": "S1",
+      "statement": "`apps/web` 出网只经 `src/lib/api/real.ts` 与 `src/lib/ws-client.ts`；其他文件禁止 `fetch(`/`new WebSocket`",
+      "basis": "发现式扫描（非枚举 transport 文件），CORS 闸门的枚举依赖此规则",
+      "enforcement": "manifest",
+      "appliesTo": ["apps/web/src"],
+      "transports": ["apps/web/src/lib/api/real.ts", "apps/web/src/lib/ws-client.ts"],
+      "egress": {
+        "calls": ["fetch"],
+        "constructors": ["WebSocket"],
+        "receivers": ["window", "globalThis", "self"]
+      },
+      "message": "出网只准经 transport seam（apps/web/src/lib/api/real.ts、apps/web/src/lib/ws-client.ts）——工件02 C 表 S1；G8 CORS 闸门的 CONSOLE_TRANSPORTS 枚举依赖此规则。",
+      "derivation": "`transports` 与 G8 闸门 scripts/console-request-header-cors-check.mjs 的 CONSOLE_TRANSPORTS 是同一份枚举，S1 正是背书它的规则；规则本身按发现式扫描执行（抓出网调用点），transports 只作豁免位置，不退化成文件枚举。`receivers` 是同一 `fetch` 的成员写法（`window.fetch` 等），供全树解释器覆盖 selector 抓不到的拼法，不是新规则。",
+      "exemptions": [
+        {
+          "path": "apps/web/src/lib/mock-session.ts",
+          "reason": "capabilities 开关的 mock 侧半边：本文件的一组 fetch（落账时 5 处，全部指向后端 auth 端点）是结构性的，不是待还的债；把它升格为第三个 transport 会稀释 G8 的 CONSOLE_TRANSPORTS 枚举，进 ratchet 则制造永远清不掉的条目、污染「基线只能减」语义（design D3）。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "path": "apps/web/src/components/auth/admin-reveal-modal.tsx",
+          "reason": "存量债：组件内直连 fetch（落账时 1 处），应归拢进 transport seam，归拢本身超出本 change 范围（Non-Goal）。落本文件而非 eslint-suppressions 账本是 integration 的裁定——CI 解释器按 spec「The interpreters do not feed each other」不得读 suppression file，若这处只记在 suppressions 里，解释器就会在已提交树上变红；一债一账要求它只记一处，故记在两个消费者都直读的这里。闸门对「不再覆盖任何违规的豁免」报红，收紧压力等同 ratchet。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "path": "apps/web/src/components/shell/update-banner.tsx",
+          "reason": "存量债：组件内直连 fetch（落账时 1 处），同 admin-reveal-modal，归拢留给后续 web 专项 change；落账位置理由同上。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        }
+      ],
+      "provenance": "docs/refactor/02-boundaries-manifest.md:35",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "S2",
+      "statement": "mock/real 切换只经 `lib/api/capabilities.ts` 声明的 queryFn seam；组件禁止直接 import `real.ts` 的函数",
+      "basis": "seam 已被旁路（api-stream-panel.tsx:28、session-cast-log.tsx:31-33），存量进 ratchet",
+      "enforcement": "manifest",
+      "appliesTo": ["apps/web/src/components"],
+      "seam": "apps/web/src/lib/api/capabilities.ts",
+      "target": {
+        "path": "apps/web/src/lib/api/real.ts",
+        "specifiers": ["@/lib/api/real"]
+      },
+      "allowTypeImports": true,
+      "allowNames": [
+        {
+          "name": "ApiError",
+          "reason": "错误类，不取数：组件用它分类失败原因，不在运行时选择 real/mock transport。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "name": "TaskProvisioningDiagnosticsClientError",
+          "reason": "错误类，不取数：同 ApiError 家族，只承载失败分类。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "name": "runtimeModelErrorFromApiError",
+          "reason": "错误分类器：把 ApiError 翻成 UI 文案，不发请求、不选择 transport。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "name": "repoImportFailureFromApiError",
+          "reason": "错误分类器：把 ApiError 翻成导入失败原因，不发请求、不选择 transport。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "name": "taskRepoCopyNotReadyFromApiError",
+          "reason": "错误分类器：把 ApiError 翻成副本未就绪原因，不发请求、不选择 transport。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "name": "sessionCastUnavailableReasonFromApiError",
+          "reason": "错误分类器：把 ApiError 翻成终端记录不可用原因，不发请求、不选择 transport。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        }
+      ],
+      "exemptions": [
+        {
+          "path": "apps/web/src/components/api/api-stream-panel.tsx",
+          "reason": "存量旁路（落账时 1 处：streamApiEvents），归拢进 capabilities seam 超出本 change 范围（Non-Goal）。落本文件而非 eslint-suppressions 账本是 integration 的裁定：CI 解释器按 spec 不得读 suppression file，只记在 suppressions 里会让解释器在已提交树上变红；一债一账要求只记一处，故记在两个消费者都直读的这里。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "path": "apps/web/src/components/session/session-cast-log.tsx",
+          "reason": "存量旁路（落账时 1 处：getSessionCast），理由同 api-stream-panel。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        },
+        {
+          "path": "apps/web/src/components/settings/codex-direct-dialog.tsx",
+          "reason": "存量旁路（落账时 3 处：start/poll/cancelCodexDeviceLogin）——按 D4 谓词实测出的第三处存量文件，proposal 的「基线 2」是开工前的快照，实测为准。理由同 api-stream-panel。",
+          "owner": "apps/web",
+          "change": "enforce-boundaries-from-manifest"
+        }
+      ],
+      "message": "mock/real 只在 capabilities.ts 的 queryFn seam 上选择——见该文件头「the SINGLE real/mock switch point…queryFn is the only place real-vs-mock is chosen」；组件不得值 import real.ts 的取数函数（工件02 C 表 S2）。",
+      "derivation": "谓词按 design D4：只禁「数据获取函数的值 import」，`import type` 与本表 `allowNames` 登记的非取数值导出放行——类型与错误分类器不在运行时选择 transport，不构成旁路 capabilities 开关。`allowNames` 之外的新导出默认被禁（fail-closed）：扩名单 = 改本文件 = 架构决策留痕。存量旁路落本文件的 `exemptions`（三字段），不再另记 eslint-suppressions——一债一账，且两个消费者都直读同一处；只有解释器扫描范围之外的 ESLint-only 存量（测试文件）留在 suppressions 账本。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:36",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "S3",
+      "statement": "`apps/api` 的 dockerode/Docker/provider 内部符号禁令全 src 生效",
+      "basis": "✅ 已落地（close-gate-blindspots 3.4/3.5）：import 与符号双扫描的 roots 均由 `contexts-manifest.json` `scope` 驱动（manifest 缺失/空 scope/零文件均红，无硬编码回退）；存量 5 文件走 `scripts/ratchets/r3.json`（共享 comparator，shrink-only），validator 一路阶段 7a 根治",
+      "enforcement": "existing-gate",
+      "enforcedBy": [
+        "apps/api/src/sandbox/sandbox-package-boundary.test.mjs",
+        "scripts/ratchets/r3.json"
+      ],
+      "note": "已落地规则按引用登记：本条不含可执行规则数据，ESLint 规则工厂与 CI 解释器都不得为 S3 派生第二份执行。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:37",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ],
+  "securitySeams": [
+    {
+      "id": "origin-computation",
+      "seam": "Origin 计算",
+      "location": "`apps/api/src/auth/request-origin.ts`（自述 \"the ONE computation\"）",
+      "note": "消费方：auth.guard 的 session CSRF 闸、origin-checked-ws-adapter、main.ts WS adapter 接线",
+      "path": "apps/api/src/auth/request-origin.ts",
+      "uniqueness": {
+        "pattern": "export function isTrustedRequestOrigin",
+        "scanRoots": ["apps/api/src"],
+        "excludes": ["**/*.spec.ts", "**/*.test.ts", "**/*.test.mjs"],
+        "expectedCount": 1
+      },
+      "anchors": ["apps/api/src/auth/request-origin.spec.ts"],
+      "provenance": "docs/refactor/02-boundaries-manifest.md:45",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "session-validation",
+      "seam": "会话校验",
+      "location": "rest-session-validation / ws-session-validation 的统一入口",
+      "note": "已有 spec 测试锚定",
+      "path": "apps/api/src/auth/auth-session.service.ts",
+      "uniqueness": {
+        "pattern": "async resolveSession(",
+        "scanRoots": ["apps/api/src"],
+        "excludes": ["**/*.spec.ts", "**/*.test.ts", "**/*.test.mjs"],
+        "expectedCount": 1
+      },
+      "anchors": [
+        "apps/api/src/auth/rest-session-validation.spec.ts",
+        "apps/api/src/terminal/ws-session-validation.spec.ts"
+      ],
+      "derivation": "D 表登记的是「统一入口」；实测该入口是 AuthSessionService.resolveSession——REST 经 auth.guard、WS 经 terminal.gateway 都把它作为 operator-principal 的 resolveSession 解析器传入，两条锚定 spec 各自钉住一侧。消费方传入的 `resolveSession:` 属性不构成实现，故谓词按定义处写法书写。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:46",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "ssrf-gate",
+      "seam": "SSRF 闸",
+      "location": "`assertSafeProviderUrl`（forge-no-ssrf-gate.spec 锚定）",
+      "note": "forge HTTP 直连的信任边界声明不变",
+      "path": "apps/api/src/settings/assert-safe-provider-url.ts",
+      "uniqueness": {
+        "pattern": "export async function assertSafeProviderUrl",
+        "scanRoots": ["apps/api/src"],
+        "excludes": ["**/*.spec.ts", "**/*.test.ts", "**/*.test.mjs"],
+        "expectedCount": 1
+      },
+      "anchors": ["apps/api/src/forge/forge-no-ssrf-gate.spec.ts"],
+      "provenance": "docs/refactor/02-boundaries-manifest.md:47",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "credential-decryption",
+      "seam": "凭据加密读取",
+      "location": "三读取点共用 helper（multi-forge 时代裁定）",
+      "note": "禁止新读取点绕 helper",
+      "path": "apps/api/src/crypto/secret-storage.ts",
+      "uniqueness": {
+        "pattern": "export function decryptStored",
+        "scanRoots": ["apps/api/src"],
+        "excludes": ["**/*.spec.ts", "**/*.test.ts", "**/*.test.mjs"],
+        "expectedCount": 1
+      },
+      "anchors": [],
+      "derivation": "共用 helper 的解密入口是 secret-storage.ts 的 decryptStored（encryptToStored/storeMaybeEncrypted/readMaybeEncrypted 同文件配套）；消费方 import 不计重，故谓词按定义处写法书写。",
+      "provenance": "docs/refactor/02-boundaries-manifest.md:48",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

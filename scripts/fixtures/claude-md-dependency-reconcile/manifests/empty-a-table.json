@@ -1,0 +1,6 @@
+{
+  "$comment": "Fixture: an A table with no entries. Reconciling prose against nothing agrees with everything, so this must be red.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "packageRules": []
+}

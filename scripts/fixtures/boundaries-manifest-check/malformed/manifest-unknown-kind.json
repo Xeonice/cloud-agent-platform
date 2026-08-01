@@ -1,0 +1,14 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — a manifest-enforced entry that declares no rule data this interpreter implements (no forbid / egress / target). Skipping it would be a boundary declared and unenforced, which is the failure mode the manifest exists to end.",
+  "packageRules": [
+    {
+      "id": "P9",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P9",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web"
+      ]
+    }
+  ]
+}

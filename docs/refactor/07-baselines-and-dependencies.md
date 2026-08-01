@@ -43,8 +43,10 @@
 | 规则 | 基线值（盘点时点） | 归零责任 |
 |---|---|---|
 | dockerode/Docker 越界（R3） | 5 处生产文件（metrics/settings/runtime-models/sandbox-environments/self-update） | validator+probe 两路 → 阶段 7a；其余逐个评估 |
-| Prisma 出 store 层（R7） | 260 处 / 45 文件 | 阶段 5 燃尽 |
-| 跨上下文具体 .service import（R7） | 112 处（跨模块具体实现导入） | 阶段 4–6 燃尽 |
+| Prisma 出 store 层（R7） | ~~260 处 / 45 文件~~ → **60 处 / 53 文件**（活测，见下） | 阶段 5 燃尽 |
+| 跨上下文具体 .service import（R7） | ~~112 处~~ → **136 处 / 61 文件**（活测，见下） | 阶段 4–6 燃尽 |
+| 层方向逆行（R7） | 2 处 / 1 文件（terminal application → interface） | 阶段 4 |
+| 判不出层的文件（R7 unclassified） | 132 文件 / 共 278 个受管文件 | 阶段 6 归拢 |
 | guardrails→五关注点直接 import（R11） | 阶段 4 开工时实测 | 阶段 4 |
 | mock/real seam 旁路（S2） | ≥2 组件（api-stream-panel、session-cast-log） | 阶段 3 起 |
 | `as never` cast（代码质量随行） | ~11 处（task-response / sandbox-environments.service 集中） | 阶段 5 顺带 |
@@ -69,3 +71,23 @@
 
 本文件数字是**盘点快照**不是活数据。各阶段开工 change 的第一个 task 为重测
 本阶段相关基线并更新本文件（同 change 留痕），防止拿过期数字做拆分决策。
+
+### E.1 R7 活测回写（enforce-boundaries-from-manifest，2026-08-01）
+
+上表 R7 四行由 `node scripts/context-layout-check-v2.mjs` 实测得出，落库基线
+`scripts/ratchets/r7.json`：**247 条目 / 330 处**，条目键为
+`<检查类>:<文件路径>`（按文件按类，不按类汇总——汇总会让 A 文件的修复替 B
+文件的新违规买单，且 comparator 只能说「数字涨了」而点不出文件），经共享
+comparator `scripts/ratchets/comparator.mjs` 比对。与盘点快照差异及其原因：
+
+| 类别 | 快照 | 活测 | 差异来源 |
+|---|---|---|---|
+| Prisma 出 store 层 | 260 处 / 45 文件 | 60 处 / 53 文件 | 快照数的是**符号出现次数**（含构造注入、类型标注、每次 `this.prisma.*` 调用），活测数的是**触达点**（import `@prisma/client` 或 `PrismaService` 的 import 语句），一处触达带出多次使用；文件数反而更多（53 > 45），即触达面比快照更广 |
+| 跨上下文具体实现 import | 112 处 | 136 处 / 61 文件 | 快照只数 `.service` 具体实现；活测按工件01 `crossContextRules` 判全部非法形态（非 `*.port.ts`、非 DI 组装、非共享内核），把 pipe/gateway/types 等一并计入 |
+| 层方向逆行 | 无快照 | 2 处 / 1 文件 | 首次测量 |
+| 判不出层 | 无快照 | 132 / 278 文件 | 首次测量；工件01 `layers.fileClassification` 只声明既有命名约定，未命中者一律报 unclassified（不静默跳过） |
+
+判定规则的唯一声明在 `docs/refactor/contexts-manifest.json`
+（`layers.fileClassification` / `layers.allowedImports` /
+`crossContextRules.machineReadable` / `prismaPlacement`），脚本是纯解释器。
+重测 = 重跑该脚本；基线增减必须与修复同 PR（comparator 的 fail-on-stale 语义）。

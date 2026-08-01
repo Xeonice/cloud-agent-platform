@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "纯边界机制工作（ESLint 规则生成器、CI 闸门、layout 报告），不触碰任何运行时代码路径或 /v1 面。"
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "不触碰 MCP。"
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "操作注册表不变。"
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "Playground 不变。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段3边界前移（docs/refactor/02-boundaries-manifest.md 定稿）：boundaries manifest 落成机器可读 JSON（单一声明源）→ ESLint flat-config 片段生成器（no-restricted-imports/no-restricted-syntax，接入 14 个 eslint.config，IDE+pre-commit 即时反馈）+ 同源 CI 闸门（独立解释器全量扫描兜底），落地 R1 包级规则（P1–P8）与 R2 app 内 seam（S1 web 出网只经 real.ts/ws-client 发现式扫描、S2 mock/real seam 防旁路——存量直连组件 api-stream-panel/session-cast-log 建 ratchet）；layout-check v2 雏形读 docs/refactor/contexts-manifest.json 做跨上下文 import 与层方向（interface→application→domain/store、Prisma 只在 *.store.ts）的报告模式 ratchet 基线（R7，不拦截）；R9 安全 seam 存在性断言（request-origin 的 the-ONE-computation/会话校验统一入口/assertSafeProviderUrl/凭据读取 helper 四项，工件 02 D 表）；R10 CLAUDE.md 依赖清单对账（解析 4 份 CLAUDE.md 的 depend-on 段与 manifest A 表比对）。全部遵循工件 04 元规则（发现式/全量映射、空扫描即败、豁免带 tracking、生成器与闸门同源单一声明）。",
+      "reason": "把架构边界反馈从 CI（最慢回路）前移到 IDE；为阶段 6 的 layout v2 转 required 建立 ratchet 基线。"
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}

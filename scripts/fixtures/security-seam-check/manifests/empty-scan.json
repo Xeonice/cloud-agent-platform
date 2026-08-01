@@ -1,0 +1,20 @@
+{
+  "$comment": "Fixture: the seam file exists, but the uniqueness scan roots resolve to nothing. Counting zero implementations in zero files is not evidence of uniqueness.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "securitySeams": [
+    {
+      "id": "origin-computation",
+      "seam": "Origin 计算",
+      "path": "apps/api/src/auth/request-origin.ts",
+      "uniqueness": {
+        "pattern": "export function isTrustedRequestOrigin",
+        "scanRoots": ["apps/api/src/nowhere"],
+        "excludes": [],
+        "expectedCount": 1
+      },
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 # apps/web — the console
 
 The TanStack Start application an operator uses: task list, task creation, the
-live terminal, settings, history. 261 source files.
+live terminal, settings, history. Roughly 250 source files.
 
 This is a leaf: **nothing imports `@cap-console/web`.**
 

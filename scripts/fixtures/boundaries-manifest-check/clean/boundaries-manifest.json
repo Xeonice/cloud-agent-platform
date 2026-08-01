@@ -1,0 +1,75 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — a tree that respects every declared rule, so the gate must be able to pass. A gate that can only fail proves nothing.",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web"
+      ],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api",
+          "@cap-console/sandbox*"
+        ],
+        "paths": [
+          "apps/api"
+        ],
+        "allowTypeImports": false
+      }
+    },
+    {
+      "id": "P6",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P6",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "packages/sandbox-core"
+      ],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/contracts"
+        ],
+        "allowTypeImports": true
+      }
+    },
+    {
+      "id": "P7",
+      "enforcement": "existing-gate",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P7",
+      "change": "close-gate-blindspots-and-ci-hygiene",
+      "enforcedBy": [
+        "packages/sandbox/test/facade-surface.gate.mjs"
+      ]
+    }
+  ],
+  "seamRules": [
+    {
+      "id": "S1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#C S1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web/src"
+      ],
+      "transports": [
+        "apps/web/src/lib/api/real.ts"
+      ],
+      "egress": {
+        "calls": [
+          "fetch"
+        ],
+        "constructors": [
+          "WebSocket"
+        ],
+        "receivers": [
+          "window",
+          "globalThis",
+          "self"
+        ]
+      }
+    }
+  ]
+}

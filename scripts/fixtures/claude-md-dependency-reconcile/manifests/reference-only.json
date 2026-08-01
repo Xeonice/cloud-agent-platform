@@ -1,0 +1,15 @@
+{
+  "$comment": "Fixture: the only entry touching apps/web is registered by reference (enforcement \"existing-gate\"), so it carries no rule data. A doc reconciled against no rule data is reconciled against nothing — red, not green.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "packageRules": [
+    {
+      "id": "P3",
+      "enforcement": "existing-gate",
+      "appliesTo": ["apps/web/src"],
+      "enforcedBy": ["apps/api/src/sandbox/sandbox-package-boundary.test.mjs"],
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

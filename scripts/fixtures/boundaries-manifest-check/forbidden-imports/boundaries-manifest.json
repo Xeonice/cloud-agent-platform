@@ -1,0 +1,33 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — test data, not the repository declaration. The real one is docs/refactor/boundaries-manifest.json.",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web"
+      ],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api",
+          "@cap-console/sandbox*"
+        ],
+        "paths": [
+          "apps/api"
+        ],
+        "allowTypeImports": false
+      }
+    },
+    {
+      "id": "P3",
+      "enforcement": "existing-gate",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P3",
+      "change": "close-gate-blindspots-and-ci-hygiene",
+      "enforcedBy": [
+        "packages/sandbox/test/facade-surface.gate.mjs"
+      ]
+    }
+  ]
+}

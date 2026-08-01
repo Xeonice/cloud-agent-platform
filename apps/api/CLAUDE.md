@@ -1,7 +1,7 @@
 # apps/api — the orchestrator
 
 The NestJS service. It accepts tasks, admits them, provisions a sandbox per task,
-runs an agent inside it, and settles the result. 454 source files.
+runs an agent inside it, and settles the result. Roughly 450 source files.
 
 This is a leaf: **nothing imports `@cap-console/api`.** If you are looking for a
 reusable piece, it is not here.

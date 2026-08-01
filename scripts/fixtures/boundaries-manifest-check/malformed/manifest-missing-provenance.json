@@ -1,0 +1,18 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — a rule with no provenance and no owning change cannot be traced back to the table it claims to transcribe, so consumers reject it.",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "appliesTo": [
+        "apps/web"
+      ],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api"
+        ],
+        "allowTypeImports": false
+      }
+    }
+  ]
+}

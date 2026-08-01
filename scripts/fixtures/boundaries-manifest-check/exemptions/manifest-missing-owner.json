@@ -1,0 +1,36 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — the same exemption as boundaries-manifest.json with `owner` removed. An exemption nobody owns is not reviewable data, so the gate must refuse it by name instead of quietly applying it.",
+  "seamRules": [
+    {
+      "id": "S1",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#C S1",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": [
+        "apps/web/src"
+      ],
+      "transports": [
+        "apps/web/src/lib/api/real.ts"
+      ],
+      "egress": {
+        "calls": [
+          "fetch"
+        ],
+        "constructors": [],
+        "receivers": [
+          "window",
+          "globalThis",
+          "self"
+        ]
+      }
+    }
+  ],
+  "exemptions": [
+    {
+      "rule": "S1",
+      "path": "apps/web/src/lib/mock-session.ts",
+      "reason": "mock half of the capabilities switch — structural, not a debt to repay",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

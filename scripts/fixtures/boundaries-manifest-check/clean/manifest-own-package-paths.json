@@ -1,0 +1,16 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — the P5/P8 shape: a rule whose forbidden target is a DIRECTORY the consumer itself lives under. Every relative import apps/web writes to itself resolves under `apps`, so a gate that matched the path without asking whether the import crossed a package would report the console's own files as violations.",
+  "packageRules": [
+    {
+      "id": "P5-like",
+      "enforcement": "manifest",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P5",
+      "change": "enforce-boundaries-from-manifest",
+      "appliesTo": ["apps/web/src"],
+      "forbid": {
+        "paths": ["apps", "packages"],
+        "allowTypeImports": false
+      }
+    }
+  ]
+}

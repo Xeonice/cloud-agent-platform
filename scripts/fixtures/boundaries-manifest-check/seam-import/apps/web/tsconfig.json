@@ -1,0 +1,10 @@
+{
+  // FIXTURE tsconfig: the alias the console actually writes its imports with.
+  // A resolver that only understood `../` would judge `@/lib/api/real` against
+  // a specifier matching no rule and call the tree clean.
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}

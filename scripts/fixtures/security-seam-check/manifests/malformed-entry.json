@@ -1,0 +1,19 @@
+{
+  "$comment": "Fixture: a D-table entry that would otherwise pass, with `change` removed. Provenance fields are not decoration — an entry without them is malformed data.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "securitySeams": [
+    {
+      "id": "origin-computation",
+      "seam": "Origin 计算",
+      "path": "apps/api/src/auth/request-origin.ts",
+      "uniqueness": {
+        "pattern": "export function isTrustedRequestOrigin",
+        "scanRoots": ["apps/api/src"],
+        "excludes": ["**/*.legacy-spec.ts"],
+        "expectedCount": 1
+      },
+      "provenance": "fixture"
+    }
+  ]
+}

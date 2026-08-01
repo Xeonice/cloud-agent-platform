@@ -1,0 +1,12 @@
+{
+  "src/components/settings/claude-credential.test.tsx": {
+    "@typescript-eslint/no-restricted-imports": {
+      "count": 1
+    }
+  },
+  "src/components/settings/smtp-config-section.test.ts": {
+    "@typescript-eslint/no-restricted-imports": {
+      "count": 3
+    }
+  }
+}

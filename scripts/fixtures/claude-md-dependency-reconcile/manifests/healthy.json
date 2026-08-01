@@ -1,0 +1,41 @@
+{
+  "$comment": "Fixture manifest for scripts/claude-md-dependency-reconcile.test.mjs — the shape of docs/refactor/boundaries-manifest.json's A table, reduced to the two rules the fixture trees exercise. Not a copy of the real manifest and never read by the gate in production.",
+  "version": 1,
+  "change": "enforce-boundaries-from-manifest",
+  "packageRules": [
+    {
+      "id": "P1",
+      "enforcement": "manifest",
+      "appliesTo": ["apps/web/src"],
+      "forbid": {
+        "packagePatterns": [
+          "@cap-console/api",
+          "@cap-console/sandbox",
+          "@cap-console/sandbox-*"
+        ],
+        "allowTypeImports": false
+      },
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P3",
+      "enforcement": "existing-gate",
+      "enforcedBy": ["apps/api/src/sandbox/sandbox-package-boundary.test.mjs"],
+      "note": "Registered by reference: carries no rule data, so it must govern no prose here.",
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    },
+    {
+      "id": "P5",
+      "enforcement": "manifest",
+      "appliesTo": ["packages/*/src"],
+      "forbid": {
+        "packagePatterns": ["@cap-console/*"],
+        "allowTypeImports": false
+      },
+      "provenance": "fixture",
+      "change": "enforce-boundaries-from-manifest"
+    }
+  ]
+}

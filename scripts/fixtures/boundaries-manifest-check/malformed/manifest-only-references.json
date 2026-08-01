@@ -1,0 +1,23 @@
+{
+  "$comment": "FIXTURE manifest for scripts/boundaries-manifest-check.test.mjs — every rule defers to a gate that already exists, so this interpreter would look at nothing and report success. It must refuse instead.",
+  "packageRules": [
+    {
+      "id": "P3",
+      "enforcement": "existing-gate",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P3",
+      "change": "close-gate-blindspots-and-ci-hygiene",
+      "enforcedBy": [
+        "packages/sandbox/test/facade-surface.gate.mjs"
+      ]
+    },
+    {
+      "id": "P7",
+      "enforcement": "existing-gate",
+      "provenance": "docs/refactor/02-boundaries-manifest.md#A P7",
+      "change": "close-gate-blindspots-and-ci-hygiene",
+      "enforcedBy": [
+        "packages/sandbox/test/facade-surface.gate.mjs"
+      ]
+    }
+  ]
+}
