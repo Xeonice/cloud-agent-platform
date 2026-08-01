@@ -122,7 +122,7 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
 （原测试把误报行为钉成了规格），死函数 archivedOpenSpecChangeNames 一并删除。
 阶段 0 的 commit 1 曾以 `--no-verify` 绕过该误报（当时修复未落地），留痕于此。
 
-### F.2 aio-terminal-session-ownership wall-clock flake（task 8.11，三分法留痕，不修）
+### F.2 aio-terminal-session-ownership wall-clock flake（task 8.11 登记，已由 deflake-environment-dependent-suites 修复）
 
 - **现象**：`packages/sandbox-provider-aio/test/aio-terminal-session-ownership.test.mjs`
   在并行 `turbo test` 满载下约 1/3 概率红在 wall-clock 断言
@@ -135,15 +135,21 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
   时钟的紧余量断言在 CPU 争用下超窗；非 stale harness——断言对象
   （316 行 reconnect 状态机的超时预算）就是该套件的被测语义，不是过时
   脚手架。
-- **处置**：留痕，不在本 change 修（proposal Not-in-scope 明列）。后续
-  投资方向：将计时断言改为可注入时钟（该文件 1419 行起已有
-  `Date.now` stub 先例）或放宽为语义断言；归属后续专项 change。
 - **追证（2026-08-01）**：docs-only PR #190（基于 main 原样代码）复现该套件
   失败（1856 行 `Cannot read properties of undefined (reading 'sent')`，
   同套件的竞态形态）——铁证该 flake 存在于 main、与 close-gate-blindspots
   的改动无关。
+- **处置：已解决（resolved）**——change
+  `deflake-environment-dependent-suites`（2026-08-01）在根因处修复：
+  提炼共享 `withManualReleaseClock` 注入时钟 helper（源自该文件既有
+  `Date.now` stub 先例，finally 强制恢复），四处紧余量 wall-clock 断言
+  全部改读注入时钟（数值预算未放宽），'sent'-undefined 竞态与
+  staged-ACK 断言改为同步点后的确定性断言。产品 `src/` 零改动。
+  修复前满载复现 6/12 rep 失败、修复后同配方 24 连续 rep 全绿；
+  完整证据（CI run/job ID、根因、复现命令）见该 change tasks.md 的
+  Evidence F.2 条目。
 
-### F.3 boxlite-client 1ms-timeout settlement flake（PR #189 首现，三分法留痕，不修）
+### F.3 boxlite-client 1ms-timeout settlement flake（PR #189 首现，已由 deflake-environment-dependent-suites 修复）
 
 - **现象**：`packages/sandbox-provider-boxlite/test/boxlite-client.test.mjs` 的
   `execWithPoll({status:'running'}, 1)` 断言 settlement === 'indeterminate'
@@ -153,11 +159,17 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
 - **三分法分类**：**environment-dependent**——被测的
   `classifySandboxCommandExecutionRejection` 对 timeout/indeterminate 两条
   路径行为均正确；失败面是测试用 1ms 真实时钟做路径选择，慢机上选路不稳定。
-- **处置**：留痕后重跑验证（记录在案的重跑不是 retry-to-hide）。修复方向
-  与 F.2 同批：可注入时钟或分离"预算耗尽"与"wall-clock 超时"的触发方式，
-  归后续 flake 专项 change。
+- **处置：已解决（resolved）**——change
+  `deflake-environment-dependent-suites`（2026-08-01）在根因处修复：
+  1ms 真实时钟测试改为经既有产品 seam（`nativeExecutionDeadlineDriver`，
+  `boxlite-client.ts:165-168,351-352,2280-2354`，未新增 seam）注入手动
+  deadline driver，两条分类出口分别钉死确定性断言（poll 预算耗尽 →
+  `'indeterminate'`、deadline 触发 → `'timeout'` 且轮询循环零进入）。
+  产品 `src/` 零改动。修复前 cgroup CPU 配额（1ms/10ms CFS slice）第 6
+  迭代复现 CI 同签名失败、修复后同配方 10/10 连续 rep 全绿；完整证据见
+  该 change tasks.md 的 Evidence F.3 条目。
 
-### F.4 private-git fixture EPIPE 竞态（PR #191 首现，三分法留痕，不修）
+### F.4 private-git fixture EPIPE 竞态（PR #191 首现，已由 deflake-environment-dependent-suites 修复）
 
 - **现象**：public-surface-parity（required）在 openspec-only PR #191 上红：
   `private-git-secret-canary.story.spec` 的 test 39 以 uncaughtException
@@ -167,5 +179,13 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
 - **三分法分类**：**environment-dependent**——git http-backend 客户端提前
   断连是正常协议行为，fixture 未捕获对已关 socket 的写错误，慢 runner 上
   竞态窗口更宽。非 product defect、非 stale harness。
-- **处置**：留痕后重跑（记录在案）。修复方向：fixture 的 socket 写路径
-  容忍 EPIPE/ECONNRESET（三五行 catch），与 F.2/F.3 同批归 flake 专项 change。
+- **处置：已解决（resolved）**——change
+  `deflake-environment-dependent-suites`（2026-08-01）在根因处修复：
+  `guardGeneratedPrivateGitWriteStream` 在两条 fixture 写路径
+  （backend `child.stdin` 与 CGI `ServerResponse`）的流获取时刻挂
+  白名单 `'error'` 监听（仅吞 `EPIPE`/`ECONNRESET`，白名单单点声明，
+  其余错误一律重抛）；可失败性由注入探针负测（非白名单 code 必须上浮）
+  与确定性对抗测试（早断连 → fixture 存活并继续服务）双重钉住。
+  修复前确定性对抗模拟 3/3 复现 uncaughtException `write EPIPE`、
+  修复后套件 10 连续 rep 全绿 + `test:public-surface` 全绿；完整证据见
+  该 change tasks.md 的 Evidence F.4 条目。

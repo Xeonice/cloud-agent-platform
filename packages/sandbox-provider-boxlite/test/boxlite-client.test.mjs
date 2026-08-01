@@ -661,7 +661,7 @@ await test('native execution settlement keeps terminal state separate from nulla
     'failed',
   );
 
-  const execWithPoll = async (pollResponse, timeoutMs = 1_000) => {
+  const execWithPoll = async (pollResponse, timeoutMs = 1_000, options = {}) => {
     const { fetch } = makeFetch({
       'POST /v1/default/boxes/box/exec': response(200, {
         execution_id: 'CAP_NATIVE_EXECUTION_ID_SECRET_CANARY',
@@ -686,6 +686,9 @@ await test('native execution settlement keeps terminal state separate from nulla
       webSocketFactory: nativeExecWebSocketFactory({
         exitCode: attachExitCode,
       }),
+      ...(options.deadlineDriver === undefined
+        ? {}
+        : { nativeExecutionDeadlineDriver: options.deadlineDriver }),
     }).exec({
       sandboxId: 'box',
       command: 'CAP_NATIVE_COMMAND_SECRET_CANARY',
@@ -792,12 +795,67 @@ await test('native execution settlement keeps terminal state separate from nulla
       return true;
     },
   );
-  await assert.rejects(
-    () => execWithPoll({ status: 'running' }, 1),
-    (error) =>
-      error?.code === 'sandbox_command_settlement_error' &&
-      error?.settlement === 'indeterminate',
-  );
+  // F.3 deflake: the former 1ms-real-clock budget test raced the host clock to
+  // pick which classification exit it exercised. Both exits are now pinned
+  // separately through the pre-existing manual deadline seam
+  // (`nativeExecutionDeadlineDriver`), independent of host timing.
+  //
+  // Exit 1 — poll-budget exhaustion (polling-loop break path): the budget
+  // survives every pre-check, then runs out between the poll request and the
+  // loop's next budget re-check. Absence of terminal proof classifies as
+  // 'indeterminate', never 'timeout'.
+  {
+    let nowMs = 0;
+    await assert.rejects(
+      () =>
+        execWithPoll(
+          () => {
+            // Exhaust the budget only once the polling loop is in flight.
+            nowMs = 2_000;
+            return response(200, { status: 'running' });
+          },
+          1_000,
+          {
+            deadlineDriver: {
+              now: () => nowMs,
+              schedule: () => () => {},
+            },
+          },
+        ),
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'indeterminate',
+    );
+  }
+  // Exit 2 — deadline trigger (pre-check path): the deadline elapses before
+  // the first budget pre-check, which classifies as 'timeout' and never
+  // enters the polling loop.
+  {
+    let pollRequests = 0;
+    await assert.rejects(
+      () =>
+        execWithPoll(
+          () => {
+            pollRequests += 1;
+            return response(200, { status: 'running' });
+          },
+          1_000,
+          {
+            deadlineDriver: {
+              now: () => 0,
+              schedule: (_delayMs, trigger) => {
+                trigger();
+                return () => {};
+              },
+            },
+          },
+        ),
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'timeout',
+    );
+    assert.equal(pollRequests, 0);
+  }
 });
 
 await test('native start failure exposes the partial create without deleting outside the provider fence', async () => {
