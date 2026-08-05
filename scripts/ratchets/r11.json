@@ -2,17 +2,17 @@
   "guardrails-symbol-reference:this.audit": {
     "count": 9,
     "samples": [
-      "guardrails.service.ts:988 this.audit?.recordProvisioningProgress(",
-      "guardrails.service.ts:1794 if (this.audit) {",
-      "guardrails.service.ts:1798 this.audit?.recordExited(taskId, status.code, status.abnormal, tail),",
-      "guardrails.service.ts:2483 this.audit?.recordChangeRequest(taskId, {",
-      "guardrails.service.ts:3204 this.audit?.recordForceFailed(taskId, cause),",
-      "guardrails.service.ts:3453 if (!this.audit) {",
-      "guardrails.service.ts:3462 recorded = await this.audit.recordProvisioningFailure(",
-      "guardrails.service.ts:3481 if (!this.audit) {",
-      "guardrails.service.ts:3490 recorded = await this.audit.recordTaskCancellation(taskId);"
+      "guardrails.service.ts:1197 this.audit?.recordProvisioningProgress(",
+      "guardrails.service.ts:2063 if (this.audit) {",
+      "guardrails.service.ts:2067 this.audit?.recordExited(taskId, status.code, status.abnormal, tail),",
+      "guardrails.service.ts:2770 this.audit?.recordChangeRequest(taskId, {",
+      "guardrails.service.ts:3529 this.audit?.recordForceFailed(taskId, cause),",
+      "guardrails.service.ts:3778 if (!this.audit) {",
+      "guardrails.service.ts:3787 recorded = await this.audit.recordProvisioningFailure(",
+      "guardrails.service.ts:3806 if (!this.audit) {",
+      "guardrails.service.ts:3815 recorded = await this.audit.recordTaskCancellation(taskId);"
     ],
-    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件。阶段 4 第二刀 adjudicate-audit-event-migration：9 处引用逐处裁定完毕（本树活测 9，与播种值一致），裁定结论 CALL×9 / EVENT×0 / REMOVED×0——:1197 recordProvisioningProgress 保留原调用——per-stage 覆盖证明（apps/api/src/task-admission/provisioning-stage-ownership.spec.ts）实测推翻了 design D5 的预测：aio/boxlite 的 readiness 与 runtime_setup **都有** worker checkpoint 所有者（guardrails.service.ts:1247/1245 → task-admission.worker.ts:612），但这些行**只在 provision(...) 返回之后才投影**；删掉 :1197 会让 in-provision 窗口内一行都不落，故按覆盖对账要求保留（判据 information-missing / CALL）。故 9→9，与播种值的差值 0 精确等于裁定表 REMOVED 行数 0；其余五个协作者计数一处未动（6/4/4/2/2）；符号串仍为 this.audit（改名成 this.auditRecorder 会让 \\b 锚定正则瞬间归零＝假燃尽，故对账口径钉在符号不变上）。samples 本刀无条件刷新：原值 988/1794/2483/3204/3453/3462/3481/3490 已过时两代（comparator 只比 count，samples 是文档不参与比较）。计数仍高于零，故条目保留不删。",
     "symbol": "this.audit",
     "concern": "audit（普通路径改订阅；terminal detail 的回执型调用按非事件准入规则留作 CALL）"
   },

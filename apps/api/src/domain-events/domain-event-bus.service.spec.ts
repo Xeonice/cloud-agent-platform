@@ -4,7 +4,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-import { DOMAIN_EVENT_TYPES, type DomainEvent } from '@cap-console/contracts';
+import {
+  DOMAIN_EVENT_TYPES,
+  type DomainEvent,
+  type DomainEventType,
+} from '@cap-console/contracts';
 
 import {
   DOMAIN_EVENT_BUS,
@@ -264,6 +268,96 @@ test('a subscriber registered for another event type is not invoked', () => {
 
 test('this change registers zero subscribers', () => {
   assert.deepEqual([...DOMAIN_EVENT_SUBSCRIBER_REGISTRATIONS], []);
+});
+
+/**
+ * THE declared subscriber set, per event type (adjudicate-audit-event-migration,
+ * D7).
+ *
+ * Two independent forces keep this table honest about the catalog:
+ * `Record<DomainEventType, …>` makes a sixth catalog entry a COMPILE error here,
+ * and the runtime key-set assertion below repeats the demand for whoever only
+ * runs the tests. Neither is a count or a subset check.
+ *
+ * Every set is empty on this tree. That is the recorded outcome of this change,
+ * not an accident: the adjudicated guardrails audit references all resolved to
+ * CALL or REMOVED and none to EVENT, so no published event produces any side
+ * effect anywhere.
+ */
+const EXPECTED_SUBSCRIBERS: Record<DomainEventType, readonly string[]> = {
+  'task.admitted': [],
+  'sandbox.provisioned': [],
+  'task.run_started': [],
+  'task.settled': [],
+  'task.superseded': [],
+};
+
+test('the expectation table has exactly one row per catalog event type', () => {
+  const declared = Object.keys(EXPECTED_SUBSCRIBERS);
+  const catalog: readonly string[] = DOMAIN_EVENT_TYPES;
+
+  const withoutRow = catalog.filter((type) => !declared.includes(type)).sort();
+  const strayRows = declared.filter((type) => !catalog.includes(type)).sort();
+
+  assert.deepEqual(
+    withoutRow,
+    [],
+    `event type(s) with no expected-subscriber row: ${withoutRow.join(', ')}`,
+  );
+  assert.deepEqual(
+    strayRows,
+    [],
+    `expected-subscriber row(s) for unknown event type(s): ${strayRows.join(', ')}`,
+  );
+  assert.deepEqual([...declared].sort(), [...catalog].sort());
+});
+
+test('each event type registers exactly the declared subscriber set', () => {
+  const catalog: readonly string[] = DOMAIN_EVENT_TYPES;
+
+  // A registration carrying an off-catalog event type would otherwise be
+  // invisible to the per-type comparison below, which only ever sees what the
+  // filter lets through.
+  const offCatalog = DOMAIN_EVENT_SUBSCRIBER_REGISTRATIONS.filter(
+    (registration) => !catalog.includes(registration.eventType),
+  )
+    .map((registration) => `${registration.name}@${registration.eventType}`)
+    .sort();
+  assert.deepEqual(
+    offCatalog,
+    [],
+    `registration(s) for unknown event type(s): ${offCatalog.join(', ')}`,
+  );
+
+  for (const eventType of DOMAIN_EVENT_TYPES) {
+    const expected = new Set(EXPECTED_SUBSCRIBERS[eventType]);
+    const observed = new Set(
+      DOMAIN_EVENT_SUBSCRIBER_REGISTRATIONS.filter(
+        (registration) => registration.eventType === eventType,
+      ).map((registration) => registration.name),
+    );
+
+    const unexpected = [...observed].filter((name) => !expected.has(name)).sort();
+    const missing = [...expected].filter((name) => !observed.has(name)).sort();
+
+    assert.deepEqual(
+      unexpected,
+      [],
+      `${eventType}: unexpected registered subscriber(s): ${unexpected.join(', ')}`,
+    );
+    assert.deepEqual(
+      missing,
+      [],
+      `${eventType}: missing registered subscriber(s): ${missing.join(', ')}`,
+    );
+    // Set equality — an unlisted registration and a silently dropped one both
+    // turn this red; a superset check would let the second one through.
+    assert.deepEqual(
+      [...observed].sort(),
+      [...expected].sort(),
+      `${eventType}: registered subscriber set mismatch`,
+    );
+  }
 });
 
 test('no catalog entry is named error', () => {

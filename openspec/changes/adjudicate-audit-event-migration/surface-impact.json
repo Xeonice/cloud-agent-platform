@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "adjudicate-audit-event-migration",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "不新增/修改/移除任何 /v1 操作或其 schema。本 change 不迁移任何 audit 写入：9 处 this.audit 引用逐处裁定后全部保留为直接调用，审计行的形状、写入时机与 best-effort 等级一字未动。事件 payload schema 在第一刀（add-domain-event-bus）已落地，本 change 不改 contracts。"
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "不触碰 MCP 工具集与传输；审计不是 MCP 面。"
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "操作注册表不变。"
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "Playground 操作目录不变。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段4第二刀，交付的是**裁定与规则**而非迁移（用户拍板 Q1=(a)）：① 新增裁定工件 openspec/changes/adjudicate-audit-event-migration/adjudication.md，对 guardrails.service.ts 的 9 处 this.audit 符号引用（:1197/:2063/:2067/:2770/:3529/:3778/:3787/:3806/:3815，本树活测）逐处出裁定——结论 CALL×9、EVENT×0、REMOVED×0，其中 recordProvisioningFailure(:3787) 与 recordTaskCancellation(:3815) 及其两处 if (!this.audit) 卫语句因返回 durability acknowledgement 且 admission reclaim 依赖它而拒绝准入（回执判据的实战首例）；② spec 级规则升格：三条非事件准入判据（acknowledgement-required / information-missing / no-decoupling-gain）与两档持久性词汇，规范定义只落在 domain-event-bus capability spec，代码侧 apps/api/src/domain-events/README.md 仅加一行指针；③ 新增可执行的 per-stage 覆盖证明 apps/api/src/task-admission/provisioning-stage-ownership.spec.ts（glob 发现，无需登记），证明结论推翻了 design D5 的预测：四个 reported stage（aio:readiness / aio:runtime_setup / boxlite:readiness / boxlite:runtime_setup）**都有** admission worker checkpoint 所有者（同 dedupe 身份，guardrails.service.ts:1245/:1247 → task-admission.worker.ts:612）；:1197 保留调用的真实理由是其中三行 owner 只在 provision(...) 返回**之后**才投影，删除会让 in-provision 窗口一行不落（判据 information-missing / CALL）、guardrails.service.ts **零源码改动**；④ 扩写既有 apps/api/src/domain-events/domain-event-bus.service.spec.ts，按事件类型断言已注册订阅者的**精确集合**（本树五个类型全为空集），并复核 domain-event-bus.typecheck.ts 的 @ts-expect-error 自失效负例；⑤ scripts/ratchets/r11.json 的 guardrails-symbol-reference:this.audit **计数不变（9→9，差值 0 == 裁定表 REMOVED 行数 0）**，只无条件刷新过时两代的 samples 并在 change 字段留反伪造对账（符号串仍为 this.audit）；⑥ deploy/DEPLOY.md §14 既有 CAP_DOMAIN_EVENT_PUBLISHING_ENABLED 登记改写为与本树相符：已注册订阅者 0（等于绑定数组长度）、已移除直接调用 0、本刀裁定 9 处，并写明 byte-identical 声明成立的前提条件。**不含**：不新增订阅者（apps/api/src/audit/ 不新增任何文件）、不新增 cutover 开关（复用第一刀那一行，登记表仍恰好一行）、不碰 packages/contracts/**、零 Prisma migration、零新闸门、不改 scripts/quick-deploy.sh 与 compose、不新增部署 runbook。",
+      "reason": "阶段4（领域事件+guardrails 解耦）第二刀。研究把第一刀留下的前提结构性推翻——guardrails 的 best-effort 审计没有一处能被已发布的五个 payload 覆盖——所以本刀不搬任何 audit，而是把『什么不该被事件化』从散文升格为 spec 级规则并逐处留下可追溯裁定。运行时行为零改动：审计仍在原调用点同步写出，三处 audit 热点断言（guardrails-durable-launch-decision.spec.ts 46 处、delivery-results-surfaced-and-audited.test.mjs 61 处、guardrails.service.spec.ts 14 处）预期零改动，characterization 基线 135 test()/6 *.spec.ts/8 *.test.mjs 保持不变。"
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}
