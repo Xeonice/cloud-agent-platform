@@ -233,6 +233,62 @@ artifacts:
       against real file coupling.
 
 
+      BUDGET — tasks per requirement SHALL NOT exceed 2.5.
+
+      Measured across four archived changes, ceremony cost runs INVERSELY to
+      requirement count: the widest change (33 requirements / 31 tasks / ratio
+      0.9) passed verify in one round with zero rework, while the narrowest (14
+      requirements / 73 tasks / ratio 5.2) took three rounds and re-opened two
+      tasks. Over phase 4 the ratio climbed 1.9 → 3.3 → 5.2 as each change added
+      prose tasks defending against the previous change's failure. That accretion,
+      not scope, is what makes a change expensive.
+
+      - Count before you finish: `tasks ÷ requirements ≤ 2.5`. Over budget means
+      the DEFENCES are wrong-shaped, not that the work is large.
+
+      - A defence against a known failure mode belongs in `assertions.json` as one
+      executable line, NOT in `tasks.md` as a paragraph. A prose task must be
+      re-read by a human and by every verify lens, every round, forever; an
+      assertion is decided by its command in milliseconds and keeps its
+      requirement out of the adversarial path entirely.
+
+      - Do not write a task whose whole content is "confirm X" where X is
+      greppable or countable. Write the assertion instead and let R12 decide it.
+
+
+      ASSERTIONS — write `assertions.json` beside `tasks.md`.
+
+      Every requirement whose scenarios a command can decide (counts, byte
+      identity, zero-match greps, gate exit codes) SHALL carry assertions naming
+      it, so `node scripts/spec-assert.mjs <change>` decides it and verify never
+      spends an LLM pass on it. Requirements needing a human reading — "the
+      artifact states the reason", design intent, honesty of a record — carry no
+      assertion and stay on the adversarial path, which is what that path is for.
+      A requirement nobody asserts is never reported as decided, so a forgotten
+      assertion costs budget rather than correctness.
+
+
+      NUMBERS — every number entering an artifact carries the command that
+      produced it AND its counting convention.
+
+      An off-by-one in the convention (`4131 − 2000` versus `4131 − 1999`) is
+      invisible without it. A number describing a tree that does not exist yet has
+      exactly two legal forms: labelled `[predicted]` with the command that would
+      confirm or refute it, or produced by SIMULATE-THEN-MEASURE — construct the
+      post-change text and run the real gate's own measurement function over it.
+      Simulate-then-measure is what caught "WriteGate 4 → 0" and "8 → 2" as false,
+      and what caught a planned edit that would have left a ratchet unmoved.
+
+
+      SCOPE — a domain change SHALL NOT modify the harness.
+
+      If verification tooling proves broken mid-change, open a separate change for
+      it. Editing the harness inside a domain change cost two full verify rounds
+      once already: the fix landed on the same branch, broke a fixture that
+      compiles the workflow source, and turned four public-surface evidence lanes
+      red for a change whose public surface had not moved.
+
+
       Example:
 
       ```

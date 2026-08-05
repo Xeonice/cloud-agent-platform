@@ -1116,9 +1116,13 @@ test('metadata enforcement leaves the OpenSpec CLI schema and artifact graph unc
     'schema.yaml',
   );
   const schema = readFileSync(schemaPath);
+  // Tripwire, not a freeze: the enforcement layer must never mutate this file as a side
+  // effect, so any movement has to be a deliberate, reviewed edit that also moves this pin.
+  // Last moved deliberately to add the tasks-per-requirement budget, the assertions.json
+  // obligation, the numbers rule, and the no-harness-edits scope rule to the tasks instruction.
   assert.equal(
     createHash('sha256').update(schema).digest('hex'),
-    'd37cd90778df150b95f975ac2fa1bc111211d1c20180de56bb7b38807665fecc',
+    '0ddca4c0805c28918c7855216c15c37ab49f27f9fe39c2883ef6a61165dd3ce5',
   );
   const text = schema.toString('utf8');
   assert.doesNotMatch(text, /surface-impact\.json/u);
