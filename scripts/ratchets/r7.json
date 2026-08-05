@@ -58,7 +58,7 @@
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
   },
   "cross-context-import:apps/api/src/guardrails/guardrails.service.ts": {
-    "count": 9,
+    "count": 8,
     "samples": [
       "apps/api/src/guardrails/guardrails.service.ts:80 imports '@/forge/forge-target-resolver'",
       "apps/api/src/guardrails/guardrails.service.ts:81 imports '@/forge/forge-registry'"

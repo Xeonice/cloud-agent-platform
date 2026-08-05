@@ -12,6 +12,7 @@ import { CredsModule } from './creds/creds.module';
 import { SandboxModule } from './sandbox/sandbox.module';
 import { GuardrailsModule } from './guardrails/guardrails.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { RunnerMinutesModule } from './runner-metrics/runner-minutes.module';
 import { UpdateStatusModule } from './update-status/update-status.module';
 import { SelfUpdateModule } from './self-update/self-update.module';
 import { RuntimesModule } from './runtimes/runtimes.module';
@@ -143,6 +144,12 @@ import { ConsoleBuildGuard } from './auth/console-build.guard';
     WriteLockModule,
     TerminalModule,
     GuardrailsModule,
+    // extract-runner-minutes-ledger: the running-interval ledger's owner. It is
+    // listed here as well as inside MetricsModule because the orchestrator
+    // resolves the port through `ModuleRef` with `strict: false` in
+    // `onModuleInit`, and that lookup only finds a provider the booted
+    // application actually instantiated.
+    RunnerMinutesModule,
     MetricsModule,
     UpdateStatusModule,
     SelfUpdateModule,

@@ -465,7 +465,11 @@ test('additive contract: real build() response keeps every prior field name/type
   const sem = makeSemaphore(2, ['t1'], []);
   const guardrails = {
     semaphoreProjection: () => sem,
-    runnerMinuteIntervals: () => [{ taskId: 't1', startedAt: 0, endedAt: 60_000 }],
+  };
+  // Running intervals arrive through the runner-minutes PORT double now, not
+  // through a fake accessor on guardrails (extract-runner-minutes-ledger).
+  const runnerMinutes = {
+    intervals: () => [{ taskId: 't1', startedAt: 0, endedAt: 60_000 }],
   };
   const s = makeSampler();
   s.lastSnapshot = ctSnapshot([ctSample('t1', 2.3, 1.5e9)], 1_000);
@@ -473,7 +477,7 @@ test('additive contract: real build() response keeps every prior field name/type
     ['t1', { sample: ctSample('t1', 5, 1.26e8), freshAtMs: 1_000, misses: 0 }],
   ]);
 
-  const res = new MetricsService(guardrails, s).build(1_000);
+  const res = new MetricsService(guardrails, s, runnerMinutes).build(1_000);
 
   // The whole composed response validates against the shared zod contract.
   const parsed = MetricsResponseSchema.parse(res);
@@ -534,8 +538,9 @@ test('additive provisioning diagnostics collector is cache-only and isolated on 
   const sem = makeSemaphore(1, [], []);
   const guardrails = {
     semaphoreProjection: () => sem,
-    runnerMinuteIntervals: () => [],
   };
+  // Empty ledger, supplied through the port double (extract-runner-minutes-ledger).
+  const runnerMinutes = { intervals: () => [] };
   const sampler = makeSampler();
   const observedSince = new Date(500);
   const diagnostics = {
@@ -561,7 +566,12 @@ test('additive provisioning diagnostics collector is cache-only and isolated on 
     },
   };
 
-  const served = new MetricsService(guardrails, sampler, diagnostics).build(1_000);
+  const served = new MetricsService(
+    guardrails,
+    sampler,
+    runnerMinutes,
+    diagnostics,
+  ).build(1_000);
   assert.equal(served.provisioningDiagnostics.observedSince, observedSince);
   assert.equal(served.provisioningDiagnostics.durableGauges.status, 'available');
 
@@ -570,7 +580,12 @@ test('additive provisioning diagnostics collector is cache-only and isolated on 
       throw new Error('diagnostics-source-secret');
     },
   };
-  const degraded = new MetricsService(guardrails, sampler, failing).build(1_000);
+  const degraded = new MetricsService(
+    guardrails,
+    sampler,
+    runnerMinutes,
+    failing,
+  ).build(1_000);
   assert.equal(
     degraded.provisioningDiagnostics.durableGauges.status,
     'unavailable',

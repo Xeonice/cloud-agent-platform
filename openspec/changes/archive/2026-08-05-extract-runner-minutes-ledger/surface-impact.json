@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "extract-runner-minutes-ledger",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "运行分钟账本的所有权从 guardrails 迁出是进程内重组：同一个 RunnerMinutesLedger 语义、同一批区间数据、metrics 的派生结果逐字节不变。不新增/修改/移除任何 /v1 操作或 schema。研究阶段须复核 metrics 派生结果是否经由任何 /v1 操作暴露；若是则升级为 derived 并转录 protocolDifferences（阶段2教训）。"
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "不触碰 MCP 工具集与传输。"
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "操作注册表不变。"
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "Playground 操作目录不变。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段4第三刀（最小验证刀）——**实际落地形态是 Move Field + Remove Middle Man，不是 Extract Class**。RunnerMinutesLedger 这个类本来就住在 apps/api/src/runner-metrics/，本刀没有把它从别处抽出来，而是把它的**实例所有权**从 GuardrailsService 的一个字段搬到同目录下一个新的 DI provider（runner-minutes-ledger.service.ts，经 runner-minutes-ledger.port.ts 的 RUNNER_MINUTES_PORT 令牌提供），并**删掉中间人**：guardrails 上那个只有一行的转发访问器 runnerMinuteIntervals() 连同文档注释整体删除，metrics.service.ts 改为注入端口直接向属主取区间，不再经 guardrails 中转。guardrails 保留 admission/terminal 接缝上的五处写引用（三 recordStart / 两 recordEnd），并新增一个私有 getter 覆盖『onModuleInit 解析到的属主』与『无注入器时的 detached 兜底』两个 backing member——冻结的 guardrails 单测以位置参数构造该服务、没有注入器，兜底就是为它存在的。**实测结果（集成后的树）**：R11 的 this.runnerMinutes 由 **6 → 5（首次下降，不是燃尽；5 是设计保留的写引用，结构上不可达 0）**，r7 的 cross-context-import:guardrails.service.ts 由 9 → 8，metrics.service.ts 维持 2；guardrails.service.ts 行数 4,131 → 4,173（**涨 42**，端口接线的固定成本大于被移走的 5 行读面）。同时产出调研工件 research-findings.md：阶段 4 剩余节点的前置条件图与逐格带证伪命令的收益预测，以及本刀五个维度的实测行。",
+      "reason": "第二刀的路线校准预扫判定三组全部 LIKELY-CALL：缺的不是 payload 字段而是回执、完成时序与状态所有权，事件化无法降耦。用户拍板走「先做最小验证 + 先重新调研再切」：本刀真抽一组量出真实收益，据此再定剩余刀数与归属，而非按推断一次性重排。"
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}

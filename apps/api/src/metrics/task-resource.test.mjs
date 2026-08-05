@@ -134,9 +134,11 @@ test('one /metrics poll carries the equivalent per-task data the fan-out would r
       snapshotRunning: () => ['task-abc', 'task-gone'],
       snapshotQueue: () => [],
     }),
-    runnerMinuteIntervals: () => [],
   };
-  const svc = new MetricsService(guardrails, sampler);
+  // Running intervals come from the runner-minutes PORT double now
+  // (extract-runner-minutes-ledger); this case observes none.
+  const runnerMinutes = { intervals: () => [] };
+  const svc = new MetricsService(guardrails, sampler, runnerMinutes);
 
   const aggregate = svc.build(5_000);
   const fanout = svc.buildTaskResource('task-abc', 5_000);

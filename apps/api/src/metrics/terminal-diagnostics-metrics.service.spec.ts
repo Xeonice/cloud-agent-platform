@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MetricsResponseSchema } from '@cap-console/contracts';
 
+import type { RunnerMinutesPort } from '@/runner-metrics/runner-minutes-ledger.port';
 import { MetricsService } from './metrics.service';
 import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metrics.service';
 
@@ -68,7 +69,15 @@ test('metrics aggregation emits terminal diagnostics without changing prior bloc
       snapshotRunning: () => [],
       snapshotQueue: () => [],
     }),
-    runnerMinuteIntervals: () => [],
+  };
+  // Running intervals come from the runner-minutes PORT double now
+  // (extract-runner-minutes-ledger); this case observes none. The double
+  // implements the whole port rather than only the method under read, so it
+  // stays a port double instead of an `as never` hole.
+  const runnerMinutes: RunnerMinutesPort = {
+    recordStart: () => {},
+    recordEnd: () => {},
+    intervals: () => [],
   };
   const sampler = {
     currentSnapshot: () => ({
@@ -86,6 +95,7 @@ test('metrics aggregation emits terminal diagnostics without changing prior bloc
   const response = new MetricsService(
     guardrails as never,
     sampler as never,
+    runnerMinutes,
     undefined,
     terminal,
   ).build(1_000);

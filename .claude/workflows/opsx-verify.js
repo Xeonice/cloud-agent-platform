@@ -273,6 +273,22 @@ function deterministicPublicVerdict(req) {
 //    pipeline (not barrier): a low-risk req is done while a risky req is still being refuted. ──
 const LENSES = ['correctness', 'boundary/exception', 'data-integrity', 'reproducibility', 'cross-track-integration']
 
+// Probe hygiene, second line of defence. The dynamic ground-truth agents are told not to leave
+// files behind, but prompt compliance is not a guarantee, and a probe left inside a directory
+// whose test count a spec freezes turns into an archive-blocking UNMET against the change — the
+// verifier failing the tree because of its own pollution. So: snapshot the untracked set before
+// escalation, diff it after, and delete only what appeared in between.
+const PATHS = {
+  type: 'object', additionalProperties: false, required: ['paths'],
+  properties: { paths: { type: 'array', items: { type: 'string' } } },
+}
+const untrackedBefore = await agent(
+  `Run \`git status --porcelain --untracked-files=all\` at the repository root containing ${changeDir}. ` +
+  `Return the path of every UNTRACKED entry (lines starting with "??"), verbatim and unsorted. ` +
+  `Return paths only — create, edit, and delete nothing.`,
+  { label: 'probe-hygiene:snapshot', phase: 'Escalate', schema: PATHS, model: LEAF_MODEL }
+)
+
 const verdicts = await pipeline(
   routedRequirements,
   // stage 1: static triage
@@ -310,7 +326,20 @@ const verdicts = await pipeline(
       ? deterministicPublicVerdict(req)
       : await agent(
           `Write and RUN a minimal test exercising a scenario of requirement "${req.name}" of ${changeName}. ` +
-          `Report whether it passes. This is ground truth.`,
+          `Report whether it passes. This is ground truth.\n\n` +
+          `PROBE HYGIENE — the tree you are measuring must not be changed by measuring it:\n` +
+          `- Prefer a probe that creates NO file in the repository: an inline \`node --input-type=module -e\`, ` +
+          `a file under the OS temp dir, or simply RUNNING an existing test.\n` +
+          `- If you must create a file inside the repo, it is FORBIDDEN to place it in any directory whose ` +
+          `file count or test count is pinned by a spec. Specs in this repo freeze such baselines by directory ` +
+          `(for example a fixed number of \`*.spec.ts\` and \`test()\` cases under a service's directory), and a ` +
+          `probe landing there breaks the very requirement it was meant to verify — a self-inflicted UNMET. ` +
+          `Grep the change's specs/** and openspec/specs/** for a baseline naming the directory you are about ` +
+          `to write into BEFORE writing.\n` +
+          `- DELETE every file you created before you return, whether the probe passed or failed. Leaving it ` +
+          `"as evidence" is wrong: your report is the evidence, and an uncommitted probe would be staged into ` +
+          `the change at archive time.\n` +
+          `- End by running \`git status --porcelain\` and confirm it shows nothing you added.`,
           { label: `dynamic:${req.name}`, phase: 'Escalate', schema: REFUTE, model: LEAF_MODEL }
         )
     const votes = refutations.filter(Boolean)
@@ -336,6 +365,25 @@ const verdicts = await pipeline(
 )
 
 const results = verdicts.filter(Boolean)
+
+// Probe hygiene, cleanup half. Only paths that appeared DURING escalation are removed, so a file
+// the user already had untracked before this run is never touched.
+const knownUntracked = new Set(untrackedBefore?.paths || [])
+const swept = await agent(
+  `Probe cleanup for the ${changeName} verification run.\n\n` +
+  `Run \`git status --porcelain --untracked-files=all\` at the repository root containing ${changeDir} and ` +
+  `list the UNTRACKED paths. These existed BEFORE this run and MUST NOT be touched:\n` +
+  `${[...knownUntracked].map((p) => `  ${p}`).join('\n') || '  (none)'}\n\n` +
+  `Everything else that is untracked appeared during the dynamic-probe phase. DELETE those, with two ` +
+  `exceptions you must keep: anything under ${changeDir} (the change's own artifacts, including the ` +
+  `verification report this run writes), and any path that is clearly not a probe — if you are unsure ` +
+  `whether something is a probe, KEEP it and name it in your answer rather than deleting it.\n` +
+  `Delete nothing that is tracked or merely modified. Return the paths you deleted.`,
+  { label: 'probe-hygiene:sweep', phase: 'Escalate', schema: PATHS, model: LEAF_MODEL }
+)
+if (swept?.paths?.length) {
+  log(`probe hygiene: removed ${swept.paths.length} file(s) left by dynamic probes — ${swept.paths.join(', ')}`)
+}
 
 // ── Phase 4: gap + scope checks, then three-way routing ──
 phase('Route')

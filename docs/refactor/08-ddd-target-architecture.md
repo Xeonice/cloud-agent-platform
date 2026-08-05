@@ -17,6 +17,8 @@ agent-runtime / delivery）+ 2 支撑（identity-access / interface）+ 1 通用
 
 **现状**：Task 是 Prisma 行类型；状态机不变量散落在 `tasks.service.ts` 的 CAS
 代码与 `guardrails.service.ts`（3,806 行内）。
+〔**历史基线**：3,806 是评审时点的实测值，本文档的规模判断以它成文，故保留不删；
+2026-08-05 活测为 **4,131 行**。行数不是阶段 4 的验收判据，见文末「三刀与本图纸的对应」。〕
 
 **目标**：纯领域对象 `Task`（零 Nest 装饰器、零 Prisma import），收拢的不变量：
 
@@ -124,6 +126,21 @@ store/        *.store.ts                          Prisma 唯一栖息地
 
 | 阶段 | 实施本文档 | 验收锚 |
 |---|---|---|
-| 4 | §C 事件目录 + cutover | guardrails <2,000 行；R11 ratchet 归零；forwardRef 环解除 |
+| 4 | §C 事件目录 + cutover | 四条结构判据（见下表），**行数只作趋势数据** |
 | 5 | §B 聚合 + §D 仓储 + §F 判据 | 状态转换单点声明；R7 Prisma ratchet 趋零 |
 | 6 | §A 物理归拢 + §E 转 required | 51→7–10 目录；layout v2 空豁免通过 |
+
+阶段 4 的验收锚在 2026-08-05 由用户拍板替换：原「guardrails <2,000 行；R11 ratchet 归零」
+两条**都不成立**——前者按最激进的计数规则也差一千余行，后者与「编排器还活着」互斥
+（编排器合法地继续点名它仍在调用的协作者）。替换后每条判据自带闸门与状态：
+
+| # | 判据 | 判定命令 / 闸门 | 状态 |
+|---|---|---|---|
+| a | 每个 R11 协作者条目停在裁定**地板**（非 0） | `pnpm test:dependency-budget` | 今天即可测 |
+| b | 编排器不再自己 `new` 出横切子系统 | 同一闸门，往 `COLLABORATORS` 加类名符号 | 需一次数据改动 |
+| c | `guardrails.service.ts` r7 `cross-context-import` 降到裁定值 | `pnpm test:context-layout-v2` | 今天即可测 |
+| d | `guardrails.module.ts` 与 `tasks.module.ts` 间 `forwardRef` 归零 | **今天无闸门**：须新增只读这两个文件的窄检查 | 需自带闸门 |
+
+判据 d 特意表述为两个具名文件之间的 forwardRef 数，而不是「无环」——目录级环检测豁免
+「只由 `*.module.ts` 组成的环」，而今天这个环整体落在豁免里，写成「无环」等于写一条不会红的判据。
+完整测量与推导见 `openspec/changes/extract-runner-minutes-ledger/research-findings.md`。

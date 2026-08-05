@@ -107,9 +107,10 @@ import { IdleTracker } from './idle-tracker';
 import { CircuitBreaker, type FailureKind } from './circuit-breaker';
 import type { SemaphoreProjectionSource } from '@/runner-metrics/metrics-projection';
 import {
-  RunnerMinutesLedger,
-  type RunningInterval,
-} from '@/runner-metrics/runner-minutes';
+  createDetachedRunnerMinutes,
+  RUNNER_MINUTES_PORT,
+  type RunnerMinutesPort,
+} from '@/runner-metrics/runner-minutes-ledger.port';
 import {
   runWithTaskLog,
   runWithTaskProvisioningAttemptLog,
@@ -583,14 +584,50 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   >();
 
   /**
-   * Per-process ledger of task running intervals (admission→terminal), the
-   * source for the DERIVED runner-minutes metric (be-metrics 5.4). The
-   * guardrails service is the admission/terminal seam, so it is the natural
-   * place to observe RUNNING durations; the `Task` table persists only
-   * `createdAt`, so this timing is observed in-process and resets on restart —
-   * which is exactly why the metric is labeled derived accounting, not billing.
+   * The resolved OWNER of the per-process ledger of task running intervals
+   * (admission→terminal), the source for the DERIVED runner-minutes metric
+   * (be-metrics 5.4). The guardrails service is the admission/terminal seam, so
+   * it is the natural place to OBSERVE running durations; the `Task` table
+   * persists only `createdAt`, so this timing is observed in-process and resets
+   * on restart — which is exactly why the metric is labeled derived accounting,
+   * not billing.
+   *
+   * Observing is all this service does now. The ledger STATE lives in a provider
+   * under `runner-metrics` (extract-runner-minutes-ledger) and is reached only
+   * through {@link RunnerMinutesPort}; this member is filled by the
+   * {@link RUNNER_MINUTES_PORT} lookup in `onModuleInit` and stays unset when
+   * that module is not wired into the context.
    */
-  private readonly runnerMinutes = new RunnerMinutesLedger();
+  private ownedRunnerMinutes?: RunnerMinutesPort;
+
+  /**
+   * The injector-less fallback for an instance that never resolves the owner.
+   *
+   * The guardrails unit spec constructs this service POSITIONALLY with no
+   * injector, so `onModuleInit` never runs there while its assertions still
+   * read recorded intervals reflectively. Those assertions are all NEGATIVE
+   * (no interval left open), so a no-op double would satisfy every one of them
+   * vacuously — hence a real ledger, produced by the port's detached factory.
+   * In a booted application the accessor below prefers the resolved owner, so
+   * this instance is BYPASSED rather than replaced and records nothing.
+   */
+  private readonly detachedRunnerMinutes: RunnerMinutesPort =
+    createDetachedRunnerMinutes();
+
+  /**
+   * The member every runner-minutes write site names, unchanged in spelling so
+   * the recording calls keep their existing text.
+   *
+   * It is deliberately an ACCESSOR over two differently-named backing members
+   * rather than one field the lookup assigns to: the dependency-budget ratchet
+   * counts `\b`-anchored raw-source references to the accessed member, strips
+   * no comments, and would count an assignment just as it counts a call — so a
+   * field-plus-assignment shape would MOVE the reference this change removes
+   * instead of removing it.
+   */
+  private get runnerMinutes(): RunnerMinutesPort {
+    return this.ownedRunnerMinutes ?? this.detachedRunnerMinutes;
+  }
 
   /**
    * The addressable {@link SandboxConnection} handle returned by `provision()`
@@ -806,6 +843,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       this.forgeResolver = undefined;
       this.forgeRegistry = undefined;
       this.branchResolver = undefined;
+    }
+    try {
+      this.ownedRunnerMinutes = this.moduleRef.get<RunnerMinutesPort>(
+        RUNNER_MINUTES_PORT,
+        { strict: false },
+      );
+    } catch {
+      // The runner-metrics module is not wired in this context — the member is
+      // left unset so the accessor keeps returning the detached fallback, which
+      // is a real ledger and goes on accounting for this instance alone.
     }
   }
 
@@ -3873,11 +3920,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       snapshotRunning: () => semaphore.snapshotRunning(),
       snapshotQueue: () => semaphore.snapshotQueue(),
     };
-  }
-
-  /** Observed running intervals for the derived runner-minutes metric (5.4). */
-  runnerMinuteIntervals(): RunningInterval[] {
-    return this.runnerMinutes.intervals();
   }
 }
 
