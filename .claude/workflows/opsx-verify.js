@@ -271,29 +271,61 @@ function deterministicPublicVerdict(req) {
 
 // ── Phases 2-3: pipeline — each requirement triaged, risky/uncertain ones escalated.
 //    pipeline (not barrier): a low-risk req is done while a risky req is still being refuted. ──
-const LENSES = ['correctness', 'boundary/exception', 'data-integrity', 'reproducibility', 'cross-track-integration']
+// Two lenses, not five. Across the three verify rounds of extract-runner-minutes-ledger the lens
+// bank's net product was one false positive; every genuine defect came from a command. These two
+// are kept because they are the ones a command cannot replace: `correctness` reads intent against
+// implementation, and `cross-track-integration` is the only check that a file satisfying a
+// requirement was later broken by another track. Add a lens back only with a case it caught.
+const LENSES = ['correctness', 'cross-track-integration']
 
-// Probe hygiene, second line of defence. The dynamic ground-truth agents are told not to leave
-// files behind, but prompt compliance is not a guarantee, and a probe left inside a directory
-// whose test count a spec freezes turns into an archive-blocking UNMET against the change — the
-// verifier failing the tree because of its own pollution. So: snapshot the untracked set before
-// escalation, diff it after, and delete only what appeared in between.
-const PATHS = {
-  type: 'object', additionalProperties: false, required: ['paths'],
-  properties: { paths: { type: 'array', items: { type: 'string' } } },
+// ── R12 deterministic lane ──────────────────────────────────────────────────────────────────
+// Measured on extract-runner-minutes-ledger: 8 of 14 requirements and 45 of 74 scenarios were
+// decidable by a command, and every real defect the three verify rounds caught was caught by a
+// command rather than by a lens. Paying an LLM to re-derive `grep | wc -l` was the largest
+// avoidable line item, so a requirement its change proves with assertions never enters the
+// adversarial path. Fail-closed by construction: `decidedRequirements` only lists requirements
+// whose every assertion passed, and a requirement nobody asserted is simply absent — forgetting
+// an assertion costs budget, never a false green.
+const ASSERTION_REPORT = {
+  type: 'object', additionalProperties: false,
+  required: ['present', 'passed', 'decidedRequirements', 'failed'],
+  properties: {
+    present: { type: 'boolean' },
+    passed: { type: 'boolean' },
+    decidedRequirements: { type: 'array', items: { type: 'string' } },
+    failed: { type: 'array', items: { type: 'string' } },
+  },
 }
-const untrackedBefore = await agent(
-  `Run \`git status --porcelain --untracked-files=all\` at the repository root containing ${changeDir}. ` +
-  `Return the path of every UNTRACKED entry (lines starting with "??"), verbatim and unsorted. ` +
-  `Return paths only — create, edit, and delete nothing.`,
-  { label: 'probe-hygiene:snapshot', phase: 'Escalate', schema: PATHS, model: LEAF_MODEL }
+const assertionReport = await agent(
+  `Run \`node scripts/spec-assert.mjs ${quotedChangeName} --json\` from the repository root containing ${changeDir}. ` +
+  `Return its \`present\`, \`passed\`, \`decidedRequirements\` and \`failed\` fields verbatim. ` +
+  `Run that one command and nothing else — do not create, edit, or delete any file, and do not ` +
+  `substitute your own judgement for the command's exit status.`,
+  { label: 'assertions:run', phase: 'Triage', schema: ASSERTION_REPORT, model: LEAF_MODEL }
 )
+const assertionDecided = new Set(
+  assertionReport?.passed ? (assertionReport.decidedRequirements || []) : []
+)
+if (assertionReport?.present) {
+  log(
+    assertionReport.passed
+      ? `R12 assertions: green — ${assertionDecided.size} requirement(s) decided without an LLM pass`
+      : `R12 assertions: RED (${(assertionReport.failed || []).join(', ')}) — every requirement falls back to the adversarial path`
+  )
+}
 
 const verdicts = await pipeline(
   routedRequirements,
-  // stage 1: static triage
+  // stage 1: static triage — skipped entirely for requirements a green assertion already decided.
+  // Public-surface dynamic requirements are NEVER short-circuited: their evidence lanes are the
+  // deterministic verdict, and an assertion must not be able to stand in for them.
   (req) =>
-    agent(
+    (!req.dynamicRequired && assertionDecided.has(req.requirementId))
+      ? Promise.resolve({
+          req,
+          triage: { met: true, confidence: 'high', risk: 'low', evidence: 'decided by R12 assertions', decidedByAssertions: true },
+        })
+      : agent(
       `Statically verify requirement "${req.name}" (capability ${req.capability}) of ${changeName}. ` +
       `Read the spec scenarios and trace to the implementation. Judge met/confidence/risk with file:line evidence. ` +
       `Mark risk=high if it is touched by multiple tracks, security-sensitive, or mutates data. ` +
@@ -304,6 +336,9 @@ const verdicts = await pipeline(
     ).then((t) => ({ req, triage: t })),
   // stage 2: escalation routing (spec: low-risk passes on one verdict; uncertain/high-risk escalates)
   async ({ req, triage }) => {
+    if (triage.decidedByAssertions) {
+      return { req, status: 'met', via: 'assertion', triage }
+    }
     const escalate = req.dynamicRequired || triage.risk === 'high' || triage.confidence === 'low'
     if (!escalate) {
       return { req, status: triage.met ? 'met' : 'unmet', via: 'static', triage }
@@ -325,21 +360,21 @@ const verdicts = await pipeline(
     const dyn = req.dynamicRequired
       ? deterministicPublicVerdict(req)
       : await agent(
-          `Write and RUN a minimal test exercising a scenario of requirement "${req.name}" of ${changeName}. ` +
+          `RUN a minimal probe exercising a scenario of requirement "${req.name}" of ${changeName}. ` +
           `Report whether it passes. This is ground truth.\n\n` +
-          `PROBE HYGIENE — the tree you are measuring must not be changed by measuring it:\n` +
-          `- Prefer a probe that creates NO file in the repository: an inline \`node --input-type=module -e\`, ` +
-          `a file under the OS temp dir, or simply RUNNING an existing test.\n` +
-          `- If you must create a file inside the repo, it is FORBIDDEN to place it in any directory whose ` +
-          `file count or test count is pinned by a spec. Specs in this repo freeze such baselines by directory ` +
-          `(for example a fixed number of \`*.spec.ts\` and \`test()\` cases under a service's directory), and a ` +
-          `probe landing there breaks the very requirement it was meant to verify — a self-inflicted UNMET. ` +
-          `Grep the change's specs/** and openspec/specs/** for a baseline naming the directory you are about ` +
-          `to write into BEFORE writing.\n` +
-          `- DELETE every file you created before you return, whether the probe passed or failed. Leaving it ` +
-          `"as evidence" is wrong: your report is the evidence, and an uncommitted probe would be staged into ` +
-          `the change at archive time.\n` +
-          `- End by running \`git status --porcelain\` and confirm it shows nothing you added.`,
+          `THE PROBE MUST NOT TOUCH THE TREE IT MEASURES. This is not a tidiness rule — a probe left ` +
+          `inside a directory whose file or test count a spec freezes breaks the very requirement it ` +
+          `was meant to verify, and that self-inflicted failure has already cost this repository two ` +
+          `entire verify rounds. Create nothing inside the repository, in any directory, for any reason. ` +
+          `Your options, in order of preference:\n` +
+          `  1. run an existing test or gate command and read its exit status;\n` +
+          `  2. an inline script — \`node --input-type=module -e '...'\` — which touches no file at all;\n` +
+          `  3. a scratch file under the OS temp dir (\`mktemp -d\`), importing from the repo by absolute path;\n` +
+          `  4. if and only if the probe genuinely needs a repo-shaped tree, \`git worktree add "$(mktemp -d)" HEAD\`, ` +
+          `probe there, then \`git worktree remove --force\` it.\n` +
+          `A probe that cannot be written under one of those four is a probe you should not write: report ` +
+          `refuted=false with your reasoning instead of manufacturing evidence. ` +
+          `Before returning, run \`git status --porcelain\` and confirm you added nothing.`,
           { label: `dynamic:${req.name}`, phase: 'Escalate', schema: REFUTE, model: LEAF_MODEL }
         )
     const votes = refutations.filter(Boolean)
@@ -365,25 +400,6 @@ const verdicts = await pipeline(
 )
 
 const results = verdicts.filter(Boolean)
-
-// Probe hygiene, cleanup half. Only paths that appeared DURING escalation are removed, so a file
-// the user already had untracked before this run is never touched.
-const knownUntracked = new Set(untrackedBefore?.paths || [])
-const swept = await agent(
-  `Probe cleanup for the ${changeName} verification run.\n\n` +
-  `Run \`git status --porcelain --untracked-files=all\` at the repository root containing ${changeDir} and ` +
-  `list the UNTRACKED paths. These existed BEFORE this run and MUST NOT be touched:\n` +
-  `${[...knownUntracked].map((p) => `  ${p}`).join('\n') || '  (none)'}\n\n` +
-  `Everything else that is untracked appeared during the dynamic-probe phase. DELETE those, with two ` +
-  `exceptions you must keep: anything under ${changeDir} (the change's own artifacts, including the ` +
-  `verification report this run writes), and any path that is clearly not a probe — if you are unsure ` +
-  `whether something is a probe, KEEP it and name it in your answer rather than deleting it.\n` +
-  `Delete nothing that is tracked or merely modified. Return the paths you deleted.`,
-  { label: 'probe-hygiene:sweep', phase: 'Escalate', schema: PATHS, model: LEAF_MODEL }
-)
-if (swept?.paths?.length) {
-  log(`probe hygiene: removed ${swept.paths.length} file(s) left by dynamic probes — ${swept.paths.join(', ')}`)
-}
 
 // ── Phase 4: gap + scope checks, then three-way routing ──
 phase('Route')

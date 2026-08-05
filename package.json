@@ -24,6 +24,7 @@
     "test:boundaries": "node scripts/boundaries-manifest-check.mjs && node --test --test-force-exit scripts/boundaries-manifest-check.test.mjs",
     "test:context-layout-v2": "node scripts/context-layout-check-v2.mjs && node --test --test-force-exit scripts/context-layout-check-v2.test.mjs",
     "test:dependency-budget": "node scripts/ratchets/r11-dependency-budget.mjs && node --test --test-force-exit scripts/ratchets/r11-dependency-budget.test.mjs",
+    "test:spec-assert": "node --test --test-force-exit scripts/spec-assert.test.mjs",
     "test:security-seams": "node scripts/security-seam-check.mjs && node --test --test-force-exit scripts/security-seam-check.test.mjs",
     "test:agent-docs": "node scripts/claude-md-dependency-reconcile.mjs && node --test --test-force-exit scripts/claude-md-dependency-reconcile.test.mjs",
     "test:scripts": "node scripts/run-suite.mjs \"scripts/*.test.mjs\" \"scripts/ratchets/*.test.mjs\"",

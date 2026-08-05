@@ -264,14 +264,12 @@ async function runDeterministicVerdictThroughVerify(item = null) {
     if (options.label === 'check:gap' || options.label === 'check:scope') {
       return [];
     }
-    // Probe hygiene runs either side of escalation: it snapshots the untracked set
-    // and then deletes only what the dynamic probes added. It touches no verdict, so
-    // the fixture answers with an empty path list on both calls.
-    if (
-      options.label === 'probe-hygiene:snapshot' ||
-      options.label === 'probe-hygiene:sweep'
-    ) {
-      return { paths: [] };
+    // R12 runs `spec-assert.mjs` once before triage; requirements it decides skip the
+    // adversarial path. The fixture change carries no assertions.json, so the honest
+    // answer is "present: false" — which decides nothing and leaves every fixture
+    // requirement on the path these protocol tests actually exercise.
+    if (options.label === 'assertions:run') {
+      return { present: false, passed: true, decidedRequirements: [], failed: [] };
     }
     if (options.label === 'route:findings') {
       return {

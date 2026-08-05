@@ -119,6 +119,10 @@ export const VERIFIER_ALLOWLIST = Object.freeze({
     [['pnpm', 'verify:public-surface']],
     'Exercise the shared hook and CI public-surface gate.',
   ),
+  'spec-assertions': freezeVerifier(
+    [[process.execPath, '--test', 'scripts/spec-assert.test.mjs']],
+    'Exercise R12, the deterministic spec-assertion runner that keeps command-decidable requirements out of the adversarial path.',
+  ),
   docs: freezeVerifier(
     [['git', 'diff', '--check']],
     'Reject malformed documentation patches and whitespace errors.',
