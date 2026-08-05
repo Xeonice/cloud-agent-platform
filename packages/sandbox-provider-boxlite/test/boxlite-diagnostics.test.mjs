@@ -786,6 +786,9 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
     {
       name: 'poll-deadline',
       settlement: 'indeterminate',
+      // Budget exhaustion is driven, not timed (F.5). See the client
+      // construction below.
+      budgetDriver: true,
       classification: {
         settlement: 'indeterminate',
         outcome: 'indeterminate',
@@ -793,7 +796,7 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         retryable: true,
         exitCode: null,
       },
-      timeoutMs: 1,
+      timeoutMs: 1_000,
       pollResponse: (canary) =>
         response(200, { status: 'running', output: canary }),
       poll: {
@@ -804,7 +807,7 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         anomaly: 'poll_timeout',
         httpStatusClass: null,
         exitCode: null,
-        timeoutMs: 1,
+        timeoutMs: 1_000,
       },
       settlementEvent: {
         outcome: 'indeterminate',
@@ -826,12 +829,19 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
     const providerCanary = `RAW_${scenario.name.toUpperCase()}_PROVIDER_CANARY`;
     const harness = diagnosticsHarness(30 + index);
     let pollCalls = 0;
+    // F.5 deflake (sibling of F.3): budget-path rows advance this clock from
+    // inside the poll response — i.e. once the polling loop is already in
+    // flight — so the budget runs out between the poll request and the loop's
+    // next re-check. That is the 'indeterminate' exit; it must not be reached
+    // by the deadline pre-check, which would classify as 'timeout'.
+    let drivenNowMs = 0;
     const { fetch } = makeFetch({
       [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
         execution_id: executionId,
       }),
       [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: () => {
         pollCalls += 1;
+        if (scenario.budgetDriver === true) drivenNowMs = 2_000;
         return scenario.pollResponse(providerCanary);
       },
     });
@@ -840,6 +850,14 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
       protocolMode: 'native',
       fetch,
       webSocketFactory: successfulNativeAttachFactory(),
+      ...(scenario.budgetDriver === true
+        ? {
+            nativeExecutionDeadlineDriver: {
+              now: () => drivenNowMs,
+              schedule: () => () => {},
+            },
+          }
+        : {}),
     });
     let rejection;
 

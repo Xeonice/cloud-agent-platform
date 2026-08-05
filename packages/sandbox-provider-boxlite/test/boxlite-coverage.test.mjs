@@ -403,9 +403,20 @@ await test('native REST client covers response fallback shapes and polling edges
       error?.settlement === 'protocol',
   );
 
+  // F.5 deflake (sibling of F.3): the budget-exhaustion rejection below used to
+  // be produced by `timeoutMs: 1`, letting the host clock decide whether it
+  // reached the 'indeterminate' exit (budget runs out mid-poll) or the
+  // 'timeout' one (deadline fires before the first pre-check). The clock is now
+  // driven from inside the poll response, so the loop is always already in
+  // flight when the budget runs out.
+  let nativeFailureNowMs = 0;
   const nativeFailureClient = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
+    nativeExecutionDeadlineDriver: {
+      now: () => nativeFailureNowMs,
+      schedule: () => () => {},
+    },
     webSocketFactory: nativeAttachFactory((executionId) => ({
       exitCode: executionId === 'exec-timeout-no-code' ? 124 : 0,
     })),
@@ -417,7 +428,10 @@ await test('native REST client covers response fallback shapes and polling edges
         noArrayBuffer: true,
       }),
       'POST /v1/default/boxes/box/exec': response(200, { execution_id: 'exec-never-done' }),
-      'GET /v1/default/boxes/box/executions/exec-never-done': response(200, { status: 'running' }),
+      'GET /v1/default/boxes/box/executions/exec-never-done': () => {
+        nativeFailureNowMs = 2_000;
+        return response(200, { status: 'running' })();
+      },
       'POST /v1/default/boxes/timeout-box/exec': response(200, { execution_id: 'exec-timeout-no-code' }),
       'GET /v1/default/boxes/timeout-box/executions/exec-timeout-no-code': response(200, {
         status: 'timed_out',
@@ -444,7 +458,7 @@ await test('native REST client covers response fallback shapes and polling edges
       nativeFailureClient.exec({
         sandboxId: 'box',
         command: 'sleep',
-        timeoutMs: 1,
+        timeoutMs: 1_000,
       }),
     (error) =>
       error?.code === 'sandbox_command_settlement_error' &&
