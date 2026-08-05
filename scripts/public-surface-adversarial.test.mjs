@@ -264,6 +264,15 @@ async function runDeterministicVerdictThroughVerify(item = null) {
     if (options.label === 'check:gap' || options.label === 'check:scope') {
       return [];
     }
+    // Probe hygiene runs either side of escalation: it snapshots the untracked set
+    // and then deletes only what the dynamic probes added. It touches no verdict, so
+    // the fixture answers with an empty path list on both calls.
+    if (
+      options.label === 'probe-hygiene:snapshot' ||
+      options.label === 'probe-hygiene:sweep'
+    ) {
+      return { paths: [] };
+    }
     if (options.label === 'route:findings') {
       return {
         reopenedTasks:

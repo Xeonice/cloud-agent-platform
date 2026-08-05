@@ -6,28 +6,44 @@ SPEC-DEFECT → `design.md` Open Questions · MET → folded here). Every verdic
 from the apply log or from `gate-results.md`. Where a gate is quoted, this pass ran it.
 
 Tree under test: branch `refactor/extract-runner-minutes-ledger`, commits `295fa46`
-(characterization test) + `cce2b2d` (ownership move), base `main` = `e5d4e5a`.
-Date: 2026-08-05.
+(characterization test) + `cce2b2d` (ownership move) + `d2c912e` (verification record,
+closes task 6.1) + `ee0dc70` (opsx-verify probe hygiene), base `main` = `e5d4e5a`.
+Date: 2026-08-05. **This is the second verify pass** — the first pass's record is preserved
+below where it still holds, and superseded where re-tracing on the enlarged tree changed
+the verdict.
 
 ---
 
-## Adjudicated tally
+## Adjudicated tally — pass 2 (current)
 
 | Route | Count | Ids |
 |---|---|---|
-| Re-opened as code tasks (UNMET) | **2** | `runner-minutes-accounting/the-derived-output-is-proven-unchanged-by-a-characterization-test-bound-to-the-real-implementation`, `guardrails/test-doubles-of-the-removed-accessor-are-restated-and-every-rewrite-is-ledgered` |
+| Re-opened as code tasks (UNMET) | **1** | `runner-minutes-accounting/the-ownership-move-adds-no-runtime-behavior-and-no-observable-output-change` (task 6.2) |
 | Routed to `design.md` Open Questions (SPEC-DEFECT) | **0** | — |
 | Archive-blocking spec defects (public impact / false exclusion) | **0** | — |
-| Reclassified MET (raw-unmet that re-traces end-to-end) | **0** | — (the skeptic pass produced zero raw-unmet requirements) |
+| Reclassified MET (raw-unmet that re-traces end-to-end) | **0** | — the sole raw-unmet survived re-tracing |
 
-The skeptic pass produced **0 raw-unmet requirements** and **0 mandatory public findings**.
-This pass did **not** rubber-stamp that: all 14 requirements were re-traced against the
-tree, and the pass's own scope audit surfaced one defect the skeptic's requirement-by-
-requirement sweep did not route — an unauthorized `*.spec.ts` sitting inside the frozen
-guardrails directory. Both requirements it breaks are re-opened as task **6.1**. The
-tally above is this pass's adjudication, not the raw skeptic count.
+The skeptic pass produced **1 raw-unmet requirement** and **5 mandatory public findings**
+(1 × `public-surface-gate-failed`, 4 × `dynamic-evidence-missing` for the `registry`,
+`restMetadata`, `mcpSdkMetadata` and `behavior` lanes), all against the same requirement,
+all routed `unmet` and all `blocking`.
 
-Twelve of the fourteen requirements are **MET** and are folded in below.
+This pass did **not** rubber-stamp the skeptic. It re-ran the exact command the requirement's
+fourth scenario names and reproduced the failure first-hand, then traced it to its cause —
+`scripts/public-surface-adversarial.test.mjs:278` throwing on the two `agent()` labels
+`ee0dc70` added to `.claude/workflows/opsx-verify.js`. The verdict is **UNMET and it stands**:
+the requirement's own SHALL clause demands the position be *re-proven by actually running the
+adversarial verifier rather than asserted in prose*, and on HEAD that verifier returns
+`"passed": false` / `exitCode: 1`. Re-opened as task **6.2**.
+
+The other three scenarios of that same requirement re-trace clean and are recorded under the
+UNMET entry so the fix scope stays narrow: no logging in the owner/port/module, unchanged
+ledger semantics, byte-identical `GET /metrics` body. Only scenario 4 is broken, and what
+broke it is verification tooling, not the ownership move.
+
+**Thirteen of the fourteen requirements are MET** and are folded in below — including the two
+this change's first pass re-opened as task 6.1, which now re-trace clean (see *Closed since
+pass 1*).
 
 ---
 
@@ -39,15 +55,17 @@ Twelve of the fourteen requirements are **MET** and are folded in below.
 | `node --test --test-force-exit scripts/ratchets/r11-dependency-budget.test.mjs` | **12 pass / 0 fail** |
 | `node scripts/context-layout-check-v2.mjs` | **exit 0** — scanned 285 files; `cross-context-import: 135 / layer-direction: 2 / prisma-outside-store: 60 / unclassified-file: 132`; "every class within its committed baseline" |
 | `node scripts/test-discovery-check.mjs` | **489 test files, all discovered by a runner** |
-| `node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger --phase verify` | **exit 0** — `sidecar`, `registry`, `restMetadata`, `mcpSdkMetadata`, `behavior` all `passed: true`, **`findings: []`** |
+| `CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger` | **`"passed": false`, `command.exitCode: 1`** — `sidecar` `passed: true`; `registry` / `restMetadata` / `mcpSdkMetadata` / `behavior` all `passed: false` ("pnpm test:public-surface exited 1"); 5 findings · see UNMET §1 |
+| `node --test scripts/public-surface-adversarial.test.mjs` | **12 pass / 7 fail** — all 7 fail with `Unexpected workflow agent label: probe-hygiene:snapshot` · see UNMET §1 |
 | `grep -n 'this\.runnerMinutes' apps/api/src/guardrails/guardrails.service.ts` | 5 refs — `1871, 2366, 2964, 3311, 3333` (byte-identical to `r11.json` `samples`) |
 | `grep -rn 'runnerMinuteIntervals' apps/api/src` | **zero matches**, production and test doubles alike |
 | `grep -rn 'createDetachedRunnerMinutes(' apps/api/src` | one production call site — `guardrails.service.ts:615`; the other four are the port's own declaration and its `.port.test.mjs` |
 | `grep -niE 'admission\|fence\|lease\|semaphore\|queued' …/runner-minutes-ledger.port.ts` | **zero matches** |
 | `grep -n 'Logger\|console\.'` over port + service + module | **zero matches** |
-| `ls apps/api/src/guardrails/*.spec.ts \| wc -l` | **7** — expected 6 · see UNMET §1 |
-| `grep -ho 'test(' apps/api/src/guardrails/*.spec.ts \| wc -l` | **136** — expected 135 · see UNMET §1 |
+| `ls apps/api/src/guardrails/*.spec.ts \| wc -l` | **6** — back on the pinned baseline (was 7 in pass 1) |
+| `grep -ho 'test(' apps/api/src/guardrails/*.spec.ts \| wc -l` | **135** — back on the pinned baseline (was 136 in pass 1) |
 | `ls apps/api/src/guardrails/*.test.mjs \| wc -l` | **8** — correct |
+| `git status --porcelain apps/api/src/guardrails/` | **empty** — the pass-1 probe file is gone from disk, not merely ignored |
 
 Live guardrails baseline, re-measured this pass, per file:
 
@@ -58,24 +76,111 @@ guardrails-domain-event-publishing.spec.ts          15
 guardrails-branch-policy.spec.ts                     3
 semaphore-restore.spec.ts                            3
 transfer-progress-throttle.spec.ts                   3
-                                        subtotal = 135  across 6 files   ← the pinned baseline
-ground-truth-publishing-failure-does-not-disturb-
-  transition.spec.ts                                 1   ← UNAUTHORIZED, untracked
-                                           total = 136  across 7 files
+                                           total = 135  across 6 files   ← the pinned baseline, met
 ```
 
-`tasks.md` before this pass: **71 / 71 checked, zero open items**, across 5 tracks
+`tasks.md` at the start of this pass: **72 / 72 checked, zero open items**, across 6 tracks
 (`owner-and-port`, `characterization-proof`, `range-b-research`,
-`ownership-move-and-ratchet`, `gates-and-verification`). This pass appended one open
-item (6.1) under a new `verify-reopened` track.
+`ownership-move-and-ratchet`, `gates-and-verification`, `verify-reopened`). This pass appended
+one open item (**6.2**) under the existing `verify-reopened` track.
 
 ---
 
 ## UNMET — re-opened as code tasks
 
-### 1. `runner-minutes-accounting/the-derived-output-is-proven-unchanged-by-a-characterization-test-bound-to-the-real-implementation` — **UNMET** (task 6.1)
+### 1. `runner-minutes-accounting/the-ownership-move-adds-no-runtime-behavior-and-no-observable-output-change` — **UNMET** (task 6.2)
 
-Three of this requirement's four scenarios re-trace clean (see below). The fourth does not.
+Three of this requirement's four scenarios re-trace clean. The fourth is a **live, reproducible
+failure on HEAD**, and this pass reproduced it rather than inheriting the verdict.
+
+> **Scenario: The public-surface position is executed, not assumed**
+> **WHEN** `node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger`
+> is run against the integrated tree
+> **THEN** it exits 0 against `unchanged` on all four surfaces with an empty
+> `protocolDifferences` — re-proven by actually running the adversarial verifier rather than
+> asserted in prose
+
+Ran on HEAD:
+
+```
+CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) \
+  node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger
+→ "passed": false        command.exitCode: 1
+   sidecar        passed: true   "validate-change … --phase verify passed."
+   registry       passed: false  "pnpm test:public-surface exited 1."
+   restMetadata   passed: false  "pnpm test:public-surface exited 1."
+   mcpSdkMetadata passed: false  "pnpm test:public-surface exited 1."
+   behavior       passed: false  "pnpm test:public-surface exited 1."
+   findings: 1 × public-surface-gate-failed + 4 × dynamic-evidence-missing (all blocking)
+```
+
+**Root cause is this branch's own commit `ee0dc70`**, not the ownership move. That commit added
+two `agent()` calls to `.claude/workflows/opsx-verify.js` — `probe-hygiene:snapshot` (`:289`)
+and `probe-hygiene:sweep` (`:382`). `scripts/public-surface-adversarial.test.mjs` compiles and
+*executes* that workflow source (`compileVerifyWorkflow`, `:167-178`) against a hand-written
+fake agent whose label allowlist ends in `throw new Error('Unexpected workflow agent label: ' +
+options.label)` (`:278`). The allowlist was never extended, so the workflow throws before
+reaching its assertions. `node --test scripts/public-surface-adversarial.test.mjs` → **12 pass /
+7 fail**, and the seven are precisely the protocol-regression cases that police the sidecar
+contract:
+
+```
+not ok 6  a passing deterministic verdict passes workflow without an LLM dynamic override
+not ok 7  workflow accepts and blocks an evaluator finding after a zero focused-gate exit
+not ok 14 undeclared public impact becomes a blocking specification defect
+not ok 15 a false MCP exclusion becomes a blocking specification defect
+not ok 16 MCP field stripping becomes unmet even when schema and type checks still pass
+not ok 17 an extra REST secret forwarded outside the registry exact set becomes unmet
+not ok 18 an extra MCP internalFlag forwarded outside the registry exact set becomes unmet
+```
+
+`packages/contracts/package.json:25` globs `../../scripts/public-surface-*.test.mjs` into its
+own `test:public-surface`, which is how a `scripts/`-level regression propagates into the
+repo-level `pnpm test:public-surface` and knocks out all four mandatory evidence lanes at once.
+
+**What this is not.** It is not evidence that a public surface moved. `git diff main...HEAD --
+packages/contracts/` is empty, the four surface statuses stay `unchanged`, and
+`protocolDifferences` stays empty — so the sidecar claim is **unproven, not false**, which is
+why this routes UNMET (a code defect to fix) rather than to `blockingSpecDefects` (a false
+sidecar claim). But unproven is still archive-blocking here, because the requirement's SHALL
+clause makes *executing the verifier* the acceptance criterion, and because the seven dark
+tests are exactly the ones that would have caught a false claim if there were one.
+
+`gate-results.md` task 5.12 records a `passed: true` transcript for this same command. That
+file was last written at `cce2b2d`, **before** `ee0dc70` landed — so the recorded transcript is
+stale relative to HEAD and must be re-run and re-recorded, not cited.
+
+The other three scenarios of this requirement re-trace clean and are **not** what re-opens it:
+
+- **The owner emits no logs** — `grep -n 'Logger\|console\.'` over `runner-minutes-ledger.port.ts` (58 lines), `runner-minutes-ledger.service.ts` (34 lines) and `runner-minutes.module.ts` (19 lines): zero matches; none takes an injected logger parameter. The owner adds no persistence, no metrics emission, no timer, no retry, no error handling — it delegates all three methods to the private ledger verbatim. `apps/api/src/runner-minutes.ts` — the ledger class itself — has a **zero-line diff vs `main`**.
+- **Ledger semantics are unchanged** — `runner-minutes-derivation.test.mjs:169-224` exercises the real compiled module: duplicate `recordStart` ignored (`:169-181`), `recordEnd` on a never-started task is a no-op (`:183-193`), clock skew clamped to 0 rather than subtracting (`:195-209`), closed-before-open snapshot ordering (`:211-224`). `git log --oneline` over that file shows exactly one commit, `295fa46`, which **precedes** the ownership move `cce2b2d` — the "introduced before, untouched after" ordering the scenario demands.
+- **The response body is byte-identical** — the only diff at `metrics.service.ts:88` is the collaborator: `deriveRunnerMinutes(this.guardrails.runnerMinuteIntervals(), now)` → `deriveRunnerMinutes(this.runnerMinutes.intervals(), now)`; same function, same `now`. `runner-minutes-ownership.integration.test.mjs:221-251` pins `body.runnerMinutes` both against `deriveRunnerMinutes(fixture, NOW)` and against the literal `{ available: true, minutes: 8 }`, so "break both sides identically" does not pass. `gate-results.md` §5.11's one-shot cross-build `dist/` comparison (`FULL RESPONSE BODIES DEEP-EQUAL: PASS`) backs it, and unlike §5.12 that experiment is not invalidated by `ee0dc70`, which touches no application code.
+
+**Fix scope:** teach the fake agent's label map the two `probe-hygiene:*` labels (returning a
+valid `{ paths: [] }`), then re-run and re-record §5.12. Do **not** fix it by deleting the
+hygiene calls from the workflow — they exist because pass 1's probe pollution is a real,
+recurring trap — and do **not** fix it by loosening the throw into a permissive default, which
+is the only thing making an unmodelled workflow step visible.
+
+---
+
+## Closed since pass 1 — the two task-6.1 requirements now re-trace MET
+
+Task **6.1** removed `apps/api/src/guardrails/ground-truth-publishing-failure-does-not-disturb-transition.spec.ts`
+(commit `d2c912e`). Re-measured on HEAD this pass:
+`ls apps/api/src/guardrails/*.spec.ts | wc -l` → **6**,
+`grep -ho 'test(' apps/api/src/guardrails/*.spec.ts | wc -l` → **135**,
+`ls apps/api/src/guardrails/*.test.mjs | wc -l` → **8**,
+`git status --porcelain apps/api/src/guardrails/` → **empty**, and the file is absent from disk
+(not merely untracked-and-ignored). `assertion-rewrite-ledger.md` §3 re-reads true without
+edit — the repair went in the required direction, by deleting the probe rather than by
+weakening the pinned numbers. Both requirements below are therefore **MET**; their pass-1
+findings are preserved for the record.
+
+### `runner-minutes-accounting/the-derived-output-is-proven-unchanged-by-a-characterization-test-bound-to-the-real-implementation` — **MET** (was UNMET in pass 1; task 6.1 closed)
+
+Pass-1 finding, preserved — three of this requirement's four scenarios re-traced clean; the
+fourth did not, and now does.
 
 > **Scenario: The guardrails characterization baseline is untouched**
 > **WHEN** the `test()` cases in `apps/api/src/guardrails/*.spec.ts` and the `.test.mjs`
@@ -83,7 +188,7 @@ Three of this requirement's four scenarios re-trace clean (see below). The fourt
 > **THEN** the counts are still 135 across 6 spec files and 8 `.test.mjs` scripts, so no
 > test this change adds landed inside the guardrails baseline
 
-Measured on the integrated tree: **136 across 7 spec files**. The extra file is
+Measured in pass 1: **136 across 7 spec files** — now **135 across 6**. The extra file was
 `apps/api/src/guardrails/ground-truth-publishing-failure-does-not-disturb-transition.spec.ts`
 — a real, runnable 229-line spec that drives the actual `GuardrailsService` through
 admit → onTerminal with a throwing bus. It is currently **untracked** (`git status` `??`),
@@ -99,25 +204,27 @@ The remaining scenarios of this requirement are satisfied and are *not* what re-
 - **It passes unmodified across the ownership move** — `git show --stat 295fa46` is that one file alone (267 insertions); `git show --stat cce2b2d` does not touch it. The ordering is exactly "proof first, move second".
 - **The new tests are actually discovered** — `node scripts/test-discovery-check.mjs` reports 489 test files, all discovered by a runner.
 
-**Fix scope:** delete or relocate the one file. Do **not** satisfy it by editing the 135 / 6
-numbers in either spec — the frozen baseline is the requirement.
+**Resolved by task 6.1** (`d2c912e`): the file was deleted, not relocated and not accommodated
+by editing the 135 / 6 numbers. All four scenarios now re-trace clean.
 
-### 2. `guardrails/test-doubles-of-the-removed-accessor-are-restated-and-every-rewrite-is-ledgered` — **UNMET** (task 6.1)
+### `guardrails/test-doubles-of-the-removed-accessor-are-restated-and-every-rewrite-is-ledgered` — **MET** (was UNMET in pass 1; task 6.1 closed)
 
-Three of this requirement's four scenarios re-trace clean. The fourth does not.
+Pass-1 finding, preserved — three of this requirement's four scenarios re-traced clean; the
+fourth did not, and now does.
 
 > **Scenario: No guardrails-directory test is edited**
 > **WHEN** the change's diff is filtered to `apps/api/src/guardrails/*.spec.ts` and
 > `apps/api/src/guardrails/*.test.mjs`
 > **THEN** zero files appear
 
-`git show --stat` on both commits shows zero guardrails test files, so the **committed**
-diff is clean. But the same untracked spec above is part of this change's contribution to
-the tree — it names the change in its own header — and it would enter the diff the moment
-archive stages the working tree. Under the reading that "the change's diff" means what the
-change contributes, one file appears where zero must.
+`git show --stat` on both commits showed zero guardrails test files, so the **committed**
+diff was always clean. But the same untracked spec above was part of this change's contribution
+to the tree — it named the change in its own header — and it would have entered the diff the
+moment archive staged the working tree. Under the reading that "the change's diff" means what
+the change contributes, one file appeared where zero must. **Now zero do**: the file is gone
+from disk and `git status --porcelain apps/api/src/guardrails/` is empty.
 
-This also makes the change's own durable artifact false as written. `assertion-rewrite-ledger.md`
+It also made the change's own durable artifact false as written. `assertion-rewrite-ledger.md`
 §3 states: *"Guardrails-directory spec or `.test.mjs` files edited: **0** — the guardrails
 characterization baseline (135 `test()` across 6 `*.spec.ts`, 8 `.test.mjs`) is untouched
 by this change."* On the live tree that sentence does not hold. The ledger needs no edit —
@@ -143,16 +250,30 @@ name the command that decides them **plus** whether that gate exists today.
 
 ## Archive-blocking spec defects (undeclared public impact / false protocol exclusion)
 
-**None.** The `unchanged`-on-all-four-surfaces position in `surface-impact.json` was
-**executed**, not taken on trust:
-`node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger --phase verify`
-exits 0 with `sidecar`, `registry`, `restMetadata`, `mcpSdkMetadata` and `behavior` all
-`passed: true` and `findings: []`, against an empty `protocolDifferences`. `git diff` over
-`packages/contracts/**` is empty. The sidecar claim is true.
+**None** — and the distinction matters, because pass 2 does hold a blocking public finding.
+
+The five mandatory public findings this pass carries (`public-surface-gate-failed` ×1,
+`dynamic-evidence-missing` ×4) are all machine-routed **`unmet`**, and re-tracing agrees with
+that route. This bucket is for a sidecar that claims *less* public impact than the change
+actually has — an undeclared surface change or a false protocol exclusion. Neither is present:
+
+- `git diff main...HEAD -- packages/contracts/` is **empty**. So is `apps/api/prisma/**`.
+- The only application-code diff on the read path is the collaborator swap at `metrics.service.ts:88`; the derived `runnerMinutes` block is pinned deep-equal on both sides by `runner-minutes-ownership.integration.test.mjs` and by the `gate-results.md` §5.11 cross-build experiment, neither of which `ee0dc70` invalidates.
+- `surface-impact.json` keeps all four surface statuses at `unchanged` with `protocolDifferences: []`, and the `sidecar` lane itself still passes (`validate-change … --phase verify passed`).
+
+What is broken is the **prover**, not the claim: `pnpm test:public-surface` exits 1 because
+`scripts/public-surface-adversarial.test.mjs` throws on two workflow labels `ee0dc70` added, so
+the four dynamic lanes report no evidence. The sidecar claim is therefore **unproven, not
+false** — a code defect (task **6.2**), not a spec defect. Archive stays blocked either way;
+routing it honestly is what keeps the difference legible if the re-run later surfaces something
+real.
 
 ---
 
-## MET — the twelve requirements that re-trace end-to-end
+## MET — the thirteen requirements that re-trace end-to-end
+
+Eleven are listed below; the remaining two are the task-6.1 pair recorded under *Closed since
+pass 1* above.
 
 ### `runner-minutes-accounting/running-interval-state-has-exactly-one-owner-and-it-lives-in-platform-ops` — **MET**
 
@@ -236,7 +357,15 @@ comparator is **bidirectionally fail-closed** — a measured count *below* basel
 red — `context-layout-check-v2.mjs` exiting 0 pins these as live equalities, not ceilings.
 No count rose; no new key appeared.
 
-### `runner-minutes-accounting/the-ownership-move-adds-no-runtime-behavior-and-no-observable-output-change` — **MET**
+### `runner-minutes-accounting/the-ownership-move-adds-no-runtime-behavior-and-no-observable-output-change` — **SUPERSEDED: now UNMET, see §1**
+
+> **Pass-1 verdict, preserved and no longer operative.** Pass 1 ran this requirement's
+> public-surface command at `cce2b2d` and got exit 0. Commit `ee0dc70` landed afterwards and
+> broke the verifier's own test suite, so the same command now returns `"passed": false` /
+> `exitCode: 1`. The three substantive scenarios below still re-trace clean — they are why
+> the fix scope is the verifier, not the ownership move — but scenario 4 no longer holds and
+> the requirement is re-opened as task **6.2**. The final paragraph of this section is stale
+> and is struck.
 
 `grep -n 'Logger\|console\.'` over the port, the owner and the module: **zero matches**;
 none takes an injected logger parameter. The owner adds no persistence, no metrics
@@ -262,8 +391,10 @@ on both sides. That one-shot evidence is correctly backed by a resident regressi
 the pre-move read expression over the same fixture *and* the literal
 `{ available: true, minutes: 8 }`, so "break both sides identically" does not pass.
 
-The public-surface position was **executed** by this pass, not quoted: exit 0, all five
-checks `passed: true`, `findings: []`.
+~~The public-surface position was **executed** by this pass, not quoted: exit 0, all five
+checks `passed: true`, `findings: []`.~~ — **STALE.** True at `cce2b2d`, false at HEAD. Re-run
+on HEAD by pass 2: `"passed": false`, `command.exitCode: 1`, four lanes failing, five blocking
+findings. See UNMET §1.
 
 ### `domain-event-bus/the-dependency-budget-ratchet-is-seeded-with-measured-counts` (MODIFIED) — **MET**
 
@@ -426,25 +557,61 @@ touches, and the change's own diff adds no publish-path edit.
 
 ---
 
+## Gap findings
+
+**None.** Every requirement in `specs/` has a traceable implementation; no requirement's
+behavior is missing outright. (The one UNMET is "implemented, gate broken", not "not
+implemented".)
+
 ## Scope findings
 
-One item in the tree has no requirement or task backing it, and it is the same item both
-UNMET routes point at:
+The pass-1 scope item — `apps/api/src/guardrails/ground-truth-publishing-failure-does-not-disturb-transition.spec.ts`
+— is **closed**: absent from disk, `git status --porcelain apps/api/src/guardrails/` empty, working
+tree clean. It is no longer a live finding.
 
-- `apps/api/src/guardrails/ground-truth-publishing-failure-does-not-disturb-transition.spec.ts` — untracked, 229 lines, runnable, added under `apps/api/src/guardrails/` during verification as a ground-truth probe (its header: *"GROUND-TRUTH CHECK (not part of the permanent suite) for the extract-runner-minutes-ledger requirement"*). No task in `tasks.md` authorizes it, and it works against two of this change's own requirements — the zero-guardrails-test-files-in-the-diff scenario and the frozen 135-`test()` / 6-`*.spec.ts` guardrails baseline. Routed to task **6.1**.
+One live scope-creep item remains, all of it in commit `ee0dc70`
+("fix(workflows): stop opsx-verify from failing a change with its own probes"). This is a fix to
+the **generic OpenSpec verification harness**, not to runner-minutes-ledger domain behavior, and
+none of the three spec files under `specs/` (`domain-event-bus`, `guardrails`,
+`runner-minutes-accounting`) mentions opsx-verify, probe hygiene, or verification-workflow
+tooling at all:
 
-Everything else in the two commits maps cleanly onto a requirement and a task: the new
-port / owner / module files, the `guardrails.service.ts` getter + backing-member rewrite,
-the `metrics.service.ts` / `metrics.module.ts` / `app.module.ts` wiring, the four restated
-test doubles, the `r11.json` / `r7.json` / `r11-dependency-budget.test.mjs` ratchet edits,
-and the three plan-document edits (which are **in** scope by the Q4 decision — a diff with
-zero plan-document edits would itself be the defect). `packages/contracts/**`,
-`apps/api/prisma/**` and `docs/refactor/contexts-manifest.json` appear nowhere in the diff.
+- `.claude/workflows/opsx-verify.js:276-291` — pre-escalation snapshot of untracked repo files (agent call `probe-hygiene:snapshot`): general verification-tooling hygiene with no backing requirement in any of the three specs.
+- `.claude/workflows/opsx-verify.js:330-343` — the dynamic ground-truth probe prompt rewritten to require no-file probes, forbid writing into spec-pinned directories, and self-delete created files: tooling hardening outside this change's three specs.
+- `.claude/workflows/opsx-verify.js:369-388` — post-escalation probe-sweep agent call that deletes untracked files created during the verify run: again pure verifier-tooling behavior, not covered by any ADDED/MODIFIED requirement here.
+
+The mitigating context is real and worth recording: the edit was made in response to a genuine
+problem *this change's own verification pass* caused (task 6.1 — a leftover ground-truth probe
+polluted the frozen guardrails baseline and turned two requirements UNMET). But it is repo-wide
+tooling shipped inside a domain refactor, and it is also what broke the public-surface gate this
+pass re-opens as task 6.2 — the concrete cost of carrying cross-cutting tooling in a change whose
+specs do not govern it.
+
+Everything else across the four commits maps cleanly onto a requirement and a task — verified by
+diffing `main...HEAD` and cross-checking each touched file against the three spec files, not by
+trusting this report's earlier revision: the new port / owner / module files, the
+`guardrails.service.ts` getter + backing-member rewrite, the `metrics.service.ts` /
+`metrics.module.ts` / `app.module.ts` wiring, the four restated test doubles, the `r11.json` /
+`r7.json` / `r11-dependency-budget.test.mjs` ratchet edits, and the three `docs/refactor*` plan
+edits (which are **in** scope by the Q4 decision — a diff with zero plan-document edits would
+itself be the defect). `packages/contracts/**`, `apps/api/prisma/**` and
+`docs/refactor/contexts-manifest.json` appear nowhere in the diff.
 
 ## Archive readiness
 
-**Blocked on task 6.1 only.** There are zero spec defects and zero archive-blocking public
-findings; the sidecar's `unchanged`-on-all-four-surfaces claim was executed and is true. Once
-`ls apps/api/src/guardrails/*.spec.ts | wc -l` reads 6 and
-`grep -ho 'test(' apps/api/src/guardrails/*.spec.ts | wc -l` reads 135, both re-opened
-requirements close and this change is archivable without further work.
+**Blocked on task 6.2 only.** Zero spec defects and zero archive-blocking *spec* defects; the
+sidecar's `unchanged`-on-all-four-surfaces claim is intact but currently **unproven**, because
+the verifier that proves it cannot run green on HEAD.
+
+Task 6.1 is closed and its two requirements re-trace MET. This change becomes archivable when:
+
+```
+node --test scripts/public-surface-adversarial.test.mjs            → 19 pass / 0 fail
+pnpm test:public-surface                                           → exit 0
+CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) \
+  node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger
+                                                                   → "passed": true, findings: []
+```
+
+and `gate-results.md` §5.12 carries a transcript re-recorded against the current HEAD rather
+than its stale `cce2b2d`-era text.

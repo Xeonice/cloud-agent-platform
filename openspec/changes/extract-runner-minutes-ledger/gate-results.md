@@ -49,12 +49,19 @@ BELOW the baselined count → "equally red"）。因此 `node scripts/context-la
 
 ## 任务 5.12 — 公开面对抗式校验
 
-命令（分支无 upstream，按脚本自己的提示显式给基线）：
+命令（分支的 upstream 已本地设为 `origin/main`，脚本据此自解析基线，无需再给 env；
+早期记录里的 `CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main)` 前缀仍然有效，两者等价）：
 
 ```
-CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) \
-  node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger
+node scripts/public-surface-adversarial.mjs verify extract-runner-minutes-ledger
 ```
+
+**本段已按 task 6.2 的要求在当前 HEAD 上重跑重录**，不是 `cce2b2d` 时期的旧誊本。
+中途曾有一次红：`ee0dc70` 给 `.claude/workflows/opsx-verify.js` 加了两个 `agent()` 调用
+（`probe-hygiene:snapshot` / `probe-hygiene:sweep`），而 `scripts/public-surface-adversarial.test.mjs`
+的假 agent 对未登记的 label 直接 `throw`，导致 `pnpm test:public-surface` exit 1、四条强制证据 lane
+全部转 false。修的是**白名单**不是工作流（那个 throw 正是让「工作流新增了未建模步骤」可见的机制），
+补完后重跑即下述输出。
 
 输出：
 
