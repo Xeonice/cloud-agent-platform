@@ -61,10 +61,22 @@ export const BASELINE_REL = 'scripts/ratchets/r11.json';
 export const KEY_PREFIX = 'guardrails-symbol-reference';
 
 /**
- * The six collaborator symbols the five 阶段 4 concerns reach guardrails
- * through. THIS is the declaration — the baseline file holds tolerated counts
- * only, exactly as `r7.json` holds counts for keys the layout gate produces.
- * Keeping the list here is what makes a burned-down entry still measured.
+ * The collaborator symbols the 阶段 4 concerns reach guardrails through. THIS is
+ * the declaration — the baseline file holds tolerated counts only, exactly as
+ * `r7.json` holds counts for keys the layout gate produces. Keeping the list
+ * here is what makes a burned-down entry still measured.
+ *
+ * It was six. `metrics-projection` (`SemaphoreProjectionSource`) reached zero in
+ * collapse-three-collaborator-groups — the capacity projection is owned under
+ * `runner-metrics` and read from there directly, so guardrails no longer names
+ * it even in a type position — and a collaborator that reaches zero has its
+ * BASELINE entry deleted. Its DECLARATION is deleted here too, which is the one
+ * place this list departs from the endgame the header describes: the identifier
+ * no longer exists anywhere in the tree, so "still measured" would be measuring
+ * a name nothing can reintroduce by accident. What guards the reintroduction is
+ * the change's own executable assertion (`projection-forwarder-gone`, a tree-wide
+ * grep), which is stricter than this gate ever was — it covers test doubles too,
+ * and this gate only ever read one file.
  *
  * @type {ReadonlyArray<{ collaborator: string, symbol: string, concern: string }>}
  */
@@ -93,11 +105,6 @@ export const COLLABORATORS = Object.freeze([
     collaborator: 'this.transcripts',
     symbol: 'this.transcripts',
     concern: 'transcript 收尾（capture 改订阅）',
-  },
-  {
-    collaborator: 'metrics-projection',
-    symbol: 'SemaphoreProjectionSource',
-    concern: 'metrics（投影源类型；guardrails 停止导出投影即归零）',
   },
 ]);
 

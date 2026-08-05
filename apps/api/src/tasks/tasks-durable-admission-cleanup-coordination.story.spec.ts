@@ -27,6 +27,8 @@ import {
   type GuardrailsConfig,
 } from '@/guardrails/guardrails.service';
 import type { PrismaService } from '@/prisma/prisma.service';
+import { CAPACITY_PROJECTION_PORT } from '@/runner-metrics/capacity-projection.port';
+import { CapacityProjectionService } from '@/runner-metrics/capacity-projection.service';
 import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
 import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
 import { FencedTaskAdmissionProcessor } from '@/task-admission/fenced-task-admission.processor';
@@ -571,11 +573,18 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
     },
   } as unknown as AuditRecorderPort;
   const waitingTaskLifecycle = new WaitingTaskLifecycle();
+  // collapse-three-collaborator-groups: the capacity projection is OWNED under
+  // runner-metrics and the orchestrator hands it the admission state once at
+  // boot, so this story reads the running/queued sets through the real owner —
+  // the same object `/metrics` reads — instead of through an accessor on the
+  // orchestrator.
+  const capacityProjection = new CapacityProjectionService();
   const moduleRef = {
     get(token: unknown) {
       if (token === TasksService) return waitingTaskLifecycle;
         // guardrails resolves the task operations by PORT token now
         if (token === TASK_OPERATIONS) return waitingTaskLifecycle;
+      if (token === CAPACITY_PROJECTION_PORT) return capacityProjection;
       throw new Error('optional story dependency is not bound');
     },
   } as unknown as ModuleRef;
@@ -598,8 +607,8 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   guardrails.onModuleInit();
   guardrails.restoreDurableAdmissionSlot(TASK_ID);
   assert.equal(await guardrails.admit(WAITING_TASK_ID), 'queued');
-  assert.deepEqual(guardrails.semaphoreProjection().snapshotRunning(), [TASK_ID]);
-  assert.deepEqual(guardrails.semaphoreProjection().snapshotQueue(), [
+  assert.deepEqual(capacityProjection.project().runningTaskIds, [TASK_ID]);
+  assert.deepEqual(capacityProjection.project().occupancy.queuedTaskIds, [
     WAITING_TASK_ID,
   ]);
 
@@ -696,7 +705,7 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   assert.equal(guardrails.runningCount, 1, 'the promoted waiter owns the slot');
   assert.equal(guardrails.queuedCount, 0);
   assert.deepEqual(waitingTaskLifecycle.transitions, ['queued', 'running']);
-  assert.deepEqual(guardrails.semaphoreProjection().snapshotRunning(), [
+  assert.deepEqual(capacityProjection.project().runningTaskIds, [
     WAITING_TASK_ID,
   ]);
   assert.deepEqual(destroyedSessions, [TASK_ID]);

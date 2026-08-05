@@ -62,8 +62,8 @@ function makeSampler(readingByTask) {
   };
 }
 
-// guardrails is unused by buildTaskResource; pass a minimal stub.
-const guardrailsStub = {};
+// The capacity projection is unused by buildTaskResource; pass a minimal stub.
+const projectionStub = {};
 
 test('process-scope reading maps to a sampled response (codex primary + container background)', () => {
   const reading = {
@@ -73,7 +73,7 @@ test('process-scope reading maps to a sampled response (codex primary + containe
     sampledAt: new Date(1_700_000_000_000),
     ageMs: 1000,
   };
-  const svc = new MetricsService(guardrailsStub, makeSampler({ 'task-abc': reading }));
+  const svc = new MetricsService(projectionStub, makeSampler({ 'task-abc': reading }));
   const res = svc.buildTaskResource('task-abc');
   assert.equal(res.state, 'sampled');
   assert.equal(res.scope, 'process');
@@ -91,7 +91,7 @@ test('container-scope fallback maps through with null background', () => {
     sampledAt: new Date(1_700_000_000_000),
     ageMs: 1000,
   };
-  const svc = new MetricsService(guardrailsStub, makeSampler({ 'task-abc': reading }));
+  const svc = new MetricsService(projectionStub, makeSampler({ 'task-abc': reading }));
   const res = svc.buildTaskResource('task-abc');
   assert.equal(res.state, 'sampled');
   assert.equal(res.scope, 'container');
@@ -99,7 +99,7 @@ test('container-scope fallback maps through with null background', () => {
 });
 
 test('no reading (null) maps to not-running (not an error, no zeros)', () => {
-  const svc = new MetricsService(guardrailsStub, makeSampler({}));
+  const svc = new MetricsService(projectionStub, makeSampler({}));
   const res = svc.buildTaskResource('task-abc');
   assert.equal(res.state, 'not-running');
   assert.equal(res.sample, undefined, 'no fabricated sample');
@@ -125,20 +125,29 @@ test('one /metrics poll carries the equivalent per-task data the fan-out would r
       aggregateMemoryBytes: CONTAINER.memoryBytes,
     }),
   };
-  // 'task-gone' is running per the semaphore but has NO live frame.
-  const guardrails = {
-    semaphoreProjection: () => ({
-      maxConcurrentTasks: 3,
-      runningCount: 2,
-      queuedCount: 0,
-      snapshotRunning: () => ['task-abc', 'task-gone'],
-      snapshotQueue: () => [],
+  // 'task-gone' holds a running slot but has NO live frame. The capacity
+  // projection reaches this consumer through its OWNER's port now
+  // (collapse-three-collaborator-groups), so the double is a port double.
+  const capacityProjection = {
+    bindSource() {},
+    project: () => ({
+      capacity: { ceiling: 3, active: 2, free: 1, queueDepth: 0 },
+      occupancy: {
+        slots: [
+          { slot: 0, busy: true, taskId: 'task-abc' },
+          { slot: 1, busy: true, taskId: 'task-gone' },
+          { slot: 2, busy: false, taskId: null },
+        ],
+        queuedTaskIds: [],
+      },
+      runningTaskIds: ['task-abc', 'task-gone'],
     }),
+    runningTaskIds: () => ['task-abc', 'task-gone'],
   };
   // Running intervals come from the runner-minutes PORT double now
   // (extract-runner-minutes-ledger); this case observes none.
   const runnerMinutes = { intervals: () => [] };
-  const svc = new MetricsService(guardrails, sampler, runnerMinutes);
+  const svc = new MetricsService(capacityProjection, sampler, runnerMinutes);
 
   const aggregate = svc.build(5_000);
   const fanout = svc.buildTaskResource('task-abc', 5_000);

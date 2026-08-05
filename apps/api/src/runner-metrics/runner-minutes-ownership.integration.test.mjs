@@ -92,13 +92,21 @@ function buildOrchestrator(moduleRef) {
   return new GuardrailsService(moduleRef, { destroyForSession() {} });
 }
 
-/** A capacity projection double: this test is about runner minutes, not slots. */
-function semaphoreProjection(running) {
-  return () => ({
-    ceiling: 4,
-    snapshotRunning: () => running,
-    snapshotQueue: () => [],
-  });
+/**
+ * A capacity-projection PORT double: this test is about runner minutes, not
+ * slots (collapse-three-collaborator-groups moved this read to the port, so the
+ * double moved with it).
+ */
+function capacityProjection(running) {
+  return {
+    bindSource() {},
+    project: () => ({
+      capacity: { ceiling: 4, active: running.length, free: 4 - running.length, queueDepth: 0 },
+      occupancy: { slots: [], queuedTaskIds: [] },
+      runningTaskIds: running,
+    }),
+    runningTaskIds: () => running,
+  };
 }
 
 function sampler(nowMs) {
@@ -153,7 +161,7 @@ test('booted context: the orchestrator writes and metrics reads the SAME ledger 
   // And the real MetricsService, fed from the port, counts it.
   const now = t0 + 5 * MIN;
   const body = new MetricsService(
-    { semaphoreProjection: semaphoreProjection(['task-alpha']) },
+    capacityProjection(['task-alpha']),
     sampler(now),
     registered,
   ).build(now);
@@ -236,7 +244,7 @@ test('the runnerMinutes block equals the PRE-MOVE read expression over the same 
   const port = { recordStart() {}, recordEnd() {}, intervals: () => fixture };
 
   const body = new MetricsService(
-    { semaphoreProjection: semaphoreProjection(['open-a']) },
+    capacityProjection(['open-a']),
     sampler(NOW),
     port,
   ).build(NOW);
@@ -254,7 +262,7 @@ test('the response keeps its exact top-level block set — nothing added, nothin
   const NOW = 1_000 * MIN;
   const port = { recordStart() {}, recordEnd() {}, intervals: () => [] };
   const body = new MetricsService(
-    { semaphoreProjection: semaphoreProjection([]) },
+    capacityProjection([]),
     sampler(NOW),
     port,
   ).build(NOW);

@@ -5,19 +5,43 @@
   "runtimeWireBehavior": "unchanged",
   "surfaces": {
     "publicV1": {
-      "status": "unchanged",
-      "reason": "三组都是进程内所有权重组：诊断写入的开关从调用方分支变成注入实现、转录捕获换注入形态但保留同一个被 await 的调用、容量投影换所有者但派生结果逐字节不变。不新增/修改/移除任何 /v1 操作或 schema。⚠ 与上一刀不同的是，diagnostics 与 transcript 各有真实 /v1 控制器（v1-task-provisioning-diagnostics.controller.ts、v1-transcript.controller.ts），apply 期必须复核这两条路径的响应是否逐字节不变；若有任何差异，本状态升 derived 并转录 protocolDifferences。"
+      "status": "derived",
+      "operationIds": [
+        "tasks.transcript"
+      ],
+      "reason": "三组都是进程内所有权重组，不新增/修改/移除任何 /v1 操作或 schema。状态从 unchanged 升为 derived，是因为本刀确实改动了 publicV1 面下的文件：转录捕获属主从 apps/api/src/tasks/ 迁到 apps/api/src/session-transcripts/，于是 v1.module.ts 里 TRANSCRIPT_STORE 绑定的 import 路径随之改写（同时删掉一段已过时的组合说明注释）。绑定解析到的仍是同一个具体服务的同一个实例——它只是换了个属主模块导出，v1 侧从 TasksModule 导入改成由 @Global() 的 SessionTranscriptModule 提供。tasks.transcript 是唯一受影响的操作；控制器、路由、入参、responseSchema 一行未动。「派生等价」不是声称，是跑出来的：本刀的 restMetadata / registry / behavior 三条动态取证泳道在集成树上全绿（反射真实 Nest handler 元数据与参数绑定、读可执行的规范注册表、并把唯一字段哨兵穿过可执行适配器映射），protocolDifferences 因此为空。"
     },
-    "mcp": { "status": "unchanged", "reason": "不触碰 MCP 工具集与传输。" },
-    "openapi": { "status": "unchanged", "reason": "操作注册表不变。" },
-    "apiPlayground": { "status": "unchanged", "reason": "Playground 操作目录不变。" },
+    "mcp": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.transcript"
+      ],
+      "toolIds": [
+        "get_transcript"
+      ],
+      "reason": "不触碰 MCP 工具集与传输：工具数量、名称、入参投影、输出投影全部不变。状态升为 derived 的原因与 publicV1 完全相同且同源——mcp.module.ts 里 TRANSCRIPT_STORE 绑定的 import 路径随转录属主迁出而改写，get_transcript 背后仍是同一个具体服务实例。mcpSdkMetadata 泳道在集成树上通过官方 SDK 的 Client.listTools（走 InMemoryTransport）实测了工具元数据，behavior 泳道追踪了字段哨兵，两者均绿，故 protocolDifferences 为空。"
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "操作注册表不变。"
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "Playground 操作目录不变。"
+    },
     "internalOnly": {
       "status": "changed",
       "scope": "阶段 4 第四刀：三组横切协作者一次摘完，各自停在实测地板——provisioning diagnostics 8→4（两个 wrapper 整体外迁 + 写闸门反转为注入式 no-op；构造参数被 legacy 透传钉住，故 4 而非 2）、transcripts 2→1（服务迁出 tasks 上下文、切断 guardrails→tasks 的 forwardRef 边，可选性守卫消失，但被 await 的 capture 调用必须保留以承担 capture-before-teardown 的 happens-before）、metrics-projection 2→0（投影所有权迁进 runner-metrics，条目按归零纪律删除）。同刀订正上一刀留下的陈旧构造点计数 22/15 → 23/16。不动构造签名。",
       "reason": "上一刀 range B 的三条预测本树重测：diagnostics 8→4 与 projection 2→0 成立，transcript 2→0 被推翻（源码注释与 :2414/:2437 的调用序证明 happens-before 由那个被 await 的调用承担，删不得），故按 2→1 如实立基线。三组合并的实测依据是写集三重交集只有 3 个文件、且 r11 的配对测试是单块 deepEqual + COLLABORATORS 长度断言，拆三刀要对同一常量做三次顺序编辑。"
     }
   },
-  "protocolDifferences": [],
+  "protocolDifferences": [
+    {
+      "operation": "tasks.transcript",
+      "kind": "mcp-output-schema-relaxation",
+      "detail": "注册表对 tasks.transcript 已声明的既有 REST/MCP 差异，随本刀选中该操作而如实转录——不是本刀引入的：MCP SDK 的高层注册器只接受根对象形态的 output schema，故 get_transcript 对外广告的字段是从规范的 SessionHistory 可辨识联合派生出来的，而每个 structured result 仍按那个规范联合完整校验。本刀对这条差异零影响：转录属主换目录、v1/mcp 两处 TRANSCRIPT_STORE 绑定改 import 路径，解析到的仍是同一个具体服务实例，输出投影仍是 canonical。"
+    }
+  ],
   "verification": {
     "id": "workflow-gates",
     "requiresWireCompatibilityFixture": false

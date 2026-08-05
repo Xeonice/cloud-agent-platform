@@ -52,12 +52,15 @@ out of this change's scope. The floor moves to 2 only after legacy retirement.
 ### Requirement: The orchestrator constructor and its positional construction sites are untouched
 
 `GuardrailsService` SHALL keep exactly its existing 11 constructor parameters in their existing
-order and types, with the `@Optional()` bus still last, so that the 23 positional
-`new GuardrailsService(...)` sites across 16 files (12 of them outside `apps/api/src/guardrails/`)
-compile and run unchanged. The site count is measured, not asserted: it moved from 22 across 15
-files when a later change added an integration test that constructs the orchestrator positionally,
-and a stale count here is what makes a future change mis-scope the blast radius of touching the
-signature. The `runnerMinutes` member SHALL be usable from the moment an instance
+order and types, with the `@Optional()` bus still last, so that the 24 positional
+`new GuardrailsService(...)` sites across 17 files (12 of them outside `apps/api/src/guardrails/`)
+compile and run unchanged. The site count is measured, not asserted, and it moves under this
+requirement's own nose: it was 22 across 15 files, then 23 across 16 when a later change added an
+integration test that constructs the orchestrator positionally, and it is 24 across 17 now that this
+change's transcript-ordering assertion constructs one too. The numbers here were re-counted live on
+the integrated tree rather than carried forward — the previously recorded "12 of them outside" was
+already one ahead of a live count of 11 when it was written, which is exactly how a stale count makes
+a future change mis-scope the blast radius of touching the signature. The `runnerMinutes` member SHALL be usable from the moment an instance
 exists under BOTH DI construction and positional construction: an instance built positionally,
 with no injector from which to resolve the port, SHALL still answer `recordStart`, `recordEnd`,
 and `intervals()` without a null-reference error, because existing reflective unit assertions
@@ -66,16 +69,22 @@ initialized by a field initializer, which the compiler emits before the construc
 it is in place before any collaborator the constructor builds can reach the member.
 
 Removing any of the three collaborator parameters is OUT of scope for a change that keeps this
-requirement, and the reason is measured rather than stylistic: 19 of those construction sites pass a
-value in the transcripts position or beyond, 15 of them outside `apps/api/src/guardrails/`, and one
-of them is `guardrails.service.spec.ts`, which a standing requirement freezes at zero diff. A change
-that needs the parameters gone SHALL modify this requirement in the same commit as the signature.
+requirement, and the reason is measured rather than stylistic: **20** of those construction sites
+pass a value in the transcripts position or beyond, **16** of them across **9** files outside
+`apps/api/src/guardrails/`, and one of them is `guardrails.service.spec.ts`, which a standing
+requirement freezes at zero diff. The threshold that produces those numbers SHALL be stated with
+them, because it is where this count goes wrong: `transcripts` is the EIGHTH parameter, so the
+affected set is every site passing at least eight arguments — including the six that pass exactly
+eight, whose final argument IS the transcripts value. Counting from nine instead silently drops
+those six and understates the blast radius by a quarter, which is precisely the mis-scoping this
+requirement exists to prevent. A change that needs the parameters gone SHALL modify this requirement
+in the same commit as the signature.
 
 #### Scenario: The constructor signature is unchanged
 
 - **WHEN** the `GuardrailsService` constructor signature is compared with its pre-change form
 - **THEN** it has the same 11 parameters in the same order and types, the bus is still the last
-  parameter and still `@Optional()`, and zero of the 23 positional construction sites were edited
+  parameter and still `@Optional()`, and zero of the 24 positional construction sites were edited
   to pass a ledger or port argument
 
 #### Scenario: A positionally constructed instance still accounts for runner minutes

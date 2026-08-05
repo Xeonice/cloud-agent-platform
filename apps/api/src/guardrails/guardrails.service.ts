@@ -105,7 +105,11 @@ import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
 import { CircuitBreaker, type FailureKind } from './circuit-breaker';
-import type { SemaphoreProjectionSource } from '@/runner-metrics/metrics-projection';
+import {
+  CAPACITY_PROJECTION_PORT,
+  type CapacityProjectionPort,
+} from '@/runner-metrics/capacity-projection.port';
+import { NOOP_SESSION_TRANSCRIPT_CAPTURE } from '@/session-transcripts/session-transcript.port';
 import {
   createDetachedRunnerMinutes,
   RUNNER_MINUTES_PORT,
@@ -141,12 +145,13 @@ import {
   taskProvisioningDiagnosticCauseFromFailureCode,
 } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier';
 import {
-  tryBeginTaskProvisioningDiagnosticObserver,
-  tryResumeTaskProvisioningDiagnosticObserver,
+  TaskProvisioningDiagnosticsObserverLifecycle,
+  type TaskProvisioningDiagnosticsObserverLifecyclePort,
+} from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port';
+import {
   type BeginTaskProvisioningDiagnosticObserverInput,
   type BegunTaskProvisioningDiagnosticObserver,
   type ResumedTaskProvisioningDiagnosticObserver,
-  type ResumeTaskProvisioningDiagnosticObserverInput,
   type TaskProvisioningDiagnosticSettlementController,
   type TaskProvisioningDiagnosticPrimarySettlementInput,
 } from '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter';
@@ -511,6 +516,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   private readonly defaultIdleTimeoutMs: number | null;
   private readonly diagnosticWriteTimeoutMs: number;
+  /**
+   * The OWNER of the provisioning-diagnostic observer lifecycle
+   * (collapse-three-collaborator-groups).
+   *
+   * Beginning and resuming an observer left this class whole, gate reading
+   * included. What remains here is one collaborator that answers with an
+   * observer or with the "no observer" result, so no call site below evaluates
+   * a deployment switch or inspects whether a recorder was wired.
+   */
+  private readonly provisioningDiagnostics: TaskProvisioningDiagnosticsObserverLifecyclePort;
   private readonly cleanupTerminalPolicyMaxAttempts: number;
   /**
    * Guardrail params ({deadlineMs?, idleTimeoutMs?}) parked for tasks admitted to
@@ -673,15 +688,22 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     /**
      * Best-effort durable transcript capture (persist-session-transcripts 3.1),
      * supplied under {@link TRANSCRIPT_SERVICE_TOKEN} by the Integration track
-     * (I.2) from the already-imported `TasksModule`. Optional so guardrails-only
-     * unit contexts still construct without it; when absent, the terminal
-     * chokepoints skip capture and proceed exactly as before. The provider is
-     * best-effort by contract, but the call sites wrap it defensively so even a
-     * surprise throw can never block a terminal transition / teardown / slot release.
+     * (I.2) from the already-imported `TasksModule`.
+     *
+     * collapse-three-collaborator-groups — NON-optional now. The composition
+     * binds this token to the capture owner, or to the no-op stand-in when no
+     * capture provider is composed, and the default below covers the positional
+     * construction that has no injector at all. So this member is always an
+     * implementation and the capture site below has no presence to branch on.
+     * The default is a parameter default rather than a required parameter
+     * because TypeScript forbids a required parameter after an optional one, and
+     * the three parameters ahead of this one are genuinely optional. The
+     * provider is best-effort by contract, but the call site still wraps it
+     * defensively so even a surprise throw can never block a terminal
+     * transition / teardown / slot release.
      */
-    @Optional()
     @Inject(TRANSCRIPT_SERVICE_TOKEN)
-    private readonly transcripts?: ITranscriptCapture,
+    private readonly transcripts: ITranscriptCapture = NOOP_SESSION_TRANSCRIPT_CAPTURE,
     /**
      * Evidence-only recorder and its independent, default-closed write switch.
      * They sit last to preserve construction compatibility in focused tests.
@@ -711,6 +733,17 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     @Inject(DOMAIN_EVENT_BUS)
     private readonly bus?: DomainEventBusPort,
   ) {
+    // collapse-three-collaborator-groups — the two diagnostics collaborators are
+    // read ONCE, here, and handed to the two consumers that need them: the
+    // lifecycle owner built at the end of this constructor, which performs every
+    // begin/resume now that the wrappers are gone, and the legacy pipeline
+    // pass-through below, which is why both constructor parameters are still
+    // live and why this group's floor is 4 rather than 2. A second read would be
+    // a second reference to a budgeted symbol with no second consumer behind it.
+    const diagnosticCollaborators = {
+      recorder: this.provisioningDiagnosticRecorder,
+      writeGate: this.provisioningDiagnosticWriteGate,
+    };
 
     // The inline pipeline's whole coupling to this orchestrator, written out
     // once. Nothing reaches back in except through this adapter, so the cost of
@@ -727,7 +760,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         settleCleanupDiagnostics: (settlement, evidence) =>
           this.settleCleanupDiagnostics(settlement, evidence),
         tryResumeProvisioningDiagnostics: (input) =>
-          this.tryResumeProvisioningDiagnostics(input),
+          this.provisioningDiagnostics.tryResume(input),
         forceFail: (taskId, cause) => this.forceFail(taskId, cause),
         failProvisioning: (taskId, error) => this.failProvisioning(taskId, error),
         terminalTaskStatus: (taskId) => this.terminalTaskStatus(taskId),
@@ -765,8 +798,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       },
       this.sandbox,
       this.prisma,
-      this.provisioningDiagnosticRecorder,
-      this.provisioningDiagnosticWriteGate,
+      diagnosticCollaborators.recorder,
+      diagnosticCollaborators.writeGate,
     );
 
     // admit-queued: when a slot frees, drive `queued -> running` for the admitted
@@ -786,6 +819,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       configuredDiagnosticWriteTimeoutMs > 0
         ? configuredDiagnosticWriteTimeoutMs
         : TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS;
+    // The owner is built from the collaborators read at the top of this
+    // constructor, so an instance created POSITIONALLY — with no injector, which
+    // is how the frozen out-of-directory specs construct this service — opens
+    // and resumes diagnostics from exactly the doubles it was handed. A wired
+    // application passes the container-resolved pair through the same two
+    // parameters, so there is one construction path rather than a DI path and a
+    // test path. The configured write bound travels with them: it is this
+    // service's config, and it still bounds the write now that the write lives
+    // behind the port.
+    this.provisioningDiagnostics =
+      new TaskProvisioningDiagnosticsObserverLifecycle({
+        ...diagnosticCollaborators,
+        writeTimeoutMs: this.diagnosticWriteTimeoutMs,
+      });
     const configuredCleanupTerminalPolicyMaxAttempts =
       config.cleanupTerminalPolicyMaxAttempts;
     this.cleanupTerminalPolicyMaxAttempts =
@@ -853,6 +900,22 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       // The runner-metrics module is not wired in this context — the member is
       // left unset so the accessor keeps returning the detached fallback, which
       // is a real ledger and goes on accounting for this instance alone.
+    }
+    try {
+      // collapse-three-collaborator-groups — hand the admission state to the
+      // projection's OWNER once, at boot, the mirror image of the lookup above.
+      // The semaphore is the live read-only reading the projection needs, so the
+      // owner re-reads it per projection and `/metrics` still reflects the exact
+      // admission state at request time. This service no longer derives, holds,
+      // or forwards anything about that projection.
+      this.moduleRef
+        .get<CapacityProjectionPort>(CAPACITY_PROJECTION_PORT, {
+          strict: false,
+        })
+        .bindSource(this.semaphore);
+    } catch {
+      // The runner-metrics module is not wired in this context — nothing reads
+      // the projection here either, so there is no source to register.
     }
   }
 
@@ -1128,12 +1191,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // one, which would conflict with the attempt left active while parked.
     const diagnosticAttempt =
       claim.sourceState === 'parked'
-        ? await this.tryResumeProvisioningDiagnostics({
+        ? await this.provisioningDiagnostics.tryResume({
             taskId,
             admissionMode: 'durable',
             attempt: claim.attempt,
           })
-        : await this.tryBeginProvisioningDiagnostics(diagnosticBeginInput);
+        : await this.beginProvisioningDiagnostics(diagnosticBeginInput);
     const processRunning = () =>
       this.processDurableAdmissionAfterCapacity(context, diagnosticAttempt);
     return diagnosticAttempt
@@ -1476,7 +1539,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     const task = await this.requireTerminalTaskSnapshot(context);
     const taskId = context.claim.taskId;
 
-    const diagnosticAttempt = await this.tryResumeProvisioningDiagnostics({
+    const diagnosticAttempt = await this.provisioningDiagnostics.tryResume({
       taskId,
       admissionMode: 'durable',
       attempt: context.claim.attempt,
@@ -2150,11 +2213,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * defensive SECOND layer: it is awaited so the archive write ordering before
    * the stop holds, but ANY surprise throw / rejection is caught and logged, so
    * the terminal transition, stop-only teardown, and slot release proceed
-   * unconditionally. A no-op when no transcript provider is wired (e.g. a
-   * guardrails-only unit context).
+   * unconditionally. When no capture provider is composed the injected
+   * implementation is the no-op stand-in, which captures nothing — so there is
+   * no presence to test here and the AWAIT below is unconditional.
    */
   private async captureTranscript(taskId: string): Promise<void> {
-    if (!this.transcripts) return;
     try {
       await this.transcripts.capture(taskId);
     } catch {
@@ -2913,7 +2976,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       return 'superseded';
     }
 
-    const diagnosticAttempt = await this.tryBeginProvisioningDiagnostics({
+    const diagnosticAttempt = await this.beginProvisioningDiagnostics({
       taskId,
       admissionMode: 'legacy',
     });
@@ -2986,33 +3049,23 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
 
   /**
-   * Open evidence only when the independent deployment switch and recorder are
-   * both available. The gate is sampled once at the running-capacity boundary;
-   * any gate/recorder failure leaves admission and provider control flow intact.
+   * Open evidence for one provisioning attempt, carrying the ADMISSION-side
+   * continuations into the owner that performs the bounded write.
+   *
+   * Whether evidence can be written at all is no longer decided here: the owner
+   * answers with an observer or with the "no observer" result, and this method
+   * cannot tell a closed deployment switch from an unwired recorder from a write
+   * that outran its bound. What IS admission knowledge stays here — remembering
+   * a legacy attempt for the inline pipeline's cleanup, and retiring one that
+   * arrived after the bound already detached the write — so neither piece had to
+   * travel into the diagnostics context to make the move.
    */
-  private async tryBeginProvisioningDiagnostics(
+  private beginProvisioningDiagnostics(
     input: BeginTaskProvisioningDiagnosticObserverInput,
   ): Promise<BegunTaskProvisioningDiagnosticObserver | undefined> {
-    const gate = this.provisioningDiagnosticWriteGate;
-    const recorder = this.provisioningDiagnosticRecorder;
-    if (!gate || !recorder) return undefined;
-
-    let enabled: boolean;
-    try {
-      enabled = gate.isEnabled();
-    } catch {
-      return undefined;
-    }
-    if (!enabled) return undefined;
-
-    const begin = tryBeginTaskProvisioningDiagnosticObserver(recorder, input);
-    try {
-      const attempt = await this.withTimeout(
-        begin,
-        this.diagnosticWriteTimeoutMs,
-        'task provisioning diagnostic begin',
-      );
-      if (attempt && input.admissionMode === 'legacy') {
+    return this.provisioningDiagnostics.tryBegin(input, {
+      onBegun: (attempt) => {
+        if (input.admissionMode !== 'legacy') return;
         // A terminal CAS may have completed while the recorder allocated this
         // attempt. Never re-attach that late controller after the terminal
         // owner has already drained the process-local maps; the admission
@@ -3021,60 +3074,34 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         if (!this.terminalTasks.has(input.taskId)) {
           this.inlineAdmission.rememberBegunAttempt(input.taskId, attempt);
         }
-      }
-      return attempt;
-    } catch {
-      // A database transaction may commit after this outer evidence timeout.
-      // Keep observing that promise without holding admission: if it eventually
-      // returns an identity, retire the now-detached diagnostic attempt as
-      // explicitly indeterminate so it cannot remain an orphaned active row.
-      // The emitter is intentionally not attached to provider work that has
-      // already continued past this best-effort boundary.
-      void begin
-        .then(async (lateAttempt) => {
-          if (input.admissionMode === 'legacy' && this.terminalTasks.has(input.taskId)) {
-            await this.inlineAdmission.settleProvisioningSupersession(
-              input.taskId,
-              lateAttempt,
-              undefined,
-              false,
-            );
-            return;
-          }
-          await this.settleProvisioningDiagnostics(lateAttempt, {
-            state: 'interrupted',
-            stage: 'provider_selection',
-            operation: 'provider_select',
-            outcome: 'indeterminate',
-            cause: 'settlement_unknown',
-            retryable: true,
-            exitCode: null,
-            completion: 'mark_if_complete',
-          });
-        })
-        .catch(() => undefined);
-      return undefined;
-    }
-  }
-
-  /** Resume terminal-recovery evidence without ever allocating a replacement. */
-  private async tryResumeProvisioningDiagnostics(
-    input: ResumeTaskProvisioningDiagnosticObserverInput,
-  ): Promise<ResumedTaskProvisioningDiagnosticObserver | undefined> {
-    const gate = this.provisioningDiagnosticWriteGate;
-    const recorder = this.provisioningDiagnosticRecorder;
-    if (!gate || !recorder) return undefined;
-
-    try {
-      if (!gate.isEnabled()) return undefined;
-      return await this.withTimeout(
-        tryResumeTaskProvisioningDiagnosticObserver(recorder, input),
-        this.diagnosticWriteTimeoutMs,
-        'task provisioning diagnostic resume',
-      );
-    } catch {
-      return undefined;
-    }
+      },
+      onDetachedWrite: async (lateAttempt) => {
+        // A database transaction may commit after the owner's write bound
+        // expired. Admission has already moved on, so retire the now-detached
+        // attempt as explicitly indeterminate rather than leaving an orphaned
+        // active row. The emitter is intentionally not attached to provider work
+        // that continued past that best-effort boundary.
+        if (input.admissionMode === 'legacy' && this.terminalTasks.has(input.taskId)) {
+          await this.inlineAdmission.settleProvisioningSupersession(
+            input.taskId,
+            lateAttempt,
+            undefined,
+            false,
+          );
+          return;
+        }
+        await this.settleProvisioningDiagnostics(lateAttempt, {
+          state: 'interrupted',
+          stage: 'provider_selection',
+          operation: 'provider_select',
+          outcome: 'indeterminate',
+          cause: 'settlement_unknown',
+          retryable: true,
+          exitCode: null,
+          completion: 'mark_if_complete',
+        });
+      },
+    });
   }
 
 
@@ -3894,33 +3921,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     return this.sandbox?.getProviderCapabilities?.() ?? [];
   }
 
-  // -------------------------------------------------------------------------
-  // Metrics projection sources (be-metrics 5.1 / 5.2 / 5.4)
-  // -------------------------------------------------------------------------
-
-  /**
-   * A LIVE, read-only projection source over the concurrency semaphore for the
-   * derived capacity block (5.1 / 5.2). Every property/method delegates directly
-   * to the semaphore, so a `/metrics` read reflects the exact admission state at
-   * request time — there is NO parallel counter that could drift. The metrics
-   * layer's pure projection/slot-table builders consume this view.
-   */
-  semaphoreProjection(): SemaphoreProjectionSource {
-    const semaphore = this.semaphore;
-    return {
-      get maxConcurrentTasks() {
-        return semaphore.maxConcurrentTasks;
-      },
-      get runningCount() {
-        return semaphore.runningCount;
-      },
-      get queuedCount() {
-        return semaphore.queuedCount;
-      },
-      snapshotRunning: () => semaphore.snapshotRunning(),
-      snapshotQueue: () => semaphore.snapshotQueue(),
-    };
-  }
 }
 
 /**

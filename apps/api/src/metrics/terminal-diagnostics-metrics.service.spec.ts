@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MetricsResponseSchema } from '@cap-console/contracts';
 
+import type { CapacityProjectionPort } from '@/runner-metrics/capacity-projection.port';
 import type { RunnerMinutesPort } from '@/runner-metrics/runner-minutes-ledger.port';
 import { MetricsService } from './metrics.service';
 import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metrics.service';
@@ -61,14 +62,21 @@ test('metrics aggregation emits terminal diagnostics without changing prior bloc
   terminal.viewerActivated();
   terminal.observeAttachOutcome('ready');
 
-  const guardrails = {
-    semaphoreProjection: () => ({
-      maxConcurrentTasks: 1,
-      runningCount: 0,
-      queuedCount: 0,
-      snapshotRunning: () => [],
-      snapshotQueue: () => [],
+  // The capacity projection reaches this consumer through its OWNER's port now
+  // (collapse-three-collaborator-groups). The double implements the whole port
+  // rather than only the method under read, for the same reason the
+  // runner-minutes double below does.
+  const capacityProjection: CapacityProjectionPort = {
+    bindSource: () => {},
+    project: () => ({
+      capacity: { ceiling: 1, active: 0, free: 1, queueDepth: 0 },
+      occupancy: {
+        slots: [{ slot: 0, busy: false, taskId: null }],
+        queuedTaskIds: [],
+      },
+      runningTaskIds: [],
     }),
+    runningTaskIds: () => [],
   };
   // Running intervals come from the runner-minutes PORT double now
   // (extract-runner-minutes-ledger); this case observes none. The double
@@ -93,7 +101,7 @@ test('metrics aggregation emits terminal diagnostics without changing prior bloc
   };
 
   const response = new MetricsService(
-    guardrails as never,
+    capacityProjection,
     sampler as never,
     runnerMinutes,
     undefined,

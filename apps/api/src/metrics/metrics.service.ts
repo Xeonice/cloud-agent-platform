@@ -5,13 +5,12 @@ import type {
   TaskResourceResponse,
   TerminalDiagnosticsMetrics,
 } from '@cap-console/contracts';
-import { GuardrailsService } from '@/guardrails/guardrails.service';
 import { TaskProvisioningDiagnosticsMetricsService } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
+import { foldTaskSamples } from '@/runner-metrics/metrics-projection';
 import {
-  buildSlotOccupancy,
-  foldTaskSamples,
-  projectCapacity,
-} from '@/runner-metrics/metrics-projection';
+  CAPACITY_PROJECTION_PORT,
+  type CapacityProjectionPort,
+} from '@/runner-metrics/capacity-projection.port';
 import { deriveRunnerMinutes } from '@/runner-metrics/runner-minutes';
 import {
   RUNNER_MINUTES_PORT,
@@ -26,9 +25,9 @@ import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metric
  * It assembles, in ONE round trip, four strictly distinguished blocks:
  *
  *  - the DERIVED capacity block (`capacity`, `occupancy`, `runnerMinutes`) —
- *    exact, point-in-time, read LIVE at request time from the guardrails
- *    semaphore and from the runner-minutes port's owner (never sampled, never
- *    cached);
+ *    exact, point-in-time, read LIVE at request time from the capacity
+ *    projection's owner and from the runner-minutes port's owner (never sampled,
+ *    never cached);
  *  - the SAMPLED resource block (`resources`) — the cadence-bounded CPU/memory
  *    snapshot served from the {@link ResourceSamplerService} cache, self-
  *    describing its freshness via `status`/`sampledAt`/`ageMs`.
@@ -46,7 +45,18 @@ export class MetricsService {
   private readonly provisioningDiagnosticsObservedSince = new Date();
 
   constructor(
-    private readonly guardrails: GuardrailsService,
+    /**
+     * The capacity/occupancy projection, read from its OWNER
+     * (collapse-three-collaborator-groups). It used to be reached through a
+     * forwarding accessor on the orchestrator, which made this consumer depend
+     * on the orchestrator for a derivation the orchestrator did not own. The
+     * port answers with every admission-derived figure from ONE reading, so the
+     * scalar block, the slot table and the running set cannot disagree about the
+     * instant they describe — the guarantee the single accessor read used to
+     * carry here.
+     */
+    @Inject(CAPACITY_PROJECTION_PORT)
+    private readonly capacityProjection: CapacityProjectionPort,
     private readonly sampler: ResourceSamplerService,
     /**
      * Running intervals come from their OWNER, not from the orchestrator
@@ -65,8 +75,10 @@ export class MetricsService {
 
   /** Builds the composed metrics response at the current instant. */
   build(now: number = Date.now()): MetricsResponse {
-    // Read the semaphore ONCE so all derived figures reflect the same instant.
-    const projection = this.guardrails.semaphoreProjection();
+    // Read the admission state ONCE, through its owner, so all derived figures
+    // reflect the same instant.
+    const { capacity, occupancy, runningTaskIds } =
+      this.capacityProjection.project();
 
     // Sampled block from the cache; its own status flags freshness/outage so a
     // degraded sample never fails the whole response.
@@ -76,15 +88,15 @@ export class MetricsService {
     // reads of the SAME sampler snapshot, never an extra sampling pass, so one
     // /metrics poll replaces the per-task GET /tasks/:taskId/metrics fan-out.
     const taskSamples = foldTaskSamples(
-      projection.snapshotRunning(),
+      runningTaskIds,
       (taskId) => this.sampler.taskReading(taskId, now),
       resources,
     );
 
     const terminalDiagnostics = this.buildTerminalDiagnostics();
     return {
-      capacity: projectCapacity(projection),
-      occupancy: buildSlotOccupancy(projection),
+      capacity,
+      occupancy,
       runnerMinutes: deriveRunnerMinutes(this.runnerMinutes.intervals(), now),
       resources: { ...resources, taskSamples },
       provisioningDiagnostics: this.buildProvisioningDiagnostics(now),

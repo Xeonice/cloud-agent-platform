@@ -3,7 +3,7 @@ import { TasksModule } from '@/tasks/tasks.module';
 import { ReposModule } from '@/repos/repos.module';
 import {
   SessionTranscriptService,
-} from '@/tasks/session-transcript.service';
+} from '@/session-transcripts/session-transcript.service';
 import {
   TRANSCRIPT_STORE,
   AUDIT_TIMELINE_READER,
@@ -39,9 +39,11 @@ import {
  *
  * Dependency wiring (every injected service comes from an already-composed
  * module — `/v1` adds NO second admission path, design D1):
- *   - {@link TasksModule} (imported) exports `TasksService` + the durable
- *     `SessionTranscriptService`. `V1TasksController`/`V1TranscriptController`/
- *     `V1EventsController` delegate to the SAME `TasksService` the console uses.
+ *   - {@link TasksModule} (imported) exports `TasksService`.
+ *     `V1TasksController`/`V1TranscriptController`/`V1EventsController` delegate
+ *     to the SAME `TasksService` the console uses. The durable
+ *     `SessionTranscriptService` comes from the `@Global()`
+ *     `SessionTranscriptModule` that owns it, so it needs no import here either.
  *   - {@link ReposModule} (imported) exports `ReposService` for the `/v1/repos`
  *     read surface.
  *   - `PrismaService` (the `@Global() PrismaModule`) backs the keyset list
@@ -52,10 +54,10 @@ import {
  * Because the last three live in `@Global()` modules they need no explicit import
  * here.
  *
- * `TRANSCRIPT_STORE` is RE-PROVIDED here (bound to the `SessionTranscriptService`
- * that `TasksModule` exports) rather than exported from `TasksModule`, so the
- * v1-controllers track injects the existing durable store WITHOUT modifying
- * `TasksModule` — the token is module-local to whoever needs it, and this binding
+ * `TRANSCRIPT_STORE` is RE-PROVIDED here (bound to the globally exported
+ * `SessionTranscriptService`) rather than exported by its owner, so the
+ * v1-controllers track injects the existing durable store WITHOUT modifying any
+ * other module — the token is module-local to whoever needs it, and this binding
  * resolves to the one concrete durable service instance.
  *
  * Auth/rate posture is enforced by the global guards (`AuthGuard` then the
@@ -83,8 +85,8 @@ import {
     PublicV1OperationGuard,
     PublicV1ContractInterceptor,
     // Re-bind the durable transcript store under the token the transcript
-    // controller injects, to the concrete service TasksModule exports. Keeps
-    // TasksModule untouched (the v1 track only CONSUMES the store).
+    // controller injects, to the concrete service its owning module exports.
+    // This module only CONSUMES the store.
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,

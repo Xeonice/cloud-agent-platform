@@ -34,5 +34,18 @@ did not already have.
 #### Scenario: The public-surface position is executed, not assumed
 
 - **WHEN** the adversarial public-surface verifier is run for this change on the integrated tree
-- **THEN** it exits 0 against the declared surface statuses with an empty protocol-differences list,
-  and its output is recorded rather than the declaration being taken on trust
+- **THEN** it exits 0 against the declared surface statuses with an empty findings list, every
+  dynamic evidence lane passing, and its output is recorded rather than the declaration being taken
+  on trust
+
+#### Scenario: The transcript owner's move is declared where it lands, not where it is convenient
+
+- **WHEN** the surface declaration is compared against the files this change actually edits
+- **THEN** `publicV1` and `mcp` are declared **derived** rather than unchanged, each selecting
+  `tasks.transcript` / `get_transcript`, because the transcript owner's relocation rewrote the
+  `TRANSCRIPT_STORE` binding's import path in both `v1.module.ts` and `mcp.module.ts` — the verifier
+  routes an edit under a surface declared `unchanged` as a blocking spec defect, and it did
+- **AND** the single entry in `protocolDifferences` is the registry's OWN pre-existing
+  `tasks.transcript / mcp-output-schema-relaxation`, transcribed because selecting the operation
+  requires it — this change introduces no protocol difference of its own, which is what the passing
+  registry, REST-metadata, MCP-SDK-metadata, and behavior lanes establish

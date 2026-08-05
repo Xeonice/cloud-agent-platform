@@ -128,6 +128,7 @@
         "runner-metrics",
         "audit",
         "domain-events",
+        "session-transcripts",
         "mail",
         "observability",
         "settings",
@@ -140,6 +141,7 @@
         "$comment": "决策7：本上下文豁免战术 DDD，保持事务脚本形态",
         "audit": "横切订阅者；阶段4后经事件订阅消费 task-execution，terminal detail 例外走显式调用",
         "domain-events": "进程内领域事件总线（add-domain-event-bus）。归 platform-ops 而非 task-execution：总线是横切机制而非任务领域概念，与 audit/metrics/observability 同列。目录必须与代码同 commit 声明——layout v2 对无人认领目录是 exit 1，不是 finding",
+        "session-transcripts": "会话转录的持久化归档 + 索引（collapse-three-collaborator-groups N3，自 tasks 迁出）。归 platform-ops 而非 task-execution：与 audit 同形态——横切的记录保管方，被编排器/控制台/v1/mcp 四处消费，自身不持有 Task 不变量；编排器只经 session-transcript.port.ts 触达。目录必须与代码同 commit 声明——layout v2 对无人认领目录是 exit 1，不是 finding",
         "prisma": "基础设施，全上下文可见（fan-in 127），不受跨上下文规则约束",
         "crypto": "共享内核（shared kernel），同 prisma 豁免"
       }
