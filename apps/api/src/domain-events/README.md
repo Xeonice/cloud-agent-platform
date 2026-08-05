@@ -46,6 +46,11 @@ compiler prints it at the offending call site. `domain-event-bus.typecheck.ts`
 pins this with `@ts-expect-error`: weaken the guard and the now-unused
 directives fail the build with TS2578, so the guard cannot be quietly removed.
 
+The audit-durability tier names `batch` and `blocking-strict` are defined
+normatively in the `domain-event-bus` capability spec
+(`openspec/specs/domain-event-bus/spec.md`) — the single place that defines them.
+This file references the names; it does not restate the definitions.
+
 ### Worked examples, not exceptions
 
 These three collaborations in today's codebase are calls under the rule above.

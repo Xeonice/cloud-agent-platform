@@ -848,16 +848,30 @@ delete: every row names its default, its owner, and the change that removes it.
 
 | Variable | Default | Owner | Retirement condition |
 |---|---|---|---|
-| `CAP_DOMAIN_EVENT_PUBLISHING_ENABLED` | **publishing ON** — unset, or any unrecognised value, takes the new path | the 阶段 4 event-migration track owner: the change owner of `openspec/changes/add-domain-event-bus` and its five follow-on subscriber-migration changes — the same person who owns burning `scripts/ratchets/r11.json` to zero | Deleted by the LAST 阶段 4 change, the one that unties the `tasks` ↔ `guardrails` `forwardRef` cycle. That change removes the toggle, the composition-root branch it feeds, and this row together. |
+| `CAP_DOMAIN_EVENT_PUBLISHING_ENABLED` | **publishing ON** — unset, or any unrecognised value, takes the new path | the 阶段 4 event-migration track owner: the change owner of `openspec/changes/add-domain-event-bus` and its follow-on 阶段 4 changes — the same person who owns burning `scripts/ratchets/r11.json` to zero | Deleted by the LAST 阶段 4 change, the one that unties the `tasks` ↔ `guardrails` `forwardRef` cycle. That change removes the toggle, the composition-root branch it feeds, and this row together. |
 
 ### `CAP_DOMAIN_EVENT_PUBLISHING_ENABLED` — what it does
 
 The api publishes in-process domain events (`TaskAdmitted`, `SandboxProvisioned`,
 `TaskRunStarted`, `TaskSettled`, `TaskSuperseded`) at existing lifecycle seams.
-The change that introduced them registers **zero subscribers** and removes **zero**
-existing direct calls, so with the toggle open the observable behaviour is
-unchanged — this is the "build the abstraction" step of a parallel change, not a
-behaviour switch.
+Two 阶段 4 changes have shipped against this toggle so far and the running totals
+are still **0 registered subscribers** — the array bound to the subscriber token is
+a frozen empty array — and **0** existing direct calls removed, so with the toggle
+open the observable behaviour is unchanged. This is still the "build the
+abstraction" step of a parallel change, not a behaviour switch.
+
+- `add-domain-event-bus` built the bus: five event types, zero subscribers, zero
+  removals.
+- `adjudicate-audit-event-migration` adjudicated all **9** `this.audit` symbol
+  references in `apps/api/src/guardrails/guardrails.service.ts` one by one and
+  registered no subscriber: every reference resolved to CALL, none to EVENT, and
+  none was removed. The `recordProvisioningProgress` hint kept its call, but not
+  for the reason the design predicted: the executable per-stage coverage proof
+  found that every reported stage — `readiness` and `runtime_setup`, both provider
+  families — **does** have an admission-worker checkpoint owner. Those owner rows
+  are only projected once `provision(...)` has returned, so removing the call
+  would leave the in-provision window with no row at all, rather than relocating
+  the row to another writer.
 
 ```bash
 # api env file (apps/api/.env, ../files/api.env, or the run-package .env)
@@ -878,6 +892,11 @@ CAP_DOMAIN_EVENT_PUBLISHING_ENABLED=false
   existing synchronous collaborator call still runs, and the lifecycle behaviour
   is byte-identical to before the change. It is the same code path the api takes
   in any deployment that never binds a bus, not a second escape-only branch.
+  **That byte-identical claim stands only while the removed-direct-call count
+  above is 0.** The first 阶段 4 change that removes a synchronous collaborator
+  call must rewrite this bullet in the same commit — naming the removed call and
+  its new owner — because from that point the escape hatch is a version rollback,
+  not this toggle.
 - **Rollback ladder:** (1) set the escape hatch and recreate `api`; (2) nothing
   else is needed — the change persists nothing and adds no migration; (3) if you
   want it gone entirely, roll back to the previous `CAP_VERSION` per §11.3.

@@ -138,6 +138,9 @@ typecheck 演练自证。
   同步顺序钉死的测试显式改写并留痕；目录外 9 个直接 `new GuardrailsService`
   的 spec 纳入安全网；4 个 inline 镜像 `.test.mjs` 同步防漂移。
 - 依赖预算 ratchet：guardrails 对五者的直接 import 数只降不升，降到 0 转禁止。
+- **路线校准（第二刀产出）**：剩余三组（runner 计费 / diagnostics / transcript）的三判据初判见
+  `openspec/changes/adjudicate-audit-event-migration/adjudication.md` §5「阶段 4 剩余三组预扫」，
+  第 3–5 刀的 propose 必须以该节为输入。
 - 末尾：解 tasks↔guardrails forwardRef 环。
 - 收口发一版 + 升级演练（总则 1）。
 
