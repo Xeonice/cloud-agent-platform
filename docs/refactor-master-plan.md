@@ -20,6 +20,9 @@ V3 = explore 拍板后的现行版（12 个决策全部闭环）。**本文档�
 - **模块化治理优秀但领域模型贫血**：guardrails 3,806 行 / 81 方法 god service、
   零领域事件、零仓储层、260 处 Prisma 散落在 45 个文件、tasks↔guardrails
   forwardRef 循环。
+  〔**历史基线**：3,806 是**评审时点**的实测值，规模比估算仍以它为分母，故保留不删。
+  该文件此后是长了不是缩了——2026-08-05 活测 **4,131 行**。行数今天只作趋势数据，
+  阶段 4 验收已改结构判据，见 §4「阶段 4」。〕
 - **三条扩展轴成熟度不均**：runtime 轴 A-（编译期全量表+typecheck 夹具），
   镜像轴 B（闭环在但词表漂移），provider 轴 B-（端口优秀、装配层 20+ 处字面量分支，
   cloud-http 物理无法显式选中）。
@@ -137,15 +140,38 @@ typecheck 演练自证。
 - 验收标准（修订版）：guardrails 既有 122 测试**分类处理**——行为断言零修改；
   同步顺序钉死的测试显式改写并留痕；目录外 9 个直接 `new GuardrailsService`
   的 spec 纳入安全网；4 个 inline 镜像 `.test.mjs` 同步防漂移。
-- 依赖预算 ratchet：guardrails 对五者的直接 import 数只降不升，降到 0 转禁止。
+- 依赖预算 ratchet（R11）：guardrails 对五者的符号引用数**双向 fail-closed**（高于基线与
+  低于基线同等判红），基线收缩必须与移除同 commit。**每个协作者降到它被裁定的地板即止，
+  不是降到 0**——编排器合法地继续点名它仍在调用的协作者：`this.audit` 已裁定 9 处全保留
+  （CALL×9），runner 计费实测地板 5，diagnostics 组 legacy 存活时 4、退役后 2。
+  条目归零（transcript / metrics-projection 两组）才按归零纪律删条目。
 - **路线校准（第二刀产出）**：剩余三组（runner 计费 / diagnostics / transcript）的三判据初判见
   `openspec/changes/adjudicate-audit-event-migration/adjudication.md` §5「阶段 4 剩余三组预扫」，
   第 3–5 刀的 propose 必须以该节为输入。
 - 末尾：解 tasks↔guardrails forwardRef 环。
 - 收口发一版 + 升级演练（总则 1）。
 
-验收：guardrails 3,806 → <2,000 行；forwardRef 环归零；boot re-adoption
-stateful smoke 全程绿。
+验收（**结构判据，2026-08-05 用户拍板替换原数字目标**——每条都点名判定它的闸门与状态）：
+
+| # | 判据 | 判定命令 / 闸门 | 状态 |
+|---|---|---|---|
+| a | 每个 R11 协作者条目停在它被裁定的**地板**（非 0） | `pnpm test:dependency-budget` | 今天即可测，零改动 |
+| b | 编排器不再自己 `new` 出横切子系统（现测自建 6 个） | 同一闸门，往 `COLLABORATORS` 加类名符号 | 需一次**数据**改动，计数逻辑不变 |
+| c | `guardrails.service.ts` 的 r7 `cross-context-import` 降到裁定值（现 9） | `pnpm test:context-layout-v2` | 今天即可测，零改动 |
+| d | `guardrails.module.ts` 与 `tasks.module.ts` 之间不再有 `forwardRef` | **今天无闸门**：须新增一条只读这两个文件、断言互指 `forwardRef(` 为 0 的窄检查 | 需自带闸门 |
+
+外加：boot re-adoption stateful smoke 全程绿。
+
+**两个被否的候选判据**（已论证为坏，不得再提）：①「协作者符号引用归零」不可达——
+编排器还活着就会继续点名它仍在调用的协作者；②裸写「forwardRef 环归零」**没有闸门测它**——
+layout 检查豁免「只由 `*.module.ts` 组成的环」，而今天这个环整体落在豁免里，故判据 d 特意
+表述为两个具名文件之间的 forwardRef 数，绕开该豁免。
+
+**行数只作趋势数据，不是验收判据**：每个 change 在自己的结果表里照报 guardrails 行数
+before/after（实测 4,131，历史基线注见 §1），但没有任何验收项依赖该数字跨过阈值。
+依据：协作者燃尽路线按最激进的计数规则（删掉每一个碰到协作者的类成员）也只能摘掉 1,045 行，
+摘完仍有 3,086 行——比原目标高一千余行，剩下的是编排体本身。测量与替换判据全文见
+`openspec/changes/extract-runner-minutes-ledger/research-findings.md`。
 
 ### 阶段 5 — 仓储推广 + Task 聚合（DDD 第二刀）
 

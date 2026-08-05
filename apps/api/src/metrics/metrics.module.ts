@@ -1,6 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { GuardrailsModule } from '@/guardrails/guardrails.module';
 import { GuardrailsService } from '@/guardrails/guardrails.service';
+import { RunnerMinutesModule } from '@/runner-metrics/runner-minutes.module';
 import { TaskProvisioningDiagnosticsModule } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import { MetricsController } from './metrics.controller';
 import { MetricsService } from './metrics.service';
@@ -27,12 +28,16 @@ import {
  *    running.
  *
  * Imports {@link GuardrailsModule} for the `GuardrailsService` (the live
- * semaphore projection + runner-minutes ledger source) and the diagnostics leaf
- * module for its cache-only provisioning metrics collector.
+ * semaphore projection) and the diagnostics leaf module for its cache-only
+ * provisioning metrics collector. The running-interval source is a separate
+ * import — {@link RunnerMinutesModule}, which exports the port token the
+ * metrics service injects — so the read no longer travels through the
+ * orchestrator (extract-runner-minutes-ledger).
  */
 @Module({
   imports: [
     GuardrailsModule,
+    RunnerMinutesModule,
     TaskProvisioningDiagnosticsModule,
     TerminalDiagnosticsMetricsModule,
   ],

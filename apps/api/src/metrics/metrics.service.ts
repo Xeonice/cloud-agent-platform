@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type {
   MetricsResponse,
   ProvisioningDiagnosticsMetrics,
@@ -13,6 +13,10 @@ import {
   projectCapacity,
 } from '@/runner-metrics/metrics-projection';
 import { deriveRunnerMinutes } from '@/runner-metrics/runner-minutes';
+import {
+  RUNNER_MINUTES_PORT,
+  type RunnerMinutesPort,
+} from '@/runner-metrics/runner-minutes-ledger.port';
 import { ResourceSamplerService } from './resource-sampler.service';
 import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metrics.service';
 
@@ -22,8 +26,9 @@ import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metric
  * It assembles, in ONE round trip, four strictly distinguished blocks:
  *
  *  - the DERIVED capacity block (`capacity`, `occupancy`, `runnerMinutes`) —
- *    exact, point-in-time, read LIVE from the guardrails semaphore + runner-
- *    minutes ledger at request time (never sampled, never cached);
+ *    exact, point-in-time, read LIVE at request time from the guardrails
+ *    semaphore and from the runner-minutes port's owner (never sampled, never
+ *    cached);
  *  - the SAMPLED resource block (`resources`) — the cadence-bounded CPU/memory
  *    snapshot served from the {@link ResourceSamplerService} cache, self-
  *    describing its freshness via `status`/`sampledAt`/`ageMs`.
@@ -43,6 +48,15 @@ export class MetricsService {
   constructor(
     private readonly guardrails: GuardrailsService,
     private readonly sampler: ResourceSamplerService,
+    /**
+     * Running intervals come from their OWNER, not from the orchestrator
+     * (extract-runner-minutes-ledger). Required, not `@Optional()`: a missing
+     * provider must fail composition loudly rather than silently degrade the
+     * derived block to `available: false`, which is indistinguishable from a
+     * process that has genuinely observed no run.
+     */
+    @Inject(RUNNER_MINUTES_PORT)
+    private readonly runnerMinutes: RunnerMinutesPort,
     @Optional()
     private readonly provisioningDiagnosticsMetrics?: TaskProvisioningDiagnosticsMetricsService,
     @Optional()
@@ -71,7 +85,7 @@ export class MetricsService {
     return {
       capacity: projectCapacity(projection),
       occupancy: buildSlotOccupancy(projection),
-      runnerMinutes: deriveRunnerMinutes(this.guardrails.runnerMinuteIntervals(), now),
+      runnerMinutes: deriveRunnerMinutes(this.runnerMinutes.intervals(), now),
       resources: { ...resources, taskSamples },
       provisioningDiagnostics: this.buildProvisioningDiagnostics(now),
       ...(terminalDiagnostics ? { terminalDiagnostics } : {}),

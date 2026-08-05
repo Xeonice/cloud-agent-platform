@@ -70,7 +70,10 @@ test('the committed baseline equals a live re-count of the real tree', () => {
   assert.equal(result.exitCode, 0);
   assert.deepEqual(result.measured, {
     [entryKey('this.audit')]: 9,
-    [entryKey('this.runnerMinutes')]: 6,
+    // extract-runner-minutes-ledger: a FIRST DECREASE 6 → 5. The read face
+    // (`runnerMinuteIntervals()`) was deleted; the five write references on the
+    // admission/terminal seam are retained by design, so 0 is not available.
+    [entryKey('this.runnerMinutes')]: 5,
     [entryKey('provisioningDiagnosticRecorder')]: 4,
     [entryKey('provisioningDiagnosticWriteGate')]: 4,
     [entryKey('this.transcripts')]: 2,

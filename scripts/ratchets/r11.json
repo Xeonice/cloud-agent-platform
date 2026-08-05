@@ -17,18 +17,17 @@
     "concern": "audit（普通路径改订阅；terminal detail 的回执型调用按非事件准入规则留作 CALL）"
   },
   "guardrails-symbol-reference:this.runnerMinutes": {
-    "count": 6,
+    "count": 5,
     "samples": [
-      "guardrails.service.ts:1566 this.runnerMinutes.recordStart(taskId);",
-      "guardrails.service.ts:2038 this.runnerMinutes.recordEnd(taskId);",
-      "guardrails.service.ts:2623 this.runnerMinutes.recordStart(taskId);",
-      "guardrails.service.ts:2949 this.runnerMinutes.recordEnd(taskId);",
-      "guardrails.service.ts:2971 this.runnerMinutes.recordStart(taskId);",
-      "guardrails.service.ts:3555 return this.runnerMinutes.intervals();"
+      "guardrails.service.ts:1871 this.runnerMinutes.recordStart(taskId);",
+      "guardrails.service.ts:2366 this.runnerMinutes.recordEnd(taskId);",
+      "guardrails.service.ts:2964 this.runnerMinutes.recordStart(taskId);",
+      "guardrails.service.ts:3311 this.runnerMinutes.recordEnd(taskId);",
+      "guardrails.service.ts:3333 this.runnerMinutes.recordStart(taskId);"
     ],
-    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "change": "阶段 4：本条目本次是 FIRST DECREASE 6 → 5（extract-runner-minutes-ledger），只降不删——它的 live count 仍大于 0。对账（防伪造）：6 − 5 = 1，恰等于本次删除的那一条读引用 `return this.runnerMinutes.intervals();`（原 :3880 的转发访问器，连同其文档注释一并删除）；被测符号串仍是 `this.runnerMinutes`，没有改名。5 这个数是用本闸门自己的 measureSource 跑改动后的 guardrails.service.ts 量出来的，不是从删了几个调用点推算的：新增的 getter、两个 backing member（ownedRunnerMinutes / detachedRunnerMinutes）、onModuleInit 里的端口解析、以及本次新增的每一行注释都不含该符号，所以没有把引用挪个地方冒充删除。6 → 0 结构上不可达：R11 数的是符号引用，而 guardrails 作为 admission/terminal 接缝仍然要记账，五条写引用（三条 recordStart、两条 recordEnd）按设计保留；改事件订阅这条路线对本协作者的天花板是 1 而非 0（clearAdmissionRuntime 的 recordEnd 没有合法的覆盖事件），理由与两项代价见 research-findings.md。若将来某条目 live count 真的归零，仍按既有约定在同一 commit 删除该条目，全部归零后删除本文件",
     "symbol": "this.runnerMinutes",
-    "concern": "runner 计费（recordStart/recordEnd 改订阅）"
+    "concern": "runner 计费（admission/terminal 接缝上的五条写引用，读面已移交 runner-metrics 的 RUNNER_MINUTES_PORT 属主）"
   },
   "guardrails-symbol-reference:provisioningDiagnosticRecorder": {
     "count": 4,
