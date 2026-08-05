@@ -189,3 +189,30 @@ required 缺失"，pre-commit/pre-push 双双误红。**已在本 change 内修�
   修复前确定性对抗模拟 3/3 复现 uncaughtException `write EPIPE`、
   修复后套件 10 连续 rep 全绿 + `test:public-surface` 全绿；完整证据见
   该 change tasks.md 的 Evidence F.4 条目。
+
+### F.5 boxlite 1ms-clock flake 家族（F.3 的漏网同族，已修）
+
+- **现象**：PR #200（audit 裁定刀，对 boxlite 零触碰）的 `package suites` 连续两轮红，
+  且**两轮红在不同断言上**：第一轮 `boxlite-diagnostics.test.mjs` 的
+  `native poll fault table…`（`AssertionError: poll-deadline`），重跑后第二轮
+  `boxlite-coverage.test.mjs` 的 `native REST client covers response fallback shapes
+  and polling edges`。本地 standalone 均全绿。
+- **根因**：两处都用 `timeoutMs: 1`（1 毫秒**真实时钟**）制造「poll 预算耗尽 →
+  indeterminate」路径——与 F.3 在 `boxlite-client.test.mjs` 的
+  `execWithPoll({status:'running'}, 1)` 是**同一个写法**。慢机上 wall-clock 在轮询
+  循环启动前就越线，分类走 pre-check 的 `'timeout'` 出口而非预期的 `'indeterminate'`。
+- **为什么 deflake 那刀没修到**：`deflake-environment-dependent-suites` 按登记条目
+  （F.2/F.3/F.4）逐条修复，F.3 的条目只点名了 `boxlite-client.test.mjs`；同包内另外
+  两个文件的相同模式不在射程内。**教训：flake 登记应按「失败模式」而非「文件」立
+  条目，修复时全仓搜同模式。**
+- **三分法分类**：**environment-dependent**（同 F.3）。被测的 settlement 分类逻辑两条
+  路径行为均正确，失败面是测试用真实时钟做选路。
+- **处置：直接修，不重跑**。初判为「留痕后重跑」，但重跑撞到同族第三个实例——三次 CI
+  撞三个不同断言即证明这不是偶发，继续重跑实质等于 retry-to-hide。两处均照搬 deflake
+  对 `boxlite-client.test.mjs` 的做法：用产品已有的 `nativeExecutionDeadlineDriver`
+  接缝**从 poll 响应内部推进时钟**（确保轮询循环已在飞行中才耗尽预算，从而走
+  `'indeterminate'` 而非 pre-check 的 `'timeout'`），`timeoutMs` 回归 `1_000`。
+  修复剥离为独立 PR 而非并入 PR #200，以保持后者的 diff 与其已 PASS 的 verify 结论一致。
+- **验证**：24 个忙循环满载下，`boxlite-diagnostics` / `boxlite-coverage` /
+  `boxlite-client` 三文件三连跑全绿；`turbo test --filter=…-boxlite --force` 4/4 suite
+  `# fail 0`。
