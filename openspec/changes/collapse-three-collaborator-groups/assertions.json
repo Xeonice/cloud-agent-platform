@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "change": "collapse-three-collaborator-groups",
+  "assertions": [
+    {
+      "id": "r11-gate-green",
+      "requirements": [
+        "domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules",
+        "guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"
+      ],
+      "describe": "R11 闸门绿：每个记录计数等于活计数（双向 fail-closed）",
+      "run": ["node", "scripts/ratchets/r11-dependency-budget.mjs"],
+      "expect": { "exitCode": 0 }
+    },
+    {
+      "id": "r11-paired-test-green",
+      "requirements": ["domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules"],
+      "describe": "R11 的配对测试绿：硬编码期望已随基线移动",
+      "run": ["node", "--test", "--test-force-exit", "scripts/ratchets/r11-dependency-budget.test.mjs"],
+      "expect": { "exitCode": 0 }
+    },
+    {
+      "id": "collaborators-declared-five",
+      "requirements": ["domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules"],
+      "describe": "闸门的协作者声明从 6 降到 5",
+      "run": ["bash", "-c", "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(m=>console.log(m.COLLABORATORS.length))\""],
+      "expect": { "stdoutEquals": "5" }
+    },
+    {
+      "id": "metrics-projection-entry-deleted",
+      "requirements": ["domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules", "resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"],
+      "describe": "投影条目被删除而非写成 count 0",
+      "run": ["grep", "-c", "metrics-projection", "scripts/ratchets/r11.json"],
+      "expect": { "stdoutEquals": "0" }
+    },
+    {
+      "id": "diagnostics-floor-is-four",
+      "requirements": ["guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"],
+      "describe": "diagnostics 组停在地板 4（recorder 2 + gate 2），构造参数与 legacy 透传均保留",
+      "run": ["bash", "-c", "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(async m=>{const fs=await import('node:fs');const r=m.measureSource(fs.readFileSync('apps/api/src/guardrails/guardrails.service.ts','utf8')).measured;console.log(r['guardrails-symbol-reference:provisioningDiagnosticRecorder']+r['guardrails-symbol-reference:provisioningDiagnosticWriteGate'])})\""],
+      "expect": { "stdoutEquals": "4" }
+    },
+    {
+      "id": "transcripts-floor-is-one",
+      "requirements": ["guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor", "session-transcript-persistence/transcript-capture-moves-out-of-the-tasks-context-without-moving-its-happens-before"],
+      "describe": "transcripts 停在地板 1——被 await 的 capture 调用必须活着，只有可选性守卫消失",
+      "run": ["bash", "-c", "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(async m=>{const fs=await import('node:fs');console.log(m.measureSource(fs.readFileSync('apps/api/src/guardrails/guardrails.service.ts','utf8')).measured['guardrails-symbol-reference:this.transcripts'])})\""],
+      "expect": { "stdoutEquals": "1" }
+    },
+    {
+      "id": "awaited-capture-survives",
+      "requirements": ["session-transcript-persistence/transcript-capture-moves-out-of-the-tasks-context-without-moving-its-happens-before"],
+      "describe": "幸存的那一处引用确实是被 await 的 capture 调用，不是别的东西",
+      "run": ["grep", "-n", "await this.transcripts.capture(", "apps/api/src/guardrails/guardrails.service.ts"],
+      "expect": { "stdoutMatches": "await this\\.transcripts\\.capture\\(" }
+    },
+    {
+      "id": "orchestrator-does-not-evaluate-gate",
+      "requirements": ["task-provisioning-diagnostics/a-closed-diagnostics-write-gate-is-an-injected-no-op-not-a-branch-at-every-call-site"],
+      "describe": "编排器不再对写闸门求值",
+      "run": ["grep", "-n", "isEnabled()", "apps/api/src/guardrails/guardrails.service.ts"],
+      "expect": { "stdoutAbsent": "isEnabled" }
+    },
+    {
+      "id": "legacy-passthrough-retained",
+      "requirements": ["guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor", "task-provisioning-diagnostics/a-closed-diagnostics-write-gate-is-an-injected-no-op-not-a-branch-at-every-call-site"],
+      "describe": "legacy 透传原样保留——这正是地板是 4 而不是 2 的原因",
+      "run": ["grep", "-c", "this.provisioningDiagnosticWriteGate,", "apps/api/src/guardrails/guardrails.service.ts"],
+      "expect": { "stdoutEquals": "1" }
+    },
+    {
+      "id": "projection-count-zero",
+      "requirements": ["resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"],
+      "describe": "编排器不再点名投影协作者（含仅类型 import——计数器也数它）",
+      "run": ["bash", "-c", "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(async m=>{const fs=await import('node:fs');console.log(m.measureSource(fs.readFileSync('apps/api/src/guardrails/guardrails.service.ts','utf8')).measured['guardrails-symbol-reference:metrics-projection'])})\""],
+      "expect": { "stdoutEquals": "0" }
+    },
+    {
+      "id": "projection-forwarder-gone",
+      "requirements": ["resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"],
+      "describe": "投影转发器标识符全树归零，生产代码与测试替身一并",
+      "run": ["grep", "-rn", "semaphoreProjection", "apps/api/src"],
+      "expect": { "stdoutAbsent": "semaphoreProjection" }
+    },
+    {
+      "id": "constructor-signature-untouched",
+      "requirements": ["guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched"],
+      "describe": "构造签名 11 参未动，bus 仍是尾参",
+      "run": ["bash", "-c", "sed -n '/^  constructor(/,/^  ) {/p' apps/api/src/guardrails/guardrails.service.ts | grep -cE '^    (@Optional\\(\\) )?(private readonly )?[a-zA-Z]+\\??:'"],
+      "expect": { "stdoutEquals": "11" }
+    },
+    {
+      "id": "guardrails-baseline-6-files",
+      "requirements": ["guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"],
+      "describe": "guardrails characterization 基线仍是 6 个 spec 文件",
+      "run": ["bash", "-c", "ls apps/api/src/guardrails/*.spec.ts | wc -l | tr -d ' '"],
+      "expect": { "stdoutEquals": "6" }
+    },
+    {
+      "id": "guardrails-baseline-135-tests",
+      "requirements": ["guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"],
+      "describe": "guardrails characterization 基线仍是 135 个 test()",
+      "run": ["bash", "-c", "grep -ho 'test(' apps/api/src/guardrails/*.spec.ts | wc -l | tr -d ' '"],
+      "expect": { "stdoutEquals": "135" }
+    },
+    {
+      "id": "layout-v2-green",
+      "requirements": ["session-transcript-persistence/transcript-capture-moves-out-of-the-tasks-context-without-moving-its-happens-before"],
+      "describe": "layout v2 / r7 绿：新目录已同 commit 进 manifest，路径键已换键",
+      "run": ["node", "scripts/context-layout-check-v2.mjs"],
+      "expect": { "exitCode": 0 }
+    },
+    {
+      "id": "no-harness-edits",
+      "requirements": ["guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"],
+      "describe": "领域刀未改 harness/工具链（新流程硬规矩）",
+      "run": ["bash", "-c", "git diff --name-only main...HEAD -- .claude/workflows scripts/openspec-metadata.mjs scripts/public-surface-adversarial.mjs scripts/spec-assert.mjs openspec/schemas"],
+      "expect": { "stdoutAbsent": "." }
+    },
+    {
+      "id": "contracts-untouched",
+      "requirements": ["resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"],
+      "describe": "packages/contracts 零改动，四个公开面 unchanged 的前提",
+      "run": ["bash", "-c", "git diff --name-only main...HEAD -- packages/contracts"],
+      "expect": { "stdoutAbsent": "." }
+    }
+  ]
+}

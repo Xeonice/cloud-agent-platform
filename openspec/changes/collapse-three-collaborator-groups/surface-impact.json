@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "change": "collapse-three-collaborator-groups",
+  "intent": "developer-workflow",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "三组都是进程内所有权重组：诊断写入的开关从调用方分支变成注入实现、转录捕获换注入形态但保留同一个被 await 的调用、容量投影换所有者但派生结果逐字节不变。不新增/修改/移除任何 /v1 操作或 schema。⚠ 与上一刀不同的是，diagnostics 与 transcript 各有真实 /v1 控制器（v1-task-provisioning-diagnostics.controller.ts、v1-transcript.controller.ts），apply 期必须复核这两条路径的响应是否逐字节不变；若有任何差异，本状态升 derived 并转录 protocolDifferences。"
+    },
+    "mcp": { "status": "unchanged", "reason": "不触碰 MCP 工具集与传输。" },
+    "openapi": { "status": "unchanged", "reason": "操作注册表不变。" },
+    "apiPlayground": { "status": "unchanged", "reason": "Playground 操作目录不变。" },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段 4 第四刀：三组横切协作者一次摘完，各自停在实测地板——provisioning diagnostics 8→4（两个 wrapper 整体外迁 + 写闸门反转为注入式 no-op；构造参数被 legacy 透传钉住，故 4 而非 2）、transcripts 2→1（服务迁出 tasks 上下文、切断 guardrails→tasks 的 forwardRef 边，可选性守卫消失，但被 await 的 capture 调用必须保留以承担 capture-before-teardown 的 happens-before）、metrics-projection 2→0（投影所有权迁进 runner-metrics，条目按归零纪律删除）。同刀订正上一刀留下的陈旧构造点计数 22/15 → 23/16。不动构造签名。",
+      "reason": "上一刀 range B 的三条预测本树重测：diagnostics 8→4 与 projection 2→0 成立，transcript 2→0 被推翻（源码注释与 :2414/:2437 的调用序证明 happens-before 由那个被 await 的调用承担，删不得），故按 2→1 如实立基线。三组合并的实测依据是写集三重交集只有 3 个文件、且 r11 的配对测试是单块 deepEqual + COLLABORATORS 长度断言，拆三刀要对同一常量做三次顺序编辑。"
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}
