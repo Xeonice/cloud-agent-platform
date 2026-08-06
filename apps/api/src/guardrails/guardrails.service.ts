@@ -1246,8 +1246,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       await lease.authorize();
 
       this.connections.set(taskId, connection);
-      // Durable `SandboxProvisioned` (add-domain-event-bus 4.5), 1 of the 2
-      // provisioning paths. Ordering is the requirement, not an accident: it is
+      // Durable `SandboxProvisioned` (add-domain-event-bus 4.5), the one
+      // surviving provisioning path. Ordering is the requirement, not an accident: it is
       // published only after `provision(...)` returned, after the ownership
       // re-verification above proved this attempt still holds the fence, and
       // after the connection was registered. A provision that throws, is

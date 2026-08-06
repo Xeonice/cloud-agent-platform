@@ -2052,8 +2052,8 @@ export class TasksService
           request.userId,
         ),
       );
-      // Durable `TaskAdmitted` (add-domain-event-bus 4.7), 1 of the 2 admission
-      // paths. Gated on exactly the condition the audit above uses — a COMMITTED
+      // Durable `TaskAdmitted` (add-domain-event-bus 4.7), the one surviving
+      // admission path. Gated on exactly the condition the audit above uses — a COMMITTED
       // transition — so the event and the audit trail can never disagree about
       // whether this reservation admitted anything. A reservation that found the
       // task already at its target (`transitioned: false`) admitted nothing here

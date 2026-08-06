@@ -1,6 +1,10 @@
 # Verification report — retire-legacy-inline-admission
 
-Tree verified: branch `refactor/retire-legacy-inline-admission`, HEAD `3619b08`
+Two verify passes are recorded here. **Pass 1** (below) ran at HEAD `3619b08` and re-opened one code
+task. **Pass 2** (["Verify pass 2"](#verify-pass-2--head-28b9d1d) at the end of this file) ran after
+that task landed, at HEAD `28b9d1d`, and is the pass whose tally gates archive.
+
+Tree verified (pass 1): branch `refactor/retire-legacy-inline-admission`, HEAD `3619b08`
 ("refactor(admission): retire the legacy inline pipeline and admit unconditionally durably"),
 working tree clean at the time of measurement.
 
@@ -171,3 +175,197 @@ remains a true exclusion.
    recovery block after `scheduled-tasks.service.ts:1222` (`findUnique` → `release` → `recovered`)
    is unreachable — `outcome` narrows to `never` past the two guards. Dead rather than wrong, but it
    is the residue of the removed third outcome and a candidate for the next cleanup cut.
+
+---
+
+## Verify pass 2 — HEAD `28b9d1d`
+
+Tree verified: branch `refactor/retire-legacy-inline-admission`, HEAD `28b9d1d`
+("fix(guardrails): recount the construction-site figures with a fixed instrument"), working tree
+clean apart from an unrelated untracked change directory (`openspec/changes/extract-runner-minutes-ledger/`).
+
+Executable baseline re-run live during this adjudication, not carried over from pass 1:
+
+- `node scripts/spec-assert.mjs retire-legacy-inline-admission` → **23/23 passed**, 11 requirements
+  decided without an LLM pass. The two assertions added since pass 1
+  (`construction-site-figures-live`, `construction-counter-agrees-with-typescript-ast`) are the ones
+  task 6.1 introduced so the constructor requirement is command-decided rather than lens-decided.
+- `node scripts/openspec-metadata.mjs validate-change retire-legacy-inline-admission --phase verify`
+  → validated, 16 tasks.
+- `node scripts/context-layout-check-v2.mjs` → every class within its committed baseline.
+
+### Adjudication summary (pass 2)
+
+| Route | Count | Ids |
+| --- | --- | --- |
+| Re-opened as code tasks | 0 | — |
+| Spec defects (design.md Open Questions) | 0 | — |
+| Archive-blocking spec defects | 0 | — |
+| Re-classified MET | 4 | the four `## REMOVED Requirements` headings, below |
+
+Pass 1's single re-opened defect (`guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched`,
+task 6.1) landed in `28b9d1d` and is no longer open: the fixed counter and the TypeScript-AST
+cross-check now agree digit for digit, and both are gate-enforced.
+
+### Re-classified MET (pass 2)
+
+Pass 2's four raw-unmet findings are the same four `## REMOVED Requirements` headings pass 1
+adjudicated, refuted the same way by construction: each heading pins a count (`three`, `both`,
+`both`, `three`) that this change exists to retire, so a skeptic exercising the heading text against
+the retired tree necessarily fails it. Each was re-traced independently against the live tree at
+`28b9d1d` — the test is whether the removal's stated Reason is true and whether the ADDED
+replacement it migrates to is actually implemented. All four are.
+
+#### 1. `guardrails/taskrunstarted-is-published-at-exactly-three-declared-points` — MET (retired correctly)
+
+- Delta: `specs/guardrails/spec.md:547-556` (REMOVED) → `:86-130` (ADDED, "exactly two declared points").
+- Re-measured live: `grep -rn "domainEventEnvelope('task.run_started'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'`
+  → exactly **2** sites, `guardrails.service.ts:1755` (`startPoint: 'readoption'`) and `:2912`
+  (`startPoint: 'durable_arm'`, `admissionMode: 'durable'`).
+- Reason true: `startRunningAfterCapacity` has zero occurrences in `apps/api/src` — deleted with the
+  chain, not renamed. `legacy_capacity` survives only as a still-declared discriminant
+  (`packages/contracts/src/domain-event.ts:189-191`), exactly as the ADDED requirement's carve-out
+  demands.
+- ADDED scenarios re-traced: readoption publishes once, adjacent to the surviving
+  `runnerMinutes.recordStart` (`:1742-1757`); the durable path publishes once, after **both**
+  `durableRuntimeArmed` early-returns (`:2892`, `:2901`), so re-arming cannot publish twice.
+- Pass 1's flagged comment drift is closed: `:1747` now reads "Run-start publish point 1 of 2" and
+  `:2906` "2 of 2".
+- Assertion `task-run-started-two-live-publish-points` re-run: `ok`.
+
+#### 2. `guardrails/sandboxprovisioned-is-published-on-both-provisioning-paths-after-the-provider-boundary-succeeds` — MET (retired correctly)
+
+- Delta: `specs/guardrails/spec.md:557-565` (REMOVED, Reason + Migration only, **zero** `#### Scenario`
+  children — there is no behavioural scenario attached to the retired heading to satisfy) → `:131-176`
+  (ADDED, "the one surviving provisioning path").
+- Re-measured live: `grep -rn "this.publishSandboxProvisioned(" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'`
+  → exactly **1** call site, `guardrails.service.ts:1260`. The event type string `'sandbox.provisioned'`
+  is constructed in exactly one place, inside the payload builder itself, so no other file can emit it.
+- ADDED ordering scenarios re-traced in source order: `provider.provision(...)` at `:1229` →
+  ownership re-check throwing `TaskAdmissionLeaseLostError` at `:1231-1236` (a superseded fence exits
+  before the publish and emits nothing) → `lease.authorize()` → connection registered at `:1248` →
+  publish at `:1260-1265`. A provision that throws, is cancelled, or unwinds never reaches `:1260`.
+- `admissionMode: 'durable'` is fixed inside the payload builder (`:901-911`), which takes no
+  `admissionMode` argument — matching "a discriminator no caller can vary is not an argument".
+- `apps/api/src/inline-admission/` does not exist; the second path is gone, not dormant.
+- Assertion `sandbox-provisioned-one-live-publisher` re-run: `ok`.
+
+#### 3. `guardrails/taskadmitted-is-published-on-both-admission-paths` — MET (retired correctly)
+
+- Delta: `specs/guardrails/spec.md:567-574` (REMOVED) → `:177-207` (ADDED, "the one surviving
+  admission path").
+- Re-measured live: `grep -rn "domainEventEnvelope('task.admitted'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'`
+  → exactly **1** site, `tasks.service.ts:2067`, inside `reserveDurableAdmissionCapacity`, gated on
+  `transitioned && result.outcome !== 'superseded'` (`:2047`) — the same condition the audit write
+  uses, so event and audit trail cannot disagree. A superseded reservation instead publishes only
+  `task.superseded` (`:2073-2085`).
+- The Migration's specific claim re-checked: no admission in-flight promise map survives anywhere in
+  `tasks.service.ts` / `guardrails.service.ts` for a second caller to join, so the dropped
+  "repeated in-flight admission publishes once" scenario has no subject left. (`readoptionsInFlight`,
+  `guardrails.service.ts:1643`, is sandbox readoption — an unrelated concern.)
+- Corroborated by the type system rather than by convention:
+  `packages/contracts/src/task-provisioning-diagnostics.ts:51-53` is `z.enum(['durable'])`, so
+  `admissionMode: 'legacy'` is a compile error.
+- Assertion `task-admitted-one-live-publish-point` re-run: `ok`.
+
+#### 4. `guardrails/tasksuperseded-is-published-once-per-observation-at-three-declared-producer-boundaries` — MET (retired correctly)
+
+- Delta: `specs/guardrails/spec.md:576-583` (REMOVED) → `:209-258` (ADDED, "two declared producer
+  boundaries").
+- Re-measured live: `grep -rn "domainEventEnvelope('task.superseded'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'`
+  → exactly **2** sites, `tasks.service.ts:2081` (`observationPoint: 'durable_capacity_reservation'`)
+  and `:2361` (`'durable_admission_transition'`, inside `observeAdmissionSupersession`, written as one
+  method with one return so both routes publish identically and at most once per call).
+- No non-test file anywhere assigns `observationPoint: 'inline_pipeline_run'`; the member remains
+  declared at `packages/contracts/src/domain-event.ts:203-206`, as the carve-out requires.
+- "No superseder is fabricated" re-traced: both payloads carry only task id, fence token, observation
+  point (plus `observedStatus` at the transition boundary) — no superseder field exists to fabricate.
+- Pass 1's flagged comment drift is closed: `:2074` now reads "observation point 1 of 2" and `:2346`
+  "observation point 2 of 2".
+- Assertions `task-superseded-two-live-publish-points` and
+  `retired-discriminants-unproduced-but-still-declared` re-run: `ok`.
+
+#### Residual minor gap found in pass 2 — recorded, non-blocking
+
+Task 6.1 enumerated four stale comment denominators and fixed all four. Two more of the same defect
+class sit at the two publish points that went from two paths to **one**, and were outside that
+enumeration:
+
+- `apps/api/src/guardrails/guardrails.service.ts:1249` — "Durable `SandboxProvisioned` …, 1 of the 2
+  provisioning paths". One path survives.
+- `apps/api/src/tasks/tasks.service.ts:2055` — "Durable `TaskAdmitted` …, 1 of the 2 admission
+  paths". One path survives.
+
+Both are prose inside a passing code path. They change no count the requirements assert, no type, and
+no test: the live-site counts (1 and 1) are measured by `spec-assert.mjs` from the source itself, not
+from these comments. Requirements 2 and 3 are therefore met as written with a minor gap that does not
+block their primary scenarios — recorded here rather than re-opened.
+
+**Closed in this change, not deferred** (commit `fix(guardrails): name the surviving path in the last two retired denominators` — cited by subject, not hash: a commit cannot carry its own hash, and the one written here before committing was a guess). Leaving two instances of a defect class whose
+other four were fixed in the same cut is the drift this epic keeps paying for, and the fix is two
+comments. Both now name the surviving path instead of a retired denominator
+(`guardrails.service.ts:1249` "the one surviving provisioning path", `tasks.service.ts:2055` "the one
+surviving admission path"). A tree-wide re-scan for the same pattern afterwards returns only
+`1 of 2` / `2 of 2` at the run-start and superseded points, both of which are live counts. Scope
+finding 6 below is a separate matter and remains for a later cut.
+
+### Gap finding (pass 2) — no requirement lacks a traceable implementation
+
+Re-audited independently rather than by trusting pass 1's conclusion, and reproduced it:
+
+- 23/23 `spec-assert.mjs` assertions pass (pass 1 recorded 21/21; the two additions cover task 6.1's
+  instrument fix).
+- The one requirement with no `assertions.json` entry — the runner-minutes seam ("In place and
+  unchanged" governs it) — was read by hand: the `private get runnerMinutes()` accessor over the
+  `ownedRunnerMinutes` / `detachedRunnerMinutes` backing members exists exactly as described
+  (`guardrails.service.ts:601-617`).
+- `scripts/ratchets/r11.json` floors re-read one by one: `this.runnerMinutes` 4,
+  `provisioningDiagnosticRecorder` 2, `provisioningDiagnosticWriteGate` 2, `this.transcripts` 1,
+  `metrics-projection` / `CapacityProjectionPort` 2 — matching the three-collaborator-group
+  requirement's pinned floors.
+- `scripts/ratchets/r7.json` carries zero `inline-admission` occurrences; `context-layout-check-v2`
+  passes; `apps/api/src/inline-admission/` does not exist; the DELETE-only migration
+  `apps/api/prisma/migrations/20260806120000_delete_legacy_admission_diagnostic_rows/migration.sql`
+  is present.
+
+**No requirement in this change's specs directory lacks a traceable implementation.**
+
+### Scope findings (pass 2) — code in the diff that no requirement describes
+
+Recorded, not routed. None is undeclared **public** impact: `PostCommitAdmissionResult` is an internal
+type in `apps/api/src/tasks/tasks.service.ts` with two internal consumers, `POST /v1/tasks` still
+returns 201 (D1 admits unconditionally rather than refusing), and the boot-recovery change is a
+process-local startup step. `surface-impact.json`'s `publicV1` declaration therefore remains accurate
+and its `protocolDifferences: []` remains a true exclusion.
+
+1. `apps/api/src/tasks/tasks.service.ts:206` — `PostCommitAdmissionResult` narrowed to
+   `'durable-woken' | 'fail-closed'`; the new `'fail-closed'` outcome replaces the old
+   legacy-admission fallback. No requirement in `specs/` describes this post-commit-dispatch contract
+   or the narrowed union. Declared in `surface-impact.json` under `internalOnly.scope`
+   ("准入行为：mode 分支移除…无条件走 durable（D1）") with `runtimeWireBehavior: "changed"`, which is
+   why this is scope rather than undeclared impact.
+2. `apps/api/src/tasks/tasks.service.ts:1514-1526` — `admitCreatedTask`'s fail-closed branch writes
+   the creation audit, then logs a bespoke warning and returns `'fail-closed'` for a committed row
+   with no durable admission work. New behaviour, no backing requirement or scenario.
+3. `apps/api/src/scheduled-tasks/scheduled-tasks.service.ts:1222` — downstream ripple in a file the
+   change does not otherwise modify: the recovery loop now `continue`s on `outcome === 'fail-closed'`,
+   skipping the generic task-status recovery check it ran for the old legacy-admitted case.
+4. `apps/api/src/scheduled-tasks/scheduled-tasks.service.ts:1404` — second ripple: another caller
+   returns early on `'fail-closed'`, dropping the lease/claim release path for that case.
+5. `apps/api/src/tasks/tasks.service.ts:582-596` — the public `reofferQueuedOnStartup()` method and
+   the FIFO boot re-offer step it implemented are deleted, and `admit()` is dropped from the
+   `IGuardrailsService` interface `TasksService` depends on. The removal is self-documented in the
+   startup coordinator's docstring ("There is no boot re-offer step: re-offering pending work into
+   the process-local semaphore fed the retired in-request pipeline, and pending durable work is
+   recovered by step 4's claim query"), and `reofferQueuedOnStartup` has zero remaining references
+   anywhere in `apps/api/src` — but no requirement in the three specs covers startup/boot recovery
+   semantics, `admit()`, or the removal of the re-offer step. The only requirement about deleting
+   orphaned methods is scoped to `GuardrailsService`'s **private** methods.
+6. `apps/api/src/tasks/tasks-pending-recovery.spec.ts` (deleted, 100 lines) — the test whose entire
+   subject was the boot re-offer behaviour (FIFO re-offer with owner attribution) is deleted with no
+   replacement scenario in `specs/`, corroborating that (5) is an unspecified behaviour change rather
+   than a spec-driven deletion.
+7. Observed while tracing (3): with `PostCommitAdmissionResult` now a two-member union, the recovery
+   block after `scheduled-tasks.service.ts:1222` (`findUnique` → `release` → `recovered`) is
+   unreachable — `outcome` narrows to `never` past the two guards. Dead rather than wrong, and the
+   residue of the removed third outcome.
