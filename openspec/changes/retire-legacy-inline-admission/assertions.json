@@ -349,6 +349,51 @@
       "expect": {
         "stdoutEquals": "AGREE"
       }
+    },
+    {
+      "id": "characterization-baseline-live",
+      "requirements": [
+        "guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization"
+      ],
+      "describe": "基线三数（test 声明总数 / spec 文件数 / .test.mjs 数）与活树一致",
+      "run": [
+        "bash",
+        "-c",
+        "printf \"%s %s %s\\n\" \"$(grep -hcE \"^[[:space:]]*test\\(\" apps/api/src/guardrails/*.spec.ts | paste -sd+ - | bc)\" \"$(ls apps/api/src/guardrails/*.spec.ts | wc -l | tr -d \" \")\" \"$(ls apps/api/src/guardrails/*.test.mjs | wc -l | tr -d \" \")\""
+      ],
+      "expect": {
+        "stdoutEquals": "91 6 8"
+      }
+    },
+    {
+      "id": "characterization-per-file-distribution",
+      "requirements": [
+        "guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization"
+      ],
+      "describe": "per-file 分布未被聚合成一个总数——降序逐文件仍是 54+18+10+3+3+3",
+      "run": [
+        "bash",
+        "-c",
+        "for f in apps/api/src/guardrails/*.spec.ts; do grep -cE \"^[[:space:]]*test\\(\" \"$f\"; done | sort -rn | paste -sd+ -"
+      ],
+      "expect": {
+        "stdoutEquals": "54+18+10+3+3+3"
+      }
+    },
+    {
+      "id": "audit-hotspot-lines-unmoved-except-retired",
+      "requirements": [
+        "guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization"
+      ],
+      "describe": "三热点 audit 行数 46/61/5（口径已在 main 复现 46/61/14）——两个未动，只有随退役测试走的 9 行离开",
+      "run": [
+        "bash",
+        "-c",
+        "o=\"\"; for f in guardrails-durable-launch-decision.spec.ts delivery-results-surfaced-and-audited.test.mjs guardrails.service.spec.ts; do o=\"$o $(grep -ci audit \"apps/api/src/guardrails/$f\")\"; done; echo \"${o# }\""
+      ],
+      "expect": {
+        "stdoutEquals": "46 61 5"
+      }
     }
   ]
 }

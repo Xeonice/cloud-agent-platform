@@ -542,6 +542,110 @@ in the same commit as the signature.
   defect in the instrument until proven otherwise, because the instrument is the thing that has been
   wrong before
 
+### Requirement: Existing guardrails behavior is proven unchanged by characterization
+
+Behavioral equivalence SHALL be proven as characterization against a baseline **measured live on the
+tree of the change under review**, not copied from an earlier change. Measured on this change's tree,
+`apps/api/src/guardrails/` holds **91** `test()` declarations across **6** `*.spec.ts` files
+(54 + 18 + 10 + 3 + 3 + 3) and **8** `.test.mjs` assertion scripts, which are counted and reported
+separately from the spec files.
+
+The counting convention SHALL travel with those numbers, because two different true numbers exist
+here and a reader who meets only one will think the other is drift. **91** counts `test(`
+declarations in source — `grep -cE '^[[:space:]]*test\(' apps/api/src/guardrails/*.spec.ts`, the same
+convention that reproduces the previously recorded **135** when run against `main`. **93** is what
+`node --test` reports over the same six compiled files: the extra two are loop-generated instances,
+one at `guardrails-branch-policy.spec.ts:90` (`for (const anomalousWorkspace of [null, undefined])`)
+and one at `guardrails-durable-launch-decision.spec.ts:3311`
+(`for (const outcome of ['fenced', 'failed'] as const)`). Neither figure refutes the other.
+
+The baseline moved **135 → 91** because this change RETIRED the subject of 44 of those tests, never
+because an assertion was relaxed: `guardrails.service.spec.ts` 57 → 18 (−39, the in-request
+`service.admit(...)` characterization whose pipeline no longer exists) and
+`guardrails-domain-event-publishing.spec.ts` 15 → 10 (−5, the legacy publish points this change's
+own REMOVED requirements retire). 39 + 5 = 44, and 135 − 44 = 91 — the arithmetic is stated so that
+a future reader can tell a retirement apart from an erosion without re-deriving it.
+
+Behavioural assertions SHALL NOT be edited. An assertion that pins a *synchronous call order inside
+one method* MAY be rewritten, and every such rewrite SHALL be classified in the change's task ledger
+as either (a) an implementation detail — replaced by a result assertion over the set of audit rows
+the completed operation produced — or (b) a real requirement — re-expressed against the new seam and
+never relaxed. Each ledger entry SHALL record three things: the order the original assertion pinned,
+why that order no longer holds after the change, and the invariant the replacement pins. An assertion
+SHALL NOT be deleted, weakened into a count, or made order-insensitive beyond the single justified
+source of reordering. Outside `apps/api/src/guardrails/`, the only permitted edit to a `*.spec.ts`
+remains adding or omitting the trailing optional bus argument in a positional
+`new GuardrailsService(...)` construction, except where a test's own subject is changed by the change
+under review, in which case it SHALL be rewritten under the same ledger.
+
+The (a)/(b) taxonomy SHALL carry a third class, because a retirement does not fit either and forcing
+it into one produces a false ledger entry. Both (a) and (b) presume the behaviour survives in some
+form — (a) replaces the assertion, (b) re-expresses it against a new seam. A test whose subject a
+change RETIRES has neither a replacement nor a new seam, and an entry claiming it was "re-expressed"
+would be untrue. Such a deletion SHALL be classified **(c) subject retired** and SHALL name the
+`## REMOVED Requirements` heading (or the retiring requirement) that warrants it, so that a deletion
+is always traceable to a decision rather than to a convenience. A (c) entry without a warrant is
+indistinguishable from erosion and SHALL be treated as one.
+
+The three real audit assertion hotspots are `guardrails-durable-launch-decision.spec.ts`,
+`delivery-results-surfaced-and-audited.test.mjs`, and `guardrails.service.spec.ts`. The previous
+statement of this requirement froze all three at **zero diff** and declared that "if any of them
+requires an edit, the change altered behaviour and the change is what is wrong, not the test." That
+rule is correct for a change that PRESERVES behaviour and unsatisfiable for one that deliberately
+REMOVES it: a retirement whose whole subject lives in those tests cannot leave them untouched, and
+holding the freeze would only mean the requirement goes stale silently — which is what happened, and
+is why this change re-states it rather than quietly failing it. What survives the re-statement is
+the measurable part: **the audit assertions themselves SHALL NOT move except with a subject this
+change retires.** Counted as lines containing `audit` (case-insensitive) — the convention that
+reproduces the previously recorded 46 / 61 / 14 exactly when run against `main` — the three read
+**46 / 61 / 5** here. Two of the three are unmoved (`guardrails-durable-launch-decision.spec.ts`
+46 → 46 even though the file WAS edited, and `delivery-results-surfaced-and-audited.test.mjs`
+61 → 61 in a file this change never opens); the nine that left `guardrails.service.spec.ts`
+(14 → 5) departed inside deleted legacy-admission tests, not out of surviving ones.
+
+#### Scenario: The stated baseline matches the tree
+
+- **WHEN** `test(` declarations in `apps/api/src/guardrails/*.spec.ts` are counted with
+  `grep -cE '^[[:space:]]*test\('` and the `.test.mjs` scripts are counted on the integrated tree
+- **THEN** the counts are 91 across 6 spec files with the stated per-file distribution
+  (54 + 18 + 10 + 3 + 3 + 3) and 8 `.test.mjs` scripts, and both sets pass — 93 runtime tests from
+  the six spec files and 8 from the scripts, the 91/93 gap being the two loop-generated instances
+  this requirement names
+
+#### Scenario: Edits to the audit hotspots are subject-driven and ledgered
+
+- **WHEN** the change's diff is filtered to `guardrails-durable-launch-decision.spec.ts`,
+  `delivery-results-surfaced-and-audited.test.mjs`, and `guardrails.service.spec.ts`
+- **THEN** every one of them that appears carries a task-ledger entry classified (a), (b), or (c)
+  naming the retired subject that forced the edit, no audit assertion leaves a test that survives,
+  the three audit-line counts read 46 / 61 / 5, and all three pass on the integrated tree
+
+#### Scenario: The negative force-fail assertions still hold
+
+- **WHEN** a remote observation or a cancelled winner takes a task's terminal state
+- **THEN** guardrails writes zero force-fail audit rows, and both existing negative assertions pass
+  unmodified
+
+#### Scenario: Every rewritten assertion carries a classified ledger entry
+
+- **WHEN** any assertion in the repository is rewritten by this change
+- **THEN** the task ledger holds an entry for it classified (a), (b), or (c), recording the pinned
+  order, why it no longer holds, and either the invariant the replacement pins or — for (c) — the
+  retiring requirement that warrants the deletion
+
+#### Scenario: The inline source mirror moves with its subject
+
+- **WHEN** the handling of a collaborator call that the hand-written mirror reproduces is changed
+- **THEN** `delivery-results-surfaced-and-audited.test.mjs` is updated in the same commit with its
+  per-argument assertion strength preserved — and when that handling is unchanged, the mirror is
+  untouched
+
+#### Scenario: Source-text-scanning tests keep their per-file strength
+
+- **WHEN** a source-text-scanning test must be updated because a file it scans changed
+- **THEN** the update keeps its per-file assertions rather than relaxing them to an aggregate total,
+  and the run of the wiring and audit text-scanning scripts stays green
+
 ## REMOVED Requirements
 
 ### Requirement: TaskRunStarted is published at exactly three declared points
