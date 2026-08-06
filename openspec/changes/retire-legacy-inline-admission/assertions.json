@@ -320,6 +320,35 @@
       "expect": {
         "stdoutEquals": "UNPRODUCED_STILL_DECLARED"
       }
+    },
+    {
+      "id": "construction-site-figures-live",
+      "requirements": [
+        "guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched"
+      ],
+      "describe": "六个构造点数字与活树一致（后三个曾被尾逗号抬高，本刀修仪器后重钉）",
+      "run": [
+        "node",
+        "scripts/guardrails-construction-sites.mjs"
+      ],
+      "expect": {
+        "stdoutEquals": "20 16 11 10 6 5"
+      }
+    },
+    {
+      "id": "construction-counter-agrees-with-typescript-ast",
+      "requirements": [
+        "guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched"
+      ],
+      "describe": "扫逗号的计数器与 TypeScript AST 独立计数逐位一致——否则上一条是拿工具自证",
+      "run": [
+        "node",
+        "scripts/guardrails-construction-sites.mjs",
+        "--cross-check"
+      ],
+      "expect": {
+        "stdoutEquals": "AGREE"
+      }
     }
   ]
 }

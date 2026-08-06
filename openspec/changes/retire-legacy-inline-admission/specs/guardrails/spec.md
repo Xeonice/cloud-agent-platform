@@ -458,10 +458,24 @@ when the runner-minutes ledger change's transcript-ordering assertion constructe
 20 across 16 now that this retirement deleted `apps/api/src/tasks/tasks-legacy-request-lifetime.spec.ts`,
 whose subject was the retired path and which held four of those sites. Every number here was
 RE-COUNTED live on the retired tree with `node scripts/guardrails-construction-sites.mjs`, which
-prints `20 16 11 16 12 8`, rather than adjusted by subtraction — the figure has drifted twice already
+prints `20 16 11 10 6 5`, rather than adjusted by subtraction — the figure has drifted twice already
 in this epic, and the previously recorded "12 of them outside" was itself one ahead of a live count of
 11 when it was written, which is exactly how a stale count makes a future change mis-scope the blast
 radius of touching the signature.
+
+The counting INSTRUMENT was wrong too, and this change fixed it rather than inheriting its output.
+`scripts/guardrails-construction-sites.mjs` seeded `args = 1` and incremented on every depth-1 comma
+without ever discounting the trailing comma Prettier writes before `)`, so it counted every
+multi-line construction site one argument too many. Site and file counts do not read the argument
+count, so the first three figures were never affected; the last three always were. They are
+re-derived here from a fixed counter cross-checked against an independent TypeScript-AST count
+(`ts.isNewExpression` → `node.arguments.length`), which agrees digit for digit. The correction is
+therefore NOT a movement in the tree: measured with the fixed instrument, `main` reads
+`24 17 12 14 10 6` where the previously archived requirement recorded `24 17 12 20 16 9`. A number
+in this requirement SHALL be produced by an instrument that has been checked against a second,
+independently written one, because the scenario below asserts the spec against that instrument — and
+a scenario that checks a number against the very tool that produced it confirms itself rather than
+the tree, which is how the last three figures stayed wrong across two changes.
 
 The `runnerMinutes` member SHALL be usable from the moment an instance
 exists under BOTH DI construction and positional construction: an instance built positionally,
@@ -472,16 +486,21 @@ initialized by a field initializer, which the compiler emits before the construc
 it is in place before any collaborator the constructor builds can reach the member.
 
 Removing any of the three collaborator parameters is OUT of scope for a change that keeps this
-requirement, and the reason is measured rather than stylistic: **16** of those construction sites
-pass a value in the transcripts position or beyond, **12** of them across **8** files outside
+requirement, and the reason is measured rather than stylistic: **10** of those construction sites
+pass a value in the transcripts position or beyond, **6** of them across **5** files outside
 `apps/api/src/guardrails/`, and one of them is `guardrails.service.spec.ts`. The threshold that
 produces those numbers SHALL be stated with them, because it is where this count goes wrong:
 `transcripts` is the EIGHTH parameter, so the affected set is every site passing at least eight
-arguments — including the six that pass exactly eight, whose final argument IS the transcripts value.
-That six is unchanged by this retirement: all four deleted sites passed eleven arguments. Counting
-from nine instead silently drops those six and understates the blast radius by more than a third,
-which is precisely the mis-scoping this requirement exists to prevent. A change that needs the
-parameters gone SHALL modify this requirement in the same commit as the signature.
+arguments. Exactly ONE site passes exactly eight, and its final argument IS the transcripts value:
+`apps/api/src/session-transcripts/transcript-capture-ordering.test.mjs:143`. Six OTHER sites pass
+exactly SEVEN, ending at `prisma`, and take `transcripts` from the constructor default
+`NOOP_SESSION_TRANSCRIPT_CAPTURE` — they are NOT in the affected set, and a previous statement of
+this requirement put them there by calling them "the six that pass exactly eight", which is what an
+argument counter inflated by one produces. Counting from nine instead drops the single eight-argument
+site and reports 9 where the answer is 10. The retirement moved these figures from **14 / 10 / 6**:
+the four deleted sites each passed TEN arguments, all four outside `apps/api/src/guardrails/`, all
+four in the one deleted file. A change that needs the parameters gone SHALL modify this requirement
+in the same commit as the signature.
 
 #### Scenario: The constructor signature is unchanged
 
@@ -510,8 +529,18 @@ parameters gone SHALL modify this requirement in the same commit as the signatur
 
 - **WHEN** `node scripts/guardrails-construction-sites.mjs` is run on the integrated tree
 - **THEN** its six figures equal the six this requirement states — 20 sites, 16 files, 11 outside
-  files, 16 heavy sites, 12 heavy outside, 8 heavy outside files — so a change reading this
+  files, 10 heavy sites, 6 heavy outside, 5 heavy outside files — so a change reading this
   requirement to scope a signature edit is reading live numbers
+
+#### Scenario: The counting instrument agrees with an independently written one
+
+- **WHEN** the same six figures are recounted by walking the TypeScript AST
+  (`ts.isNewExpression` on `GuardrailsService` → `node.arguments.length`) instead of by scanning
+  commas
+- **THEN** the two counts agree digit for digit, so the scenario above is checking the requirement
+  against the tree and not merely against the tool that wrote the requirement; a disagreement is a
+  defect in the instrument until proven otherwise, because the instrument is the thing that has been
+  wrong before
 
 ## REMOVED Requirements
 

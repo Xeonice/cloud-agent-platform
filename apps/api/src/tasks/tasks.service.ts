@@ -2072,7 +2072,7 @@ export class TasksService
     }
     if (result.outcome === 'superseded') {
       // Durable `TaskSuperseded` (add-domain-event-bus 4.8), observation point 1
-      // of 3. Every route to this outcome — no authority row, a later lifecycle
+      // of 2. Every route to this outcome — no authority row, a later lifecycle
       // status, or a CAS that changed no rows — learned about the supersession
       // the same way: something else won and this reservation was not it. The
       // payload therefore carries only what the LOSER holds. There is no
@@ -2343,7 +2343,7 @@ export class TasksService
 
   /**
    * Record that THIS attempt observed itself superseded, and report it
-   * (add-domain-event-bus 4.8) — observation point 2 of 3.
+   * (add-domain-event-bus 4.8) — observation point 2 of 2.
    *
    * Written as one method with one return so that both routes to `superseded`
    * inside {@link performAdmissionTransition} publish identically and, because

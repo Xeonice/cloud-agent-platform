@@ -2,7 +2,7 @@
  * Which admission pipeline an acceptance takes, and why.
  *
  * There is only one pipeline left. The synchronous in-request admission
- * pipeline was retired whole, so the mapping below is total over twelve
+ * pipeline was retired whole, so the mapping below is total over eleven
  * outcomes onto a ONE-member union: the branch was REMOVED, not widened. There
  * is deliberately no refusal outcome and no `503` — an unproven capability
  * (attestation missing/invalid/expired, mixed build identity, no gate provider
@@ -16,9 +16,9 @@
  * refuses; under a refusing design it would not be.
  *
  * The outcome is still resolved, still total, and still carried on the decision.
- * The gate distinguishes ten closed reasons; the optional-provider coalesce adds
- * an eleventh (no gate wired at all) that the reason enum does not model; `open`
- * is the twelfth. Keeping all twelve distinct is what lets the acceptance path
+ * The gate distinguishes nine closed reasons; the optional-provider coalesce adds
+ * a tenth (no gate wired at all) that the reason enum does not model; `open`
+ * is the eleventh. Keeping all eleven distinct is what lets the acceptance path
  * SAY why a deployment is degraded without reading deployment state a second
  * time — and two reads of one state can disagree.
  *

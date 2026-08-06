@@ -1744,7 +1744,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
       this.connections.set(taskId, connection);
       this.runnerMinutes.recordStart(taskId);
-      // Run-start publish point 1 of 3 (add-domain-event-bus 4.3). Adjacent to
+      // Run-start publish point 1 of 2 (add-domain-event-bus 4.3). Adjacent to
       // the recordStart above, which is neither replaced nor moved. NO
       // `admissionMode`: readoption restores a run after a restart and genuinely
       // does not know which admission path originally admitted it — `startPoint`
@@ -2903,7 +2903,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     const idleMs = params?.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
     if (idleMs !== undefined) this.idle.start(taskId, idleMs);
     this.runnerMinutes.recordStart(taskId);
-    // Run-start publish point 3 of 3 (add-domain-event-bus 4.3): the durable
+    // Run-start publish point 2 of 2 (add-domain-event-bus 4.3): the durable
     // path. Adjacent to the recordStart above, which is neither replaced nor
     // moved. It sits AFTER the two `durableRuntimeArmed` early-returns above, so
     // re-arming an already-armed task returns before reaching this line and no
