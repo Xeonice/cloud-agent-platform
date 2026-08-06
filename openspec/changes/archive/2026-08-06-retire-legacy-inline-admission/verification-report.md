@@ -1,11 +1,13 @@
 # Verification report — retire-legacy-inline-admission
 
-Three verify passes are recorded here. **Pass 1** (below) ran at HEAD `3619b08` and re-opened one
+Four verify passes are recorded here. **Pass 1** (below) ran at HEAD `3619b08` and re-opened one
 code task. **Pass 2** (["Verify pass 2"](#verify-pass-2--head-28b9d1d)) ran after that task landed, at
-HEAD `28b9d1d`. **Pass 3** (["Verify pass 3"](#verify-pass-3--head-8064dd2), at the end of this file)
-ran at HEAD `8064dd2` — the first pass with the characterization requirement inside the change's own
-`specs/`, which task 7.1 moved there — and is the pass whose tally gates archive. It re-opens one code
-task (6.2), so archive is gated until that task lands and a further pass clears it.
+HEAD `28b9d1d`. **Pass 3** (["Verify pass 3"](#verify-pass-3--head-8064dd2)) ran at HEAD `8064dd2` —
+the first pass with the characterization requirement inside the change's own `specs/`, which task 7.1
+moved there — and re-opened task 6.2. **Pass 4** (["Verify pass 4"](#verify-pass-4--head-ad8d32f), at
+the end of this file) ran at HEAD `ad8d32f` after task 6.2 and the boot-recovery track (8.1–8.3)
+landed. It is the pass whose tally gates archive: **zero** re-opened tasks, **zero** spec defects,
+**zero** archive-blocking spec defects. Archive is no longer gated.
 
 Tree verified (pass 1): branch `refactor/retire-legacy-inline-admission`, HEAD `3619b08`
 ("refactor(admission): retire the legacy inline pipeline and admit unconditionally durably"),
@@ -511,3 +513,179 @@ New in pass 3:
    is false for this seam: that spec only pushes dead `'legacy-reoffer'` event labels (`:425`, `:616`)
    that no assertion reads. Not mentioned by any task or requirement; folded into task 6.2's "while
    here" clause rather than routed on its own, since it is the same removal's residue.
+
+## Verify pass 4 — HEAD `ad8d32f`
+
+Tree verified: branch `refactor/retire-legacy-inline-admission`, HEAD `ad8d32f`
+("feat(openspec): state the boot-recovery removal, and move the models that outlived it"),
+`git status --porcelain` empty before and after every probe in this pass — all probes were read-only
+(`grep`, `sed`, `ls`, and the repo's own gate scripts, which themselves only shell out to
+`grep`/`wc`).
+
+This is the first pass at a HEAD where pass 3's re-opened task (6.2) and the boot-recovery track that
+grew out of it (8.1 / 8.2 / 8.3) are all landed and checked off, so it is the pass that decides the
+archive gate.
+
+Executable baseline re-run live during this adjudication:
+
+- `node scripts/spec-assert.mjs retire-legacy-inline-admission` → **31/31 passed**, 13 requirements
+  decided without an LLM pass. (Pass 3 recorded 26/26; the five additions came with tracks 6.2 and 8:
+  `boot-reoffer-gone-from-code`, `startup-model-moved-with-its-subject`,
+  `no-residual-arm-after-union-narrowing`, `fail-closed-says-why`,
+  `retired-outcome-absent-from-doubles`.)
+- `node scripts/openspec-metadata.mjs validate-change retire-legacy-inline-admission --phase verify`
+  → validated, 23 tasks.
+- `node scripts/public-surface-adversarial.mjs verify retire-legacy-inline-admission --phase verify`
+  → `"findings": []`, with `metadata` / `registry` / `restMetadata` / `mcpSdkMetadata` / `behavior`
+  all `passed: true` (the MCP leg observed through official `Client.listTools` over
+  `InMemoryTransport`, not through a declaration).
+
+### Adjudication summary (pass 4)
+
+| Route | Count | Ids |
+| --- | --- | --- |
+| Re-opened as code tasks | 0 | — |
+| Spec defects (design.md Open Questions) | 0 | — |
+| Archive-blocking spec defects | 0 | — |
+| Re-classified MET | 2 | the two `## REMOVED Requirements` headings below |
+
+### Re-classified MET (pass 4)
+
+Both raw-unmet findings this pass name requirements that live in the delta's
+`## REMOVED Requirements` block (`specs/guardrails/spec.md:649-687`). Both skeptic probes are
+*correct on their own terms and irrelevant to the route*, and both say so themselves — one records
+"This failure is EXPECTED and BY DESIGN, not a regression", the other that the probe "confirms that
+removal is factually warranted". A REMOVED heading pins a count (`both`, `three`) that this change
+exists to retire; exercising the heading text against the retired tree necessarily fails, and that
+failure *is* the removal working. What has to hold for the route to be MET is two things, and only
+those two: the removal's stated **Reason** is true on the live tree, and the **Migration** target it
+names is actually implemented. Both were re-traced end-to-end at `ad8d32f` rather than carried
+forward from pass 3.
+
+#### 1. `guardrails/sandboxprovisioned-is-published-on-both-provisioning-paths-after-the-provider-boundary-succeeds` — MET (retired correctly)
+
+Pass 3 reached the same verdict at `8064dd2`; this is an independent re-trace at `ad8d32f`, not a
+carry-forward. The heading has Reason + Migration only and **zero** `#### Scenario` children
+(`specs/guardrails/spec.md:661-669`), so there is no live behavioural scenario attached to it to
+satisfy.
+
+- **Reason true.** `ls apps/api/src/inline-admission` → *No such file or directory*. The second path
+  is deleted, not dormant: `grep -rln 'inline-admission\|InlineAdmission\|inline_pipeline_run'
+  apps/api/src` returns **nothing** in source — the only tree-wide match is
+  `apps/api/prisma/migrations/20260806120000_delete_legacy_admission_diagnostic_rows/migration.sql`,
+  a historical data-cleanup migration whose filename names what it deletes.
+- **Cardinality re-measured.**
+  `grep -rn 'publishSandboxProvisioned' apps/api/src --include='*.ts' | grep -v '\.spec\.ts'` →
+  exactly the declaration (`guardrails.service.ts:901`) plus **one** caller (`:1260`).
+  `grep -rln 'sandbox\.provisioned\|SandboxProvisioned' apps/api/src --include='*.ts' | grep -v
+  '\.spec\.ts'` → **only** `guardrails.service.ts`, so there is no orphaned second publisher hiding
+  outside the builder.
+- **No hidden publisher behind the other provider seam.** The only other `.provision(` call site in
+  the app is `apps/api/src/terminal/provider-terminal-story.service.ts:209`, and that file contains
+  no `SandboxProvisioned` / `publishSandboxProvisioned` reference at all — an unrelated
+  terminal-story flow, not a second provisioning path.
+- **Migration target implemented.** The ADDED replacement (`:131-176`) and all four of its scenarios
+  re-trace in source order at `:1229-1265`: `selected.provider.provision(provisionContext)` at
+  `:1229` → ownership re-check throwing `TaskAdmissionLeaseLostError` at `:1230-1235` (a superseded
+  fence exits before the publish, so that attempt publishes nothing) → `lease.authorize()` /
+  `runtime_setup` / `readiness` checkpoints → `this.connections.set(taskId, connection)` at `:1248`
+  → publish at `:1260-1265`, whose payload is `{ taskId, connection, selectedRun, plan:
+  provisionPlan }` — values already in hand at that seam, with no new provider call, no new database
+  read, and no new resolver. `admissionMode: 'durable'` is a literal inside the payload builder
+  (`:906`), which takes no `admissionMode` parameter, matching the ADDED requirement's "fixed at the
+  publish point rather than passed in as an argument".
+- **Carve-out honoured.** `admissionMode` remains on the published schema
+  (`packages/contracts/src/domain-event.ts:258,274`); the removal retired the caller-supplied
+  argument, not the field.
+- Assertion `sandbox-provisioned-one-live-publisher` (`stdoutEquals: "1"`) re-run live: `ok`.
+
+#### 2. `guardrails/tasksuperseded-is-published-once-per-observation-at-three-declared-producer-boundaries` — MET (retired correctly)
+
+- **Reason true.** The third boundary was the in-request pipeline run, published through an
+  orchestrator adapter callback. `grep -rn 'inline_pipeline_run' apps/api/src --include='*.ts' |
+  grep -v '\.spec\.ts'` → **zero** live references; no orchestrator adapter callback survives under
+  `apps/api/src`. The scenario the Migration explicitly declines to carry over ("one pipeline run
+  collapses its several internal `superseded` early-returns into at most one event") has no subject
+  left to collapse — its precondition is unsatisfiable on this tree, which is the removal's whole
+  point.
+- **Cardinality re-measured.** `grep -rn "'task.superseded'" apps/api/src --include='*.ts' | grep -v
+  '\.spec\.ts'` → exactly **two** sites, both in `tasks.service.ts`, and
+  `grep -rn 'observationPoint' apps/api/src --include='*.ts' | grep -v '\.spec\.ts'` returns exactly
+  those two assignments and no third.
+- **Migration target implemented, boundary by boundary.** Boundary 1 —
+  `tasks.service.ts:2081-2093`, inside the durable capacity reservation, gated on
+  `result.outcome === 'superseded'`, publishing `observationPoint: 'durable_capacity_reservation'`
+  plus `fenceToken: request.transitionToken` and nothing else. Boundary 2 —
+  `observeAdmissionSupersession` at `:2352-2375`, the sole publisher for the durable admission
+  transition, written as one method with one `return` so that both routes into `superseded` inside
+  `performAdmissionTransition` publish identically and at most once per call, carrying
+  `observationPoint: 'durable_admission_transition'`, `fenceToken`, and `observedStatus`.
+- **"No superseder is fabricated" holds by construction, not by convention.** Neither payload has a
+  field naming the winning task, lease, worker, or request, and neither seam holds such a handle:
+  boundary 1 learns only that its own CAS lost, boundary 2 only the lifecycle status it read.
+- **Contract carve-out honoured.** `DomainEventSupersessionObservationPointSchema` still declares
+  `'inline_pipeline_run'` (`packages/contracts/src/domain-event.ts:206`) alongside the two live
+  values, exactly as the ADDED requirement requires ("narrowing that union is a published-contract
+  change this change does not make"). Assertion
+  `retired-discriminants-unproduced-but-still-declared` pins that pairing — no live producer, still
+  declared — and re-ran `ok`.
+- Assertion `task-superseded-two-live-publish-points` re-run live: `ok`.
+
+### Gap finding (pass 4) — no requirement lacks a traceable implementation
+
+All floors match the spec's pinned values (transcripts 1, metrics-projection 2, diagnostics 2+2,
+`runnerMinutes` 4). Combined with the 31/31 passing `spec-assert.mjs` run and the direct code trace
+of the `runnerMinutes` getter — the one requirement with no `assertions.json` entry — every
+requirement across the four spec files has a traceable implementation on the current tree.
+
+This is consistent with all three prior verify passes, which each concluded that no requirement
+lacked implementation and routed every finding as either a code defect (since fixed: tasks 6.1 and
+6.2) or a documentation/ledger gap — never as a missing implementation.
+
+### Scope findings (pass 4) — code in the diff that no requirement describes
+
+**None.** This is the first pass that can say so, and it is a change in status rather than a change
+in the tree: the finding count went to zero because commit `ad8d32f` routed the backlog, not because
+this pass looked less hard.
+
+- The only diff residue in this pass's own field of view is the mechanical `'legacy'` → `'durable'`
+  fixture substitution tied to the D2 enum narrowing, which is already covered by the contract and
+  test-double requirements (and pinned by `retired-outcome-absent-from-doubles`, re-run `ok`).
+- I walked the complete `main...HEAD` diff (all 55 files) against the four spec files in this change,
+  plus the three prior passes' accumulated scope findings. Items 1–8 of that backlog
+  (`PostCommitAdmissionResult` narrowing, the `fail-closed` audit/log branch, `IGuardrailsService.admit()`
+  removal, `reofferQueuedOnStartup()` deletion, the startup docstring rewrite, the dead post-`findUnique`
+  arm, and the orphaned `startup-recovery.test.mjs` mirror) were all still unrouted at HEAD `8064dd2`.
+  Commit `ad8d32f` closes every one of them by adding
+  `repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed`,
+  whose scenarios explicitly cover the `reofferQueuedOnStartup` deletion, the narrowed startup
+  docstring, the `durable-woken` / `fail-closed` two-member union with its fail-closed audit+log
+  scenario, the dead-arm removal, and the test-double/mirror migration.
+- I re-diffed `tasks.service.ts`, `scheduled-tasks.service.ts`, `admission-mode-policy.ts`,
+  `prepared-task-create.ts`, the diagnostics adapter/service, the contracts (`domain-event.ts`,
+  `task-provisioning-diagnostics.ts`, `sandbox-core/provisioning-diagnostics.ts`), the migration SQL,
+  `r7.json` / `r11.json`, and the guardrails/tasks spec-file rewrites including the four newly-added
+  tests in `guardrails.service.spec.ts`. Every behavioural change traces to a requirement or scenario
+  in one of the four spec files.
+- Two candidates I chased as possible new "fail-closed ripple" behaviour in
+  `scheduled-tasks.service.ts` (≈`:1216-1226` and `:1400-1402`) turned out to be **pre-existing on
+  `main`**, so they are not behaviour this change implements and do not qualify as scope findings in
+  the first place.
+
+No implemented behaviour currently maps to zero requirement.
+
+### Public-surface disposition (pass 4)
+
+`surface-impact.json` remains accurate and its exclusions remain **true**, re-checked rather than
+carried over. The four public faces are all declared `derived` off the same narrowed enum
+(`publicV1`, `mcp`, `openapi`, `apiPlayground`), which is the honest shape for a change that edits
+`packages/contracts/src/**`. `protocolDifferences: []` is a true exclusion, not a false one: that
+array is the REST↔MCP *projection-difference* channel that `scripts/openspec-metadata.mjs`
+reconciles against `PUBLIC_V1_OPERATIONS[…].mcp.differences`, `tasks.provisioningDiagnostics`
+declares `NO_MCP_DIFFERENCES`, and the enum narrowing lands on both projections with equal amplitude
+— so there is no asymmetry to record there. The live
+`public-surface-adversarial.mjs verify … --phase verify` run returned `findings: []` with the MCP leg
+observed through the executable adapter map, so this is measured, not declared.
+
+**Archive gate (pass 4): open.** Zero re-opened tasks, zero spec defects, zero archive-blocking spec
+defects.
