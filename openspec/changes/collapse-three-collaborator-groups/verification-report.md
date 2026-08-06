@@ -5,14 +5,29 @@ SPEC-DEFECT → `design.md` Open Questions · MET → folded here). Every verdic
 **re-traced against the working tree** in this pass — commands were re-run first-hand, not
 copied from the apply log, from the commit message, or from the skeptic pass.
 
-Tree under test **for the latest pass**: HEAD `66161c4` ("docs(openspec): finish the correction the
-last one left half-done"), which carries `4f5c21c` ("refactor(guardrails): take three collaborator
-groups to their measured floors"), the post-report ratchet fix `a87b179` ("fix(ratchets): restore the
-projection entry the rename made invisible"), and the merge `792797e` of `main`, on top of `199074a`
-(proposal) and base `c858853`. The harness-side fix `d741a71` ("fix(verify): adjudicate refutations
-instead of counting them") arrived through `main` in that merge — it is not this cut's edit, and
-the `no-harness-edits` assertion still passes against `main`.
+Tree under test **for the latest pass**: HEAD `f7cb987` ("docs(openspec): correct a scenario that
+demanded a deletion this change never wanted"), which carries `4f5c21c` ("refactor(guardrails): take
+three collaborator groups to their measured floors"), the post-report ratchet fix `a87b179`
+("fix(ratchets): restore the projection entry the rename made invisible"), the merge `792797e` of
+`main`, and `66161c4` ("docs(openspec): finish the correction the last one left half-done"), on top
+of `199074a` (proposal) and base `c858853`. The harness-side fix `d741a71` ("fix(verify): adjudicate
+refutations instead of counting them") arrived through `main` in that merge — it is not this cut's
+edit, and the `no-harness-edits` assertion still passes against `main`.
 Date: 2026-08-06. Working tree is clean (`git status --short` is empty).
+
+`f7cb987` is itself a product of the previous adjudication round and is worth reading before the
+verdicts below: a lens refuted the `resource-metrics` requirement on evidence that was **true about
+the code and true about the spec text** — the old projection source type has twelve live matches
+tree-wide — and the requirement's scenario had demanded zero *tree-wide*. That zero was never what
+the change wanted: the type survives as the OWNER's own source type, the thing the owner is handed
+at boot, so a tree-wide zero would have demanded deleting something this change deliberately keeps.
+The scenario now asks for what it meant — zero in the ORCHESTRATOR — and says why the wider search
+is not the check. The same commit added an honesty note to the `this.transcripts` budget entry: the
+count fell 2 → 1 truthfully and with no rename, but inverting the optional injection into a no-op
+default introduced two further namings of the same collaborator under a different identifier (the
+import and the default value) that `this.transcripts` cannot see, so 1 is recorded as a **floor,
+not a total**. Neither of those is an open defect at the time of this pass; both are corrections
+that landed inside the change.
 
 The first pass recorded below ran on `4f5c21c` at 18 assertions. Its text is preserved rather than
 rewritten — the stale numbers are marked inline with **【本轮复核】** notes — because the false-green
@@ -42,7 +57,9 @@ The six MET ids, as adjudicated in this pass:
 - `task-provisioning-diagnostics/a-closed-diagnostics-write-gate-is-an-injected-no-op-not-a-branch-at-every-call-site`
 
 Of those six, **0 arrived as raw-unmet** — this pass received **0 raw-unmet requirements** and
-**0 mandatory public findings**, so no verdict here is a *reversal* of a skeptic's refutation. Each
+**0 mandatory public findings**, so no verdict here is a *reversal* of a skeptic's refutation, and
+`reclassifiedMet` is therefore empty rather than six: nothing was routed to me as unmet, so nothing
+was re-classified. The six are MET *as already adjudicated*, re-confirmed rather than reversed. Each
 was nevertheless re-traced end-to-end against the tree rather than inherited from the previous pass;
 the commands re-executed for this adjudication are in the table below, and none of them was copied
 from the apply log. All six
@@ -54,10 +71,13 @@ of the first pass; the two additions, `projection-port-still-named-and-measured`
 caught the false green — both were reverse-verified: renaming `CapacityProjectionPort` turns the
 assertion **and** the R11 gate red together).
 
-One **non-blocking scope finding** is recorded below (a DI-injectable diagnostics write-timeout
-override that no module binds). It violates no requirement, changes no behaviour and touches no
-public surface, so it is not routed to `tasks.md` and does not gate archive — it is recorded because
-this report previously claimed "no scope creep found", and that claim was too strong.
+One **non-blocking scope finding**, in **three parts**, is recorded below (a DI-injectable
+diagnostics write-timeout override that no module binds: the token, the resolution helper that reads
+it, and the third constructor parameter added to carry it). It violates no requirement, changes no
+behaviour and touches no public surface, so it is not routed to `tasks.md` and does not gate archive
+— it is recorded because this report previously claimed "no scope creep found", and that claim was
+too strong. One sub-claim in the raw finding did **not** survive re-tracing and is corrected in place
+rather than transcribed: the helper is not consumed *solely* by the dead token.
 
 The tally was not taken on trust. This pass independently re-executed the load-bearing gates and
 the two discriminating tests (below), and separately ran the adversarial public-surface verifier
@@ -68,11 +88,13 @@ position be *executed rather than assumed*. All six requirements are **MET**.
 
 ## Gates actually executed on this tree during this pass
 
-Every row below was re-run first-hand on `66161c4` for this adjudication.
+Every row below was re-run first-hand on `f7cb987` for this adjudication (the rows were previously
+re-run on `66161c4`; results are identical, and `f7cb987` touches only spec prose, this report, and
+one `r11.json` note string).
 
 | Gate | Command | Result |
 |---|---|---|
-| R12 spec assertions | `node scripts/spec-assert.mjs collapse-three-collaborator-groups` | **20/20 passed** on `66161c4` (also 20/20 on `792797e`; 18/18 on `4f5c21c`), 6 requirements decided without an LLM pass |
+| R12 spec assertions | `node scripts/spec-assert.mjs collapse-three-collaborator-groups` | **20/20 passed** on `f7cb987` (also 20/20 on `66161c4` and `792797e`; 18/18 on `4f5c21c`), 6 requirements decided without an LLM pass |
 | R11 dependency budget | `node scripts/ratchets/r11-dependency-budget.mjs` | **exit 0** — `audit 9 / runnerMinutes 5 / provisioningDiagnosticRecorder 2 / provisioningDiagnosticWriteGate 2 / transcripts 1 / metrics-projection (CapacityProjectionPort) 2`. 【本轮复核】the `metrics-projection` entry is **present**, measuring the renamed symbol; the first pass recorded it as deleted, which is the defect `a87b179` fixed |
 | R11 paired test | `node --test scripts/ratchets/r11-dependency-budget.test.mjs` | **12 pass / 0 fail** |
 | R11 entry diff vs `main` | `git diff main -- scripts/ratchets/r11.json` | three entries **reduced** (4→2, 4→2, 2→1) with `symbol` byte-identical; one **re-pointed** under the SAME json key `guardrails-symbol-reference:metrics-projection` (`SemaphoreProjectionSource` → `CapacityProjectionPort`, count 2→2); `this.audit` and `this.runnerMinutes` do not appear in the diff at all, i.e. byte-identical as their scenario requires |
@@ -87,8 +109,25 @@ Every row below was re-run first-hand on `66161c4` for this adjudication.
 
 ## MET requirements
 
-**【本轮 adjudication 独立复核 · 66161c4】** The six verdicts below were re-derived from the tree in
-this pass, not carried forward. What each one rested on, re-executed:
+**【最新 adjudication 复核 · `f7cb987`】** All six were re-traced again on `f7cb987` before being
+folded here. The one-line live evidence per requirement, re-executed in this pass:
+
+| Id | Live evidence re-executed on `f7cb987` |
+|---|---|
+| `guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor` | R11 gate live: recorder **2**, gate **2**, transcripts **1**, metrics-projection **2 on the new symbol** (`CapacityProjectionPort`) |
+| `guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched` | Constructor still **11** parameters, read directly; bus still last and `@Optional()`; `guardrails.service.spec.ts` diff against `main` is empty |
+| `domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules` | `scripts/ratchets/r11.json` holds **6** entries (key list read programmatically, not grepped); R11 exits **0** |
+| `resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder` | `runner-metrics/capacity-projection.{port,service}.ts` both exist; pin test **5/5**; `semaphoreProjection` **0** tree-wide; `SemaphoreProjectionSource` **0** in the orchestrator (the reworded scenario's actual check) |
+| `session-transcript-persistence/transcript-capture-moves-out-of-the-tasks-context-without-moving-its-happens-before` | `apps/api/src/session-transcripts/` module exists; ordering test **2/2** including the discriminating negative control; `this.transcripts` has exactly one occurrence, `await this.transcripts.capture(taskId)` at `:2222`, ahead of both teardown sites (`:2500`, `:2743`); `guardrails.module.ts` is `imports: []` with the `forwardRef(() => TasksModule)` edge surviving only as a comment explaining its removal |
+| `task-provisioning-diagnostics/a-closed-diagnostics-write-gate-is-an-injected-no-op-not-a-branch-at-every-call-site` | `isEnabled()` has **zero** matches in `guardrails.service.ts`; the owner directory holds the moved wrappers behind `task-provisioning-diagnostics-observer-lifecycle.port.ts` |
+
+`node scripts/spec-assert.mjs collapse-three-collaborator-groups` independently reproduces
+**20/20 passing with all 6 requirements decided**, and the adversarial public-surface verifier
+returns `passed: true` / `findings: []` with all five lanes green. **No requirement lacks a traceable
+implementation.**
+
+**【上一轮 adjudication 独立复核 · 66161c4】** The six verdicts below were re-derived from the tree in
+that pass, not carried forward. What each one rested on, re-executed:
 
 | # | Requirement | The load-bearing thing I re-checked myself |
 |---|---|---|
@@ -277,6 +316,11 @@ capture-before-teardown. It does not. Re-traced live:
 
 **None.**
 
+The sweep confirms **6 total requirements across the 5 spec files**, matching the enumeration
+verified above — the count is taken from the spec files themselves, not from a carried-forward
+number, and all 6 have **live, re-executed evidence** (the per-requirement table at the top of the
+MET section is that evidence, re-run on `f7cb987`).
+
 All independently re-verified and consistent with the codebase, the ratchet files, the assertion
 harness (20/20 passing), the compiled test suites, and the discriminating negative-control tests.
 Every one of the six requirements has concrete, executable, currently-passing evidence tying it to
@@ -302,9 +346,14 @@ implementation for every one of the 6 requirements:
   — `session-transcripts/` exists with its port; the ordering test passes 2/2 including the
   discriminating negative control.
 - `resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder`
-  — `runner-metrics/capacity-projection.{port,service}.ts` exist, `semaphoreProjection` /
-  `SemaphoreProjectionSource` are zero tree-wide, the pin test passes 5/5, and r7 records the real
-  gain (guardrails 8→7, metrics 2→1).
+  — `runner-metrics/capacity-projection.{port,service}.ts` exist, the pin test passes 5/5, and r7
+  records the real gain (guardrails 8→7, metrics 2→1). **【本轮订正】** The earlier line here said
+  "`semaphoreProjection` / `SemaphoreProjectionSource` are zero tree-wide". Only the first half is
+  true. `semaphoreProjection` (the deleted forwarder) is **0** tree-wide, as required.
+  `SemaphoreProjectionSource` is **0 in the orchestrator** — which is the check — but very much
+  alive elsewhere, because it is the owner's own source type, the thing the owner is handed at boot.
+  That over-broad reading is precisely what `f7cb987` reworded the scenario to stop, and repeating it
+  here would have re-introduced the defect in the report after fixing it in the spec.
 - `domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules`
   — `r11.json` holds exactly the 6 declared collaborators, with `metrics-projection` **re-pointed**
   (not deleted) at count 2.
@@ -333,29 +382,54 @@ Files inspected (all under the repository root):
 
 ## Scope finding — implementation beyond the specs
 
-**One finding, non-blocking.** 【本轮复核】The first pass's "no scope creep found" was too strong.
+**One finding in three parts, non-blocking.** 【本轮复核】The first pass's "no scope creep found" was
+too strong. Confirmed again on `f7cb987`: **zero module files bind that token anywhere in the tree.**
 
 ### An unrequired DI-injectable write-timeout override for provisioning diagnostics
 
 A new DI token `TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT` lets a composition override the
-diagnostic write bound via `@Inject`, but **no module ever provides or binds it**:
+diagnostic write bound via `@Inject`, but **no module ever provides or binds it**. The three parts:
 
-- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:35-36`
-  — the token declaration itself (with the `taskProvisioningDiagnosticWriteTimeoutMs(configured?)`
-  override function that consumes it just below, at `:44-46`).
-- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:36-37`
-  — the corresponding unbound `@Optional() @Inject(TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT)
-  writeTimeoutMs?: number` constructor parameter (imported at `:12`), which is a **third**
-  constructor argument added with no requirement asking for a new configuration seam.
+1. **The unbound token.**
+   `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:35-36`
+   — the declaration itself. Nothing in `apps/api/src` provides it.
+2. **The resolution helper that reads it.**
+   `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:39-46`
+   — `taskProvisioningDiagnosticWriteTimeoutMs(configured?)`, the override-resolution function.
+3. **The third constructor parameter added to carry it.**
+   `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:36-37`
+   — the unbound `@Optional() @Inject(TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT) writeTimeoutMs?:
+   number` parameter on `TaskProvisioningDiagnosticsObserverLifecycleService` (imported at `:12`),
+   a configuration seam no requirement in `specs/task-provisioning-diagnostics` or `specs/guardrails`
+   asks for.
+
+**One sub-claim of the raw finding did not survive re-tracing, and is corrected rather than
+transcribed.** The raw text said the helper "exists solely to consume that unbound token". It does
+not: `taskProvisioningDiagnosticWriteTimeoutMs` is called at
+`task-provisioning-diagnostics-observer-lifecycle.port.ts:166`, inside the base class constructor,
+where it normalises **whatever** `writeTimeoutMs` arrives — including the value the orchestrator
+still hands over **positionally** at `guardrails.service.ts:834`. So part 2 is live code on the
+path that is actually used; what is dead is the *DI* route into it (parts 1 and 3). The finding is
+recorded with that correction because a scope note that overstates its own reach is the same
+failure mode this report's 更正 section exists to document.
+
+A second, milder observation surfaced while re-tracing part 2, and belongs with it: the orchestrator
+at `guardrails.service.ts:815-821` performs the identical `Number.isSafeInteger(...) && > 0 ?
+configured : TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS` normalisation inline, then hands the
+already-normalised value to the owner, which normalises it a second time at `:166`. That is
+duplicated logic rather than a defect — both copies agree, and the double application is idempotent
+— but it means the owner's helper and the orchestrator's inline branch are two expressions of one
+rule that could drift apart.
 
 Verified in this pass: a tree-wide grep for the token (word-boundary, so the unrelated
-`..._TIMEOUT_MS` constant is excluded) returns **exactly those two files** — a definition and a
+`..._TIMEOUT_MS` constant is excluded) returns **exactly two files** — a definition and a
 consumer, and no provider anywhere. A grep restricted to `--include='*.module.ts'` across
 `apps/api/src` returns **zero** matches, so the token is bound by no module at all; the module that
 does wire this owner (`task-provisioning-diagnostics.module.ts`) binds the recorder, the write gate
 and `TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE` → `useExisting`, and never the timeout. No
 test exercises it through DI either — the owner's spec only asserts the plain
-`TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS` constant (`:367`, `:371`).
+`TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS` constant and calls the helper directly (`:370`,
+`:374`).
 
 No requirement in `specs/task-provisioning-diagnostics/spec.md` or `specs/guardrails/spec.md` asks
 for a new configuration seam. The pre-move code configured this bound only through the
@@ -371,8 +445,12 @@ new, unused surface introduced during the relocation rather than a preserved beh
 - It changes no behaviour. `@Optional()` on an unbound token resolves to `undefined`, and
   `taskProvisioningDiagnosticWriteTimeoutMs(undefined)` returns the same 2000 ms default the
   pre-move code used; the spec-configured bound that the requirement actually cares about travels
-  the positional path, not this one.
+  the positional path (`guardrails.service.ts:815-836` → `:834`), not this one. Re-confirmed live:
+  that orchestrator path is byte-unchanged from `main`.
 - It touches no public surface (`internalOnly` is already declared `changed`).
+- It is not a *spec* defect either: no requirement is made ambiguous, untestable or contradictory by
+  it — the specs simply do not mention it. So it belongs in neither `tasks.md` nor `design.md`
+  Open Questions, and it is recorded here.
 
 So it is neither an UNMET code task nor an archive-blocking sidecar defect. Recommended follow-up
 (a separate, one-line cut): drop the token and the third constructor parameter unless a composition
@@ -424,8 +502,9 @@ to a specific requirement/scenario in the specs.
 
 ```json
 [
-  "DI-injectable override token TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT lets a composition override the diagnostics write bound via @Inject, but no module ever provides/binds it — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:35-36",
-  "Corresponding unbound @Optional() constructor parameter consuming that dead token, adding a third constructor arg with no requirement asking for a new configuration seam — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:36-37"
+  "Unbound DI override token TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT lets a composition override the diagnostics write bound via @Inject, but no module in apps/api/src provides or binds it (verified: zero *.module.ts matches) — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:35-36",
+  "taskProvisioningDiagnosticWriteTimeoutMs() is the override-resolution function that reads that unbound token's value; re-tracing corrects the raw claim that it exists SOLELY for it — it is also called at port.ts:166 to normalise the bound the orchestrator still hands over positionally through its own unchanged config.diagnosticWriteTimeoutMs path (guardrails.service.ts:815-836, duplicating the same normalisation inline) — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:39-46",
+  "Third constructor parameter added to TaskProvisioningDiagnosticsObserverLifecycleService (@Optional() @Inject(TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT) writeTimeoutMs) for a configuration seam no requirement in specs/task-provisioning-diagnostics or specs/guardrails asks for — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:36-37 (import at :12)"
 ]
 ```
 
@@ -433,17 +512,24 @@ to a specific requirement/scenario in the specs.
 
 ## Archive readiness
 
-Nothing routed to `tasks.md` and nothing routed to `design.md` Open Questions. No archive-blocking
+Nothing routed to `tasks.md` and nothing routed to `design.md` Open Questions — confirmed by
+inspection in this pass: `tasks.md` contains **no** `## Track: verify-reopened` section, and no
+`design.md` exists for this change (none is needed). No archive-blocking
 spec defect: the `surface-impact.json` sidecar's claims were executed rather than trusted —
 `CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) node scripts/public-surface-adversarial.mjs verify
-collapse-three-collaborator-groups` was **re-run on `66161c4` in this pass** and returned
+collapse-three-collaborator-groups` was **re-run on `f7cb987` in this pass** and returned
 `"passed": true`, `command.exitCode: 0`, all five lanes (`sidecar`, `registry`, `restMetadata`,
 `mcpSdkMetadata`, `behavior`) `passed: true`, `findings: []`, with `tasks.transcript` /
-`get_transcript` selected as declared. There is therefore **no undeclared public impact and no false
+`get_transcript` selected as declared and both `publicV1` and `mcp` resolving to their declared
+`derived` status. There is therefore **no undeclared public impact and no false
 protocol exclusion** — the two conditions that would make the sidecar claim false and hold the
-archive. The single scope finding is internal-only, behaviour-neutral
+archive. The scope finding (three parts, one owner directory) is internal-only, behaviour-neutral
 and violates no requirement, so it does not gate archive. **This change is verification-clean for
 archive.**
+
+Final three-way tally for this pass — `reopenedTasks: []`, `specDefects: []`,
+`blockingSpecDefects: []`, `reclassifiedMet: []` (nothing arrived as raw-unmet, so nothing was
+reclassified; the six requirements are MET as already adjudicated and re-confirmed here).
 
 ---
 
