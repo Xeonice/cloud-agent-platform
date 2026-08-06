@@ -9,7 +9,7 @@ import {
 import { open } from 'node:fs/promises';
 import * as path from 'node:path';
 import { CAST_CONTENT_TYPE } from '@cap-console/contracts';
-import { resolveWorkspaceDir } from './session-transcript.service';
+import { resolveWorkspaceDir } from '@/session-transcripts/session-transcript.service';
 // Straight from the package that defines it — `terminal/snapshot` only
 // re-exports it, so importing it from there made tasks depend on terminal for
 // a constant terminal does not own.

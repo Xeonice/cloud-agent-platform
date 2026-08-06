@@ -6,6 +6,7 @@ import { buildLoggerOptions } from './observability/logger.options';
 import { PrismaModule } from './prisma/prisma.module';
 import { ReposModule } from './repos/repos.module';
 import { TasksModule } from './tasks/tasks.module';
+import { SessionTranscriptModule } from './session-transcripts/session-transcript.module';
 import { TerminalModule } from './terminal/terminal.module';
 import { WriteLockModule } from './write-lock/write-lock.module';
 import { CredsModule } from './creds/creds.module';
@@ -141,6 +142,12 @@ import { ConsoleBuildGuard } from './auth/console-build.guard';
     HealthModule,
     ReposModule,
     TasksModule,
+    // collapse-three-collaborator-groups N3 — the durable transcript capture +
+    // read owner, moved out of `TasksModule`. `@Global()`, like `AuditModule`:
+    // the orchestrator's terminal chokepoints, the console history controller,
+    // `/v1` and `/mcp` all reach it by token without importing each other, which
+    // is what let `GuardrailsModule` drop its `forwardRef(TasksModule)` edge.
+    SessionTranscriptModule,
     WriteLockModule,
     TerminalModule,
     GuardrailsModule,

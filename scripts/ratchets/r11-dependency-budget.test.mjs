@@ -74,9 +74,18 @@ test('the committed baseline equals a live re-count of the real tree', () => {
     // (`runnerMinuteIntervals()`) was deleted; the five write references on the
     // admission/terminal seam are retained by design, so 0 is not available.
     [entryKey('this.runnerMinutes')]: 5,
-    [entryKey('provisioningDiagnosticRecorder')]: 4,
-    [entryKey('provisioningDiagnosticWriteGate')]: 4,
-    [entryKey('this.transcripts')]: 2,
+    // collapse-three-collaborator-groups: three floors, three causes. The two
+    // diagnostics entries stop at 2 apiece because the constructor parameter and
+    // the legacy inline-admission pass-through both survive this change;
+    // transcripts stops at 1 because the surviving reference is the AWAITED
+    // capture that carries a happens-before, not a call anyone may delete. Only
+    // metrics-projection did NOT reach zero: the port extraction renamed its
+    // symbol (`SemaphoreProjectionSource` -> `CapacityProjectionPort`) while the
+    // orchestrator kept naming it twice, so the entry follows the collaborator
+    // rather than the string and stays at 2.
+    [entryKey('provisioningDiagnosticRecorder')]: 2,
+    [entryKey('provisioningDiagnosticWriteGate')]: 2,
+    [entryKey('this.transcripts')]: 1,
     [entryKey('metrics-projection')]: 2,
   });
 });
@@ -115,15 +124,19 @@ class R11ProbeExtraAuditCall {
   const said = red.problems.join('\n');
   assert.match(said, new RegExp(`${KEY_PREFIX}:this\\.audit`));
   assert.match(said, new RegExp(`measured ${after} exceeds the baselined ${before}`));
-  // Only the collaborator that rose is named — the other five stay quiet.
+  // Only the collaborator that rose is named — the other four stay quiet.
   assert.equal(said.includes('this.transcripts'), false);
 });
 
 // --------------------------------------------------------- injection probe 2
 test('probe: removing a call site without shrinking the baseline in the same commit is red', () => {
-  const anchor = 'if (!this.transcripts) return;';
+  // The old anchor was the presence guard beside the capture call, which
+  // collapse-three-collaborator-groups deleted — that removal is exactly what
+  // took this entry from 2 to 1. The anchor is re-derived onto the reference
+  // that SURVIVED, so the probe keeps removing a real one.
+  const anchor = 'await this.transcripts.capture(taskId);';
   assert.ok(REAL_SOURCE.includes(anchor), 'probe anchor drifted — re-derive it before trusting this test');
-  const shrunk = REAL_SOURCE.replace(anchor, 'return;');
+  const shrunk = REAL_SOURCE.replace(anchor, 'await Promise.resolve();');
   const before = measureSource(REAL_SOURCE).measured[entryKey('this.transcripts')];
   const after = measureSource(shrunk).measured[entryKey('this.transcripts')];
   assert.equal(after, before - 1, 'the probe must remove exactly one reference');
@@ -133,7 +146,11 @@ test('probe: removing a call site without shrinking the baseline in the same com
   const said = red.problems.join('\n');
   assert.match(said, new RegExp(`${KEY_PREFIX}:this\\.transcripts`));
   assert.match(said, /stale entry/);
-  assert.match(said, new RegExp(`shrink count to ${after}`));
+  // At a floor of 1 the removal empties the entry, so the comparator asks for
+  // the ENTRY to be deleted rather than for a smaller count. Both wordings are
+  // the same verdict: a removal that does not travel with its baseline edit.
+  assert.equal(after, 0);
+  assert.match(said, /delete the entry in the same PR as the fix/);
 });
 
 // ---------------------------------------------------------------- the endgame
@@ -153,7 +170,7 @@ test('a collaborator burned to zero keeps being measured after its entry is dele
   assert.equal(regrown.exitCode, 1);
   assert.match(
     regrown.problems.join('\n'),
-    new RegExp(`${KEY_PREFIX}:this\\.transcripts: 2 measured violation\\(s\\) with no baseline entry`),
+    new RegExp(`${KEY_PREFIX}:this\\.transcripts: 1 measured violation\\(s\\) with no baseline entry`),
   );
 });
 
@@ -183,7 +200,7 @@ test('references with no baseline file at all are red', () => {
 
 test("an entry's symbol documentation may not drift from the gate's declaration", () => {
   const drifted = JSON.parse(JSON.stringify(REAL_BASELINE));
-  drifted[entryKey('metrics-projection')].symbol = 'SomethingElse';
+  drifted[entryKey('provisioningDiagnosticRecorder')].symbol = 'SomethingElse';
   const result = gate(REAL_SOURCE, drifted);
   assert.equal(result.exitCode, 1);
   assert.match(result.problems.join('\n'), /must not drift from the declaration/);

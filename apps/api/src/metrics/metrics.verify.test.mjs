@@ -69,6 +69,28 @@ const { MetricsResponseSchema } = await import(
 );
 
 /** A live, mutable fake of the narrow SemaphoreProjectionSource. */
+/**
+ * A capacity-projection PORT double over one semaphore reading
+ * (collapse-three-collaborator-groups).
+ *
+ * It derives with the SAME compiled `projectCapacity` / `buildSlotOccupancy`
+ * the real owner calls, from one reading, so what it returns is what the owner
+ * would return for that state — the point of the double is to stand in for the
+ * OWNER's composition, never to re-implement the derivation the assertions
+ * below are about.
+ */
+function projectionDouble(sem) {
+  return {
+    bindSource() {},
+    project: () => ({
+      capacity: projectCapacity(sem),
+      occupancy: buildSlotOccupancy(sem),
+      runningTaskIds: sem.snapshotRunning(),
+    }),
+    runningTaskIds: () => sem.snapshotRunning(),
+  };
+}
+
 function makeSemaphore(ceiling, running, queued) {
   return {
     maxConcurrentTasks: ceiling,
@@ -463,9 +485,11 @@ test('additive contract: a prior-shape /metrics payload (no taskSamples) still p
 
 test('additive contract: real build() response keeps every prior field name/type and gains taskSamples', () => {
   const sem = makeSemaphore(2, ['t1'], []);
-  const guardrails = {
-    semaphoreProjection: () => sem,
-  };
+  // The capacity projection arrives from its OWNER's port double now, not from
+  // a fake accessor on guardrails (collapse-three-collaborator-groups). The
+  // double derives with the SAME compiled functions the owner uses, so the
+  // response under assertion is still built from real derivations.
+  const capacityProjection = projectionDouble(sem);
   // Running intervals arrive through the runner-minutes PORT double now, not
   // through a fake accessor on guardrails (extract-runner-minutes-ledger).
   const runnerMinutes = {
@@ -477,7 +501,7 @@ test('additive contract: real build() response keeps every prior field name/type
     ['t1', { sample: ctSample('t1', 5, 1.26e8), freshAtMs: 1_000, misses: 0 }],
   ]);
 
-  const res = new MetricsService(guardrails, s, runnerMinutes).build(1_000);
+  const res = new MetricsService(capacityProjection, s, runnerMinutes).build(1_000);
 
   // The whole composed response validates against the shared zod contract.
   const parsed = MetricsResponseSchema.parse(res);
@@ -536,9 +560,7 @@ test('additive contract: real build() response keeps every prior field name/type
 
 test('additive provisioning diagnostics collector is cache-only and isolated on failure', () => {
   const sem = makeSemaphore(1, [], []);
-  const guardrails = {
-    semaphoreProjection: () => sem,
-  };
+  const capacityProjection = projectionDouble(sem);
   // Empty ledger, supplied through the port double (extract-runner-minutes-ledger).
   const runnerMinutes = { intervals: () => [] };
   const sampler = makeSampler();
@@ -567,7 +589,7 @@ test('additive provisioning diagnostics collector is cache-only and isolated on 
   };
 
   const served = new MetricsService(
-    guardrails,
+    capacityProjection,
     sampler,
     runnerMinutes,
     diagnostics,
@@ -581,7 +603,7 @@ test('additive provisioning diagnostics collector is cache-only and isolated on 
     },
   };
   const degraded = new MetricsService(
-    guardrails,
+    capacityProjection,
     sampler,
     runnerMinutes,
     failing,

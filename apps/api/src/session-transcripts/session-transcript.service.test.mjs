@@ -19,7 +19,11 @@
  *
  * The archive is verified to be GZIP (magic bytes) and to gunzip back to the
  * EXACT raw input — proving D2 stores raw JSONL, not parsed turns. (Module
- * registration is the Integration track's I.1 — not exercised here.)
+ * registration lives in `session-transcript.module.ts` — not exercised here.)
+ *
+ * collapse-three-collaborator-groups N3 moved this harness with its subject out
+ * of `tasks/`. Every assertion below is unchanged: the move relocated ownership,
+ * not behaviour.
  *
  * Compilation tolerates the (expected, until Track 1's `prisma generate`) type
  * error on `prisma.sessionTranscript`: tsc still EMITS the JS, so we ignore a

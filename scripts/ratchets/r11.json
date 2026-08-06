@@ -30,47 +30,42 @@
     "concern": "runner 计费（admission/terminal 接缝上的五条写引用，读面已移交 runner-metrics 的 RUNNER_MINUTES_PORT 属主）"
   },
   "guardrails-symbol-reference:provisioningDiagnosticRecorder": {
-    "count": 4,
+    "count": 2,
     "samples": [
-      "guardrails.service.ts:544 private readonly provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort,",
-      "guardrails.service.ts:589 this.provisioningDiagnosticRecorder,",
-      "guardrails.service.ts:2648 const recorder = this.provisioningDiagnosticRecorder;",
-      "guardrails.service.ts:2716 const recorder = this.provisioningDiagnosticRecorder;"
+      "guardrails.service.ts:713 private readonly provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort,",
+      "guardrails.service.ts:744 recorder: this.provisioningDiagnosticRecorder,"
     ],
-    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅。collapse-three-collaborator-groups：本条目 4 → 2，只降不删——live count 仍大于 0。对账（防伪造）：4 − 2 = 2，恰等于随两个 wrapper 方法（tryBegin/tryResumeProvisioningDiagnostics）一并删除的两处局部别名 `const recorder = this.provisioningDiagnosticRecorder;`；被测符号串仍是 `provisioningDiagnosticRecorder`，没有改名。2 是用本闸门自己的 measureSource 跑改动后的 guardrails.service.ts 量出来的，不是从删了几处调用推算的。地板是 2 而不是 0，原因是结构性的、且本刀范围之外：一处是构造参数声明本身，另一处是把它交给 legacy inline-admission 适配器的透传——编排器把两个协作者读一次、同时喂给诊断属主和这条透传。legacy 退役之前 0 不可达；届时按既有约定在同一 commit 删除本条目",
     "symbol": "provisioningDiagnosticRecorder",
     "concern": "diagnostics（开通诊断记录改订阅）"
   },
   "guardrails-symbol-reference:provisioningDiagnosticWriteGate": {
-    "count": 4,
+    "count": 2,
     "samples": [
-      "guardrails.service.ts:547 private readonly provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,",
-      "guardrails.service.ts:590 this.provisioningDiagnosticWriteGate,",
-      "guardrails.service.ts:2647 const gate = this.provisioningDiagnosticWriteGate;",
-      "guardrails.service.ts:2715 const gate = this.provisioningDiagnosticWriteGate;"
+      "guardrails.service.ts:716 private readonly provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,",
+      "guardrails.service.ts:745 writeGate: this.provisioningDiagnosticWriteGate,"
     ],
-    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅。collapse-three-collaborator-groups：本条目 4 → 2，只降不删。对账（防伪造）：4 − 2 = 2，恰等于随两个 wrapper 方法一并删除的两处局部别名 `const gate = this.provisioningDiagnosticWriteGate;`。闸门求值（isEnabled()）整体离开了编排器：闸门关闭、未绑定、抛错三条路径现在都由 task-provisioning-diagnostics 的属主内部答成同一个「没有 observer」结果，调用方分不出开关状态，也就没有分支可写错。地板 2 的成因与 recorder 完全相同（构造参数 + legacy 透传），故两条目同降同停；legacy 退役前 0 不可达",
     "symbol": "provisioningDiagnosticWriteGate",
     "concern": "diagnostics（写闸门 isEnabled(): boolean 是回执型协作，燃尽方式随 recorder 一并重议）"
   },
   "guardrails-symbol-reference:this.transcripts": {
-    "count": 2,
+    "count": 1,
     "samples": [
-      "guardrails.service.ts:1841 if (!this.transcripts) return;",
-      "guardrails.service.ts:1843 await this.transcripts.capture(taskId);"
+      "guardrails.service.ts:2222 await this.transcripts.capture(taskId);"
     ],
-    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
+    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅。collapse-three-collaborator-groups：本条目 2 → 1，只降不删。对账（防伪造）：2 − 1 = 1，恰等于本次删除的那一处存在性守卫 `if (!this.transcripts) return;`——端口改为非可选注入（组合侧绑定真实捕获属主，未组合时绑定无操作替身，位置构造走参数默认值），于是编排器手里永远是一个实现，没有存在性可判。地板是 1 而不是 0，且原因必须记在这里而不是留成无解的缺口：幸存的那一处引用是两个终态收口处**被 await** 的 capture 调用，它排在只在停止路径上的 teardownSandbox 之前，归档写必须发生在容器还在的时候。这个 happens-before 是由 await 本身承载的；删掉这处调用换成事件，就是把一条正确性保证交给框架并不承诺的顺序。故本组**不是燃尽**，把它记成归零的改动应当被拒绝 ⚠ 1 是**地板不是总量**：本刀把可选注入反转成 no-op 默认值（`private readonly transcripts: ITranscriptCapture = NOOP_SESSION_TRANSCRIPT_CAPTURE`），守卫引用是真的没了，但编排器因此新增两处对该协作者的点名——`:112` 的 import 与 `:706` 的默认值——而它们不含 `this.transcripts`，本符号看不见。这与 metrics-projection 那次的**改名**不同（符号未改、降数为真），但同属「一处引用消失、另一处以别的标识符出现」，记在这里免得下一位作者把 1 读成耦合总量。",
     "symbol": "this.transcripts",
     "concern": "transcript 收尾（capture 改订阅）"
   },
   "guardrails-symbol-reference:metrics-projection": {
     "count": 2,
     "samples": [
-      "guardrails.service.ts:94 import type { SemaphoreProjectionSource } from '@/runner-metrics/metrics-projection';",
-      "guardrails.service.ts:3536 semaphoreProjection(): SemaphoreProjectionSource {"
+      "guardrails.service.ts:110   type CapacityProjectionPort,",
+      "guardrails.service.ts:912         .get<CapacityProjectionPort>(CAPACITY_PROJECTION_PORT, {"
     ],
-    "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅（本 change add-domain-event-bus 只建总线、零订阅者、零调用移除，故播种即现状）；条目归零即在同一 commit 删除，全部归零后删除本文件",
-    "symbol": "SemaphoreProjectionSource",
-    "concern": "metrics（投影源类型；guardrails 停止导出投影即归零）"
+    "change": "阶段 4：collapse-three-collaborator-groups：本条**未下降**，2 → 2。投影抽成 port 时符号由 SemaphoreProjectionSource 改名为 CapacityProjectionPort，旧字符串归零而耦合一处未减（旧 2 = import + 返回类型；新 2 = import + onModuleInit 里 .get(CAPACITY_PROJECTION_PORT).bindSource(this.semaphore)）。本刀最初据“归零”把条目删除，被对抗验证的 correctness 透镜揪出：那是改名而非移除，删条目让耦合彻底失measure，比改动前更糟。条目据此恢复并改测新符号。注意 DI token CAPACITY_PROJECTION_PORT 另有 2 处点名，本符号未覆盖，故 2 是耦合的**地板**而非总量。真正归零的前提是 semaphore 状态本身迁出 guardrails——本刀没做，投影只搬走了派生函数。",
+    "symbol": "CapacityProjectionPort",
+    "concern": "metrics（容量投影；状态仍在 guardrails，编排器经 port 把 semaphore 推给所有者）"
   }
 }

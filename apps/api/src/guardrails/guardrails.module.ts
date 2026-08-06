@@ -1,6 +1,5 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { TasksModule } from '@/tasks/tasks.module';
 import {
   DEFAULT_GUARDRAILS_CONFIG,
   GuardrailsConfig,
@@ -8,7 +7,11 @@ import {
   TRANSCRIPT_SERVICE_TOKEN,
   type ITranscriptCapture,
 } from './guardrails.service';
-import { SessionTranscriptService } from '@/tasks/session-transcript.service';
+import {
+  NOOP_SESSION_TRANSCRIPT_CAPTURE,
+  SESSION_TRANSCRIPT_CAPTURE,
+  type SessionTranscriptCapturePort,
+} from '@/session-transcripts/session-transcript.port';
 import { PrismaService } from '@/prisma/prisma.service';
 import { RetentionCleaner } from './retention-cleaner';
 import {
@@ -56,7 +59,13 @@ import {
  * port, not a concrete impl.
  */
 @Module({
-  imports: [forwardRef(() => TasksModule)],
+  // collapse-three-collaborator-groups N3: NO imports. The one edge this module
+  // had — `forwardRef(() => TasksModule)` — existed solely so the terminal
+  // chokepoints could reach the transcript capture service that used to be
+  // registered there. The capture owner now lives in its own `@Global()` module,
+  // and `TasksService` was never imported here anyway (the orchestrator resolves
+  // it lazily by token through `ModuleRef` with `strict: false`).
+  imports: [],
   providers: [
     {
       provide: GuardrailsService,
@@ -75,12 +84,12 @@ import {
         // guardrails-only unit context still constructs without a database —
         // the bootstrap ceiling load then degrades to the env seed.
         { token: PrismaService, optional: true },
-        // persist-session-transcripts I.2 — the durable transcript capture
-        // provider, supplied under TRANSCRIPT_SERVICE_TOKEN (re-provided below
-        // from the already-imported TasksModule). Optional so a guardrails-only
-        // unit context still constructs without it; when absent the terminal
-        // chokepoints skip capture and proceed exactly as before.
-        { token: TRANSCRIPT_SERVICE_TOKEN, optional: true },
+        // collapse-three-collaborator-groups N3 — the durable transcript capture
+        // port, NON-optional. The binding below always resolves it: to the real
+        // capture owner when its module is composed, to the no-op stand-in when
+        // it is not. So the orchestrator receives an implementation either way
+        // and no longer branches on a collaborator's presence.
+        TRANSCRIPT_SERVICE_TOKEN,
         { token: TASK_PROVISIONING_DIAGNOSTIC_RECORDER, optional: true },
         { token: TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE, optional: true },
         // add-domain-event-bus 4.2 — THIS provider is a `useFactory` with a
@@ -100,6 +109,9 @@ import {
         provisionLookup?: ProvisionLookup,
         audit?: AuditRecorderPort,
         prisma?: PrismaService,
+        // Always supplied — see the non-optional inject entry above. The `?`
+        // survives only because TypeScript forbids a required parameter after
+        // an optional one, and the parameters before this are genuinely optional.
         transcripts?: ITranscriptCapture,
         provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort,
         provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,
@@ -119,15 +131,22 @@ import {
           bus,
         ),
     },
-    // persist-session-transcripts I.2 — re-provide the durable
-    // SessionTranscriptService (exported by the already-imported TasksModule,
-    // see I.1) under the token the GuardrailsService capture call sites resolve.
-    // `useExisting` reuses the single TasksModule-owned instance rather than
-    // constructing a second one, mirroring the GUARDRAILS_SERVICE_TOKEN /
-    // TERMINAL_GATEWAY_TOKEN re-provide pattern used across the module cycle.
+    // collapse-three-collaborator-groups N3 — bind the token the orchestrator's
+    // capture call site resolves to the capture PORT the transcript context
+    // exports, and fall back to the no-op stand-in when no capture provider is
+    // composed (a guardrails-only unit context, say). This is what makes the
+    // injection above non-optional without making the transcript module a hard
+    // dependency: the orchestrator always gets an implementation, so it has no
+    // presence to branch on, and an unwired deployment captures nothing instead
+    // of crashing. The port lookup is optional HERE — exactly one place — rather
+    // than at every call site, which was the shape being removed.
     {
       provide: TRANSCRIPT_SERVICE_TOKEN,
-      useExisting: SessionTranscriptService,
+      inject: [{ token: SESSION_TRANSCRIPT_CAPTURE, optional: true }],
+      useFactory: (
+        capture?: SessionTranscriptCapturePort,
+      ): SessionTranscriptCapturePort =>
+        capture ?? NOOP_SESSION_TRANSCRIPT_CAPTURE,
     },
     {
       provide: SANDBOX_RETENTION_STORE,

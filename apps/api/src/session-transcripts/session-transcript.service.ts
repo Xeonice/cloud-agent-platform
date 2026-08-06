@@ -10,11 +10,13 @@ import {
 import { parseTranscript } from '@/sandbox/parse-transcript';
 import type { TranscriptSource } from '@/sandbox/transcript-source';
 import { type RuntimeId } from '@/agent-runtime/agent-runtime.port';
-import {
-  AGENT_RUNTIME_REGISTRY_TOKEN,
-  type IAgentRuntimeRegistry,
-} from './tasks.service';
 import { PrismaService } from '@/prisma/prisma.service';
+import {
+  TRANSCRIPT_RUNTIME_REGISTRY,
+  type CaptureStatus,
+  type SessionTranscriptCapturePort,
+  type TranscriptRuntimeRegistry,
+} from './session-transcript.port';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -39,9 +41,6 @@ export function resolveWorkspaceDir(taskId: string): string {
   return path.join(root, taskId);
 }
 
-/** Outcome flag for {@link SessionTranscriptService.capture}. */
-export type CaptureStatus = 'captured' | 'no-rollout' | 'error';
-
 /**
  * Durable transcript persistence (persist-session-transcripts, design D2/D3).
  *
@@ -60,9 +59,16 @@ export type CaptureStatus = 'captured' | 'no-rollout' | 'error';
  * {@link capture} is BEST-EFFORT: every failure path is logged and swallowed, a
  * status flag is returned, and it NEVER throws — so a terminal teardown / slot-
  * free path that awaits it is never blocked or failed by a capture error.
+ *
+ * collapse-three-collaborator-groups N3: this owner lives in its OWN context
+ * directory rather than inside `tasks`, and the orchestrator reaches it through
+ * {@link SessionTranscriptCapturePort} — so the module edge that existed solely
+ * to reach this class is gone. The capture call itself is unchanged: it is still
+ * AWAITED at the terminal chokepoints, before the stop-only teardown, because
+ * the archive write must happen while the container still exists.
  */
 @Injectable()
-export class SessionTranscriptService {
+export class SessionTranscriptService implements SessionTranscriptCapturePort {
   private readonly logger = new Logger(SessionTranscriptService.name);
 
   /**
@@ -77,8 +83,8 @@ export class SessionTranscriptService {
   constructor(
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     private readonly prisma: PrismaService,
-    @Inject(AGENT_RUNTIME_REGISTRY_TOKEN)
-    private readonly runtimes: IAgentRuntimeRegistry,
+    @Inject(TRANSCRIPT_RUNTIME_REGISTRY)
+    private readonly runtimes: TranscriptRuntimeRegistry,
   ) {}
 
   /** Absolute path to a task's transcript archive on the durable volume. */

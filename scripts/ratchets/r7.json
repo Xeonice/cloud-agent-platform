@@ -58,12 +58,13 @@
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
   },
   "cross-context-import:apps/api/src/guardrails/guardrails.service.ts": {
-    "count": 8,
+    "count": 7,
     "samples": [
-      "apps/api/src/guardrails/guardrails.service.ts:80 imports '@/forge/forge-target-resolver'",
-      "apps/api/src/guardrails/guardrails.service.ts:81 imports '@/forge/forge-registry'"
+      "apps/api/src/guardrails/guardrails.service.ts:94 imports '@/forge/forge-target-resolver'",
+      "apps/api/src/guardrails/guardrails.service.ts:96 imports '@/forge/task-branch-resolver'",
+      "apps/api/src/guardrails/guardrails.service.ts:151 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
     ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）。collapse-three-collaborator-groups：8 → 7。对账（防伪造）：8 − 7 = 1，恰等于本次删除的仅类型导入 `@/runner-metrics/metrics-projection`（投影访问器一并删除）。本刀新增的两处导入都不计数，因为两者都是合法形态的 `*.port.ts`：`@/runner-metrics/capacity-projection.port`（投影属主）与 `@/session-transcripts/session-transcript.port`（转录捕获端口的无操作替身）。7 是用闸门自己跑出来的活计数，不是从删了几行推算的"
   },
   "cross-context-import:apps/api/src/inline-admission/inline-admission-state.ts": {
     "count": 1,
@@ -125,12 +126,11 @@
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
   },
   "cross-context-import:apps/api/src/metrics/metrics.service.ts": {
-    "count": 2,
+    "count": 1,
     "samples": [
-      "apps/api/src/metrics/metrics.service.ts:8 imports '@/guardrails/guardrails.service'",
-      "apps/api/src/metrics/metrics.service.ts:9 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service'"
+      "apps/api/src/metrics/metrics.service.ts:8 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service'"
     ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）。collapse-three-collaborator-groups：2 → 1。对账（防伪造）：2 − 1 = 1，恰等于本次删除的 `@/guardrails/guardrails.service` 导入——semaphoreProjection() 是本文件对编排器的唯一用途，读面改走 `@/runner-metrics/capacity-projection.port`（合法形态，不计数），导入随之消失"
   },
   "cross-context-import:apps/api/src/observability/logger.options.ts": {
     "count": 1,
@@ -289,6 +289,14 @@
     ],
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
   },
+  "cross-context-import:apps/api/src/session-transcripts/session-transcript.service.ts": {
+    "count": 2,
+    "samples": [
+      "apps/api/src/session-transcripts/session-transcript.service.ts:10 imports '@/sandbox/parse-transcript'",
+      "apps/api/src/session-transcripts/session-transcript.service.ts:11 imports '@/sandbox/transcript-source'"
+    ],
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢） || collapse-three-collaborator-groups：转录归档属主自 tasks/ 迁出到 session-transcripts/，r7 以路径为键，故旧键删除、新键播种在同一 commit——留下旧键是过期条目，播种成 0 是空壳条目，两者一样红。计数与内容一处未变（同一份源码，只换了目录），仍是 sandbox 的 parse-transcript / transcript-source 两处；其燃尽方式随 sandbox-provisioning 的 *.port.ts 化一并重议"
+  },
   "cross-context-import:apps/api/src/settings/forge-credential.service.ts": {
     "count": 1,
     "samples": [
@@ -342,24 +350,17 @@
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
   },
   "cross-context-import:apps/api/src/tasks/session-cast.controller.ts": {
-    "count": 1,
+    "count": 2,
     "samples": [
+      "apps/api/src/tasks/session-cast.controller.ts:12 imports '@/session-transcripts/session-transcript.service'",
       "apps/api/src/tasks/session-cast.controller.ts:17 imports '@/session-recording/recording-policy'"
     ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
+    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢） || collapse-three-collaborator-groups：转录属主迁出后，本文件对 resolveWorkspaceDir 的导入从同目录变成跨上下文（task-execution → platform-ops），比较器向上 fail-closed，故 1 → 2 与迁出同 commit 记账。燃尽方式是把工作区路径解析提升成双方共享的口径，不是把属主搬回 tasks/"
   },
   "cross-context-import:apps/api/src/tasks/session-history.controller.ts": {
     "count": 1,
     "samples": [
       "apps/api/src/tasks/session-history.controller.ts:2 imports '@/sandbox/sandbox.module'"
-    ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
-  },
-  "cross-context-import:apps/api/src/tasks/session-transcript.service.ts": {
-    "count": 2,
-    "samples": [
-      "apps/api/src/tasks/session-transcript.service.ts:10 imports '@/sandbox/parse-transcript'",
-      "apps/api/src/tasks/session-transcript.service.ts:11 imports '@/sandbox/transcript-source'"
     ],
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
   },
@@ -757,6 +758,13 @@
     ],
     "change": "阶段 5 燃尽（四核心域 store 化）"
   },
+  "prisma-outside-store:apps/api/src/session-transcripts/session-transcript.service.ts": {
+    "count": 1,
+    "samples": [
+      "apps/api/src/session-transcripts/session-transcript.service.ts:13 reaches Prisma outside a store file"
+    ],
+    "change": "阶段 5 燃尽（四核心域 store 化） || collapse-three-collaborator-groups：同上，路径键随属主迁出改键；该文件仍直接读写 Prisma（转录索引行），store 化仍是阶段 5 的事"
+  },
   "prisma-outside-store:apps/api/src/settings/forge-credential.service.ts": {
     "count": 1,
     "samples": [
@@ -791,13 +799,6 @@
     "samples": [
       "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.service.ts:27 reaches Prisma outside a store file",
       "apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.service.ts:30 reaches Prisma outside a store file"
-    ],
-    "change": "阶段 5 燃尽（四核心域 store 化）"
-  },
-  "prisma-outside-store:apps/api/src/tasks/session-transcript.service.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/tasks/session-transcript.service.ts:17 reaches Prisma outside a store file"
     ],
     "change": "阶段 5 燃尽（四核心域 store 化）"
   },

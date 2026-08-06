@@ -22,7 +22,7 @@ import {
 import { RUNTIME_REGISTRY, CLAUDE_AUTH_SOURCE } from '@/sandbox/sandbox.module';
 import { GuardrailsModule } from '@/guardrails/guardrails.module';
 import { GuardrailsService } from '@/guardrails/guardrails.service';
-import { SessionTranscriptService } from './session-transcript.service';
+import { SessionTranscriptService } from '@/session-transcripts/session-transcript.service';
 import { SandboxEnvironmentsModule } from '@/sandbox-environments/sandbox-environments.module';
 import { ForgeModule } from '@/forge/forge.module';
 import {
@@ -45,12 +45,13 @@ import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
  * The `GuardrailsService` is re-provided under the `GUARDRAILS_SERVICE_TOKEN` so
  * `TasksService` can inject it with `@Optional()` without creating the cycle.
  *
- * persist-session-transcripts I.1: the durable {@link SessionTranscriptService}
- * is registered here (the durable archive + index provider Tracks 2/3/4 wrote
- * against). It is bound to the {@link TRANSCRIPT_STORE} token the read-path
- * controller injects (durable-first read + read-through backfill), and exported
- * so the guardrails capture chokepoints (I.2) can resolve it from this module
- * via `ModuleRef` under their own `TRANSCRIPT_SERVICE_TOKEN`.
+ * collapse-three-collaborator-groups N3: the durable
+ * {@link SessionTranscriptService} is no longer REGISTERED here — it is owned by
+ * the `@Global()` `SessionTranscriptModule` in its own context. This module only
+ * CONSUMES it, binding it to the {@link TRANSCRIPT_STORE} token the read-path
+ * controller injects (durable-first read + read-through backfill). The
+ * orchestrator no longer resolves it through this module at all, which is what
+ * removed the `GuardrailsModule -> TasksModule` composition edge.
  */
 @Module({
   imports: [
@@ -80,10 +81,10 @@ import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
       provide: GUARDRAILS_SERVICE_TOKEN,
       useExisting: GuardrailsService,
     },
-    // persist-session-transcripts I.1 — the durable transcript provider, and the
-    // narrow TRANSCRIPT_STORE binding the read-path controller injects (the
+    // The narrow TRANSCRIPT_STORE binding the read-path controller injects (the
     // concrete service satisfies the controller's structural `TranscriptStore`).
-    SessionTranscriptService,
+    // The service itself comes from the `@Global()` SessionTranscriptModule that
+    // owns it, so this module binds a token rather than registering a provider.
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,
@@ -112,8 +113,6 @@ import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
       useExisting: CLAUDE_AUTH_SOURCE,
     },
   ],
-  // Export the concrete service so GuardrailsModule (I.2) can resolve it from
-  // the already-imported TasksModule via ModuleRef for the capture chokepoints.
-  exports: [TasksService, TASK_OPERATIONS, SessionTranscriptService],
+  exports: [TasksService, TASK_OPERATIONS],
 })
 export class TasksModule {}

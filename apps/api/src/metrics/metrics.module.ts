@@ -1,6 +1,10 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Inject, Module, OnModuleInit } from '@nestjs/common';
 import { GuardrailsModule } from '@/guardrails/guardrails.module';
 import { GuardrailsService } from '@/guardrails/guardrails.service';
+import {
+  CAPACITY_PROJECTION_PORT,
+  type CapacityProjectionPort,
+} from '@/runner-metrics/capacity-projection.port';
 import { RunnerMinutesModule } from '@/runner-metrics/runner-minutes.module';
 import { TaskProvisioningDiagnosticsModule } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import { MetricsController } from './metrics.controller';
@@ -23,16 +27,16 @@ import {
  *    sampled-resource, provisioning-diagnostics, and identifier-free terminal-
  *    diagnostics blocks;
  *  - {@link ResourceSamplerService}, the background CPU/memory sampler, fed the
- *    LIVE running-task-id set from the guardrails semaphore projection so it
- *    samples exactly the `cap-aio-<taskId>` containers that are actually
- *    running.
+ *    LIVE running-task-id set from the capacity projection's owner so it samples
+ *    exactly the `cap-aio-<taskId>` containers that are actually running.
  *
- * Imports {@link GuardrailsModule} for the `GuardrailsService` (the live
- * semaphore projection) and the diagnostics leaf module for its cache-only
- * provisioning metrics collector. The running-interval source is a separate
- * import — {@link RunnerMinutesModule}, which exports the port token the
- * metrics service injects — so the read no longer travels through the
- * orchestrator (extract-runner-minutes-ledger).
+ * Imports {@link GuardrailsModule} for the `GuardrailsService`, which is still
+ * where a running task's `SandboxConnection` lives, and the diagnostics leaf
+ * module for its cache-only provisioning metrics collector. Both derived-capacity
+ * sources are separate imports — {@link RunnerMinutesModule} exports the
+ * running-interval port token AND the capacity-projection token this module and
+ * the metrics service inject — so neither read travels through the orchestrator
+ * (extract-runner-minutes-ledger, collapse-three-collaborator-groups).
  */
 @Module({
   imports: [
@@ -54,11 +58,13 @@ export class MetricsModule implements OnModuleInit {
   constructor(
     private readonly guardrails: GuardrailsService,
     private readonly sampler: ResourceSamplerService,
+    @Inject(CAPACITY_PROJECTION_PORT)
+    private readonly capacityProjection: CapacityProjectionPort,
   ) {}
 
   /**
-   * Wire the sampler's running-task-id source to the LIVE semaphore projection
-   * and start the bounded sampling loop. The loop is gated by
+   * Wire the sampler's running-task-id source to the projection owner's LIVE
+   * running set and start the bounded sampling loop. The loop is gated by
    * `METRICS_SAMPLING_ENABLED` (default off) because live cgroup/docker sampling
    * needs running `cap-aio-<taskId>` containers + a reachable docker socket /
    * cgroup fs; with the loop off, `/metrics` still returns the exact derived
@@ -67,7 +73,7 @@ export class MetricsModule implements OnModuleInit {
    */
   onModuleInit(): void {
     this.sampler.setRunningTaskIdSource(() =>
-      this.guardrails.semaphoreProjection().snapshotRunning(),
+      this.capacityProjection.runningTaskIds(),
     );
     // Per-task sandbox base URL for the in-sandbox codex-process read (D7): the
     // guardrails service holds each running task's SandboxConnection. A task with

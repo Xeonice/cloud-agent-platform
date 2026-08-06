@@ -3,7 +3,7 @@ import { TasksModule } from '@/tasks/tasks.module';
 import { ReposModule } from '@/repos/repos.module';
 import { ScheduledTasksModule } from '@/scheduled-tasks/scheduled-tasks.module';
 import { TaskProvisioningDiagnosticsModule } from '@/task-provisioning-diagnostics/task-provisioning-diagnostics.module';
-import { SessionTranscriptService } from '@/tasks/session-transcript.service';
+import { SessionTranscriptService } from '@/session-transcripts/session-transcript.service';
 import { AuditService } from '@/audit/audit.service';
 import {
   AUDIT_TIMELINE_READER,
@@ -19,8 +19,9 @@ import { McpServerFactory } from './mcp.server';
  * request-scoped, tools-registered servers — from the EXISTING console services, adding NO
  * second admission path (design D1/D4):
  *   - {@link TasksModule} (imported) exports `TasksService` (create/get/list/stop
- *     — the same admission the console uses) AND the durable
- *     {@link SessionTranscriptService} backing `get_transcript`.
+ *     — the same admission the console uses). The durable
+ *     {@link SessionTranscriptService} backing `get_transcript` comes from the
+ *     `@Global()` `SessionTranscriptModule` that owns it, needing no import.
  *   - {@link ReposModule} (imported) exports `ReposService` for repo reads.
  *   - {@link ScheduledTasksModule} (imported) exports `ScheduledTasksService` for
  *     the owner-scoped schedule tools.
@@ -34,10 +35,10 @@ import { McpServerFactory } from './mcp.server';
  *     `AuditService` back the canonical shared transcript read.
  * Because these global providers need no explicit module import.
  *
- * `TRANSCRIPT_STORE` is RE-BOUND here (to the `SessionTranscriptService` that
- * `TasksModule` exports) rather than exported from `TasksModule`, so this track
- * injects the existing durable store WITHOUT editing `TasksModule` — the token is
- * module-local to whoever needs it (the same pattern `V1Module` uses).
+ * `TRANSCRIPT_STORE` is RE-BOUND here (to the globally exported
+ * `SessionTranscriptService`) rather than exported by its owner, so this track
+ * injects the existing durable store WITHOUT editing another module — the token
+ * is module-local to whoever needs it (the same pattern `V1Module` uses).
  *
  * Auth posture: the SDK `requireBearerAuth` → `resolveMcpToken` Express
  * middleware (wired in `main.ts`, Track 7) 401s an absent/invalid bearer before
@@ -57,8 +58,8 @@ import { McpServerFactory } from './mcp.server';
   providers: [
     McpServerFactory,
     // Re-bind the durable transcript store under the token the server factory
-    // injects, to the concrete service TasksModule exports — keeping TasksModule
-    // untouched (this track only CONSUMES the store).
+    // injects, to the concrete service its owning module exports — this module
+    // only CONSUMES the store.
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,

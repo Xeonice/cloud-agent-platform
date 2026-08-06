@@ -8,6 +8,8 @@ import { TaskProvisioningDiagnosticsCapabilityService } from './task-provisionin
 import { TaskProvisioningDiagnosticsConsoleController } from './task-provisioning-diagnostics-console.controller';
 import { TaskProvisioningDiagnosticsConsoleQueryService } from './task-provisioning-diagnostics-console-query.service';
 import { TaskProvisioningDiagnosticsMetricsService } from './task-provisioning-diagnostics-metrics.service';
+import { TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE } from './task-provisioning-diagnostics-observer-lifecycle.port';
+import { TaskProvisioningDiagnosticsObserverLifecycleService } from './task-provisioning-diagnostics-observer-lifecycle.service';
 import { TaskProvisioningDiagnosticsService } from './task-provisioning-diagnostics.service';
 import { TaskProvisioningDiagnosticsPublicQueryService } from './task-provisioning-diagnostics-public-query.service';
 import {
@@ -30,9 +32,14 @@ import {
     TaskProvisioningDiagnosticsCapabilityService,
     TaskProvisioningDiagnosticsMetricsService,
     EnvironmentTaskProvisioningDiagnosticsWriteGate,
+    TaskProvisioningDiagnosticsObserverLifecycleService,
     {
       provide: TASK_PROVISIONING_DIAGNOSTIC_RECORDER,
       useExisting: TaskProvisioningDiagnosticsService,
+    },
+    {
+      provide: TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE,
+      useExisting: TaskProvisioningDiagnosticsObserverLifecycleService,
     },
     {
       provide: TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
@@ -51,6 +58,7 @@ import {
     TASK_PROVISIONING_DIAGNOSTIC_RECORDER,
     EnvironmentTaskProvisioningDiagnosticsWriteGate,
     TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
+    TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE,
     TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
   ],
 })
