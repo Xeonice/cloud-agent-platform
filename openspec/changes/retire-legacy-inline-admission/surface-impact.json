@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "change": "retire-legacy-inline-admission",
+  "intent": "contracts",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "本刀删除已发布枚举成员 'legacy'（packages/contracts/src/task-provisioning-diagnostics.ts:37-39），该枚举被诊断响应 :258/:411 消费，故 /v1 的诊断操作其 responseSchema 的取值域**收窄**——这是真实的公开面变更，不是形态变化，必须转录 protocolDifference 而不是四舍五入成 unchanged。⚠ 与之相对，任务创建路径**不变**：D1 选择「无条件走 durable」而非拒绝，所以 POST /v1/tasks 仍返 201，不引入 503，AdmissionMode 联合不加成员。若当初选了拒绝方案，这里会是 201→503 的运行时变更加一条独立的 protocolDifference。apply 期必须实跑 node scripts/public-surface-adversarial.mjs verify 复核，声明不算证明。"
+    },
+    "mcp": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "同源于 publicV1：MCP 侧暴露同一诊断操作，其输出投影派生自同一个被收窄的枚举。工具集、名称、入参投影不变；变的是输出取值域。",
+      "toolIds": [
+        "get_task_provisioning_diagnostics"
+      ]
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "操作注册表条目不增不减，但该操作的 schema 取值域随枚举收窄而改变，故为 derived 而非 unchanged。"
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "Playground 操作目录不变；它展示的是操作清单，不固化枚举取值。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段 4 第五刀（range B 根节点）：退役同步的 legacy inline-admission 管线。四重身份分列——(1) 代码删除：apps/api/src/inline-admission/ 五文件 1,585 行〔wc -l 物理行，含 245 行测试；纯生产 1,340〕+ 编排器正向耦合（2 import / 1 字段 / 20 键适配器字面量 / 11 调用点）+ 反向回调端口（20 成员 / 59 调用点）+ 两个孤儿私有方法 + legacy 准入链三跳 166 行；(2) 准入行为：mode 分支移除，能力未证明时无条件走 durable（D1）；(3) 契约收窄：删 'legacy' 枚举成员（D2）；(4) 不可逆数据迁移：删除两张表上 admission_mode='legacy' 的历史诊断行（D2；该列是 String 非 DB 枚举，故为数据改写而非 schema 变更）。同刀订正上一刀带进活 spec 的假声称「退役后 diagnostics 地板 2」——实测 4，Δ=0。",
+      "reason": "退役前置 #3（attestation 续期自动化）明确不做，其后果已量化并被接受，见 proposal Non-Goals 1。「生产不再有 legacy 流量」是**用户提供的前提**，非本仓实测——诊断写闸门 default-closed，查不到行不等于没流量。"
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.provisioningDiagnostics",
+      "kind": "response-enum-narrowed",
+      "detail": "admissionMode 的取值域从 ['legacy','durable'] 收窄为 ['durable']。这不是内部重组：该值是两张表上的持久化列（apps/api/prisma/schema.prisma:517 与 :566），且读取路径用同一个 zod 枚举校验（task-provisioning-diagnostics.service.ts:62/:69/:115、task-provisioning-diagnostic-observer.adapter.ts:96/:103/:118）。因此收窄枚举而不动数据会让服务读不了自己的历史行——本刀据 D2 同刀删除 admission_mode='legacy' 的历史诊断行，使收窄后的枚举与库中实存取值一致。领域事件侧的 DomainEventAdmissionModeSchema（domain-event.ts:159-162）复用同一枚举，随之同步收窄。"
+    }
+  ],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": true
+  }
+}
