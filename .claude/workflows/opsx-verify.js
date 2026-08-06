@@ -56,6 +56,22 @@ const REFUTE = {
     lens: { type: 'string' },
     refuted: { type: 'boolean', description: 'true = skeptic disproved that the requirement is satisfied' },
     reason: { type: 'string' },
+    evidence: {
+      type: 'string',
+      description:
+        'REQUIRED when refuted is true: the file:line citations or command output that make the ' +
+        'refutation checkable by someone who does not trust you. A refutation without this is ' +
+        'discarded unread, because it cannot be adjudicated.',
+    },
+  },
+}
+// Adjudication replaces the vote. A refutation is a CLAIM, not a ballot: it is checked, not counted.
+const ADJUDICATION = {
+  type: 'object', additionalProperties: false, required: ['confirmed', 'reasoning'],
+  properties: {
+    confirmed: { type: 'boolean', description: 'true = the refutation holds against the tree' },
+    reasoning: { type: 'string' },
+    correction: { type: 'string', description: 'If not confirmed, what the refutation got wrong.' },
   },
 }
 const PUBLIC_PLAN = {
@@ -350,7 +366,13 @@ const verdicts = await pipeline(
         agent(
           `Through the "${lens}" lens, try to REFUTE the claim that requirement "${req.name}" of ${changeName} is satisfied. ` +
           `Default to refuted=true if you find any failing case. For cross-track-integration, check whether a file satisfying ` +
-          `this requirement was later changed by another track and broke it.`,
+          `this requirement was later changed by another track and broke it.\n\n` +
+          `If you refute, you MUST fill \`evidence\` with what makes your claim checkable by someone who does not ` +
+          `trust you: the file:line you read, or the command and its output. Your refutation is not counted as a ` +
+          `vote — it is handed to an independent adjudicator who opens exactly what you cite. A refutation citing ` +
+          `nothing is discarded, so vague suspicion costs you the finding.\n` +
+          `Watch in particular for a requirement whose claim is about a NAME: an identifier that was renamed rather ` +
+          `than removed satisfies every grep written against its old spelling while the thing itself is still there.`,
           { label: `refute:${req.name}:${lens}`, phase: 'Escalate', schema: REFUTE, model: LEAF_MODEL }
         )
       )
@@ -380,12 +402,47 @@ const verdicts = await pipeline(
     const votes = refutations.filter(Boolean)
     const refutedCount = votes.filter((v) => v.refuted).length + ((dyn && dyn.refuted) ? 1 : 0)
     const total = votes.length + (dyn ? 1 : 0)
-    // Public requirements are fail-closed: one mandatory dynamic failure cannot
-    // be outvoted by static skeptics. Non-public high-risk requirements retain
-    // the established majority-survival behavior.
+
+    // ── Adjudication, not majority ────────────────────────────────────────────────────────────
+    // A refutation used to be a ballot: `refutedCount < ceil(total/2)`. That treats "I found a
+    // defect at this file:line" and "I looked and found nothing" as equal weight, and absence of
+    // evidence is not evidence of absence. It cost this repository a shipped defect — a renamed
+    // collaborator that made a ratchet count vanish — where one correct, evidence-citing lens was
+    // outvoted 1-to-2 by two lenses that found nothing, and the change was reported MET.
+    //
+    // A refutation is now CHECKED rather than counted. Any refutation that cites evidence is
+    // adjudicated by an independent agent against the tree; if the adjudicator confirms it, the
+    // requirement is unmet no matter how many lenses found nothing. This also protects the other
+    // direction, which a "any refutation blocks" rule would not: a wrong refutation is discarded by
+    // the adjudicator instead of blocking the archive.
+    const claims = votes.filter((v) => v.refuted)
+    let adjudications = []
+    if (claims.length > 0) {
+      adjudications = await parallel(
+        claims.map((claim, index) => () =>
+          agent(
+            `Adjudicate a refutation of requirement "${req.name}" (${req.requirementId}) of ${changeName}.\n\n` +
+            `You are not a third opinion and you are not voting. Check THIS SPECIFIC CLAIM against the ` +
+            `tree and report whether it holds.\n\n` +
+            `LENS: ${claim.lens}\nCLAIM: ${claim.reason}\nEVIDENCE OFFERED: ${claim.evidence || '(none — the lens cited nothing)'}\n\n` +
+            `Open every file:line the claim cites and read it. Re-run any command it quotes. Confirm ` +
+            `only what you have seen for yourself. If the claim cites nothing checkable, report ` +
+            `confirmed=false and say the lens gave you nothing to check. If the claim is right about a ` +
+            `defect but wrong about a detail, it is still CONFIRMED — say what the detail should be in ` +
+            `\`correction\`. If the tree does not show what the claim says it shows, report ` +
+            `confirmed=false with what you actually found.`,
+            { label: `adjudicate:${req.name}:${index}`, phase: 'Escalate', schema: ADJUDICATION, model: LEAF_MODEL }
+          )
+        )
+      )
+    }
+    const confirmedRefutations = adjudications.filter((a) => a && a.confirmed).length
+
+    // Public requirements stay fail-closed on their mandatory dynamic evidence: the deterministic
+    // verdict cannot be talked out of by any lens or adjudicator.
     const survived = req.dynamicRequired
       ? Boolean(dyn) && !dyn.refuted && !dyn.archiveBlocked
-      : refutedCount < Math.ceil(total / 2)
+      : confirmedRefutations === 0 && !(dyn && dyn.refuted)
     return {
       req,
       status: survived ? 'met' : 'unmet',
@@ -393,6 +450,8 @@ const verdicts = await pipeline(
       triage,
       refutedCount,
       total,
+      confirmedRefutations,
+      adjudications: adjudications.filter(Boolean),
       dynamic: dyn,
       detail: [...votes, dyn && { ...dyn, lens: 'dynamic' }].filter(Boolean),
     }

@@ -180,7 +180,7 @@ function compileVerifyWorkflow() {
   );
 }
 
-async function runDeterministicVerdictThroughVerify(item = null) {
+async function runDeterministicVerdictThroughVerify(item = null, refutation = null, dynamicRequired = true) {
   const requirementId = 'sample/public-widget-contract';
   const workflow = compileVerifyWorkflow();
   const agent = async (_prompt, options) => {
@@ -204,7 +204,7 @@ async function runDeterministicVerdictThroughVerify(item = null) {
             requirementId,
             taskIds: ['1.1'],
             surfaces: ['public-v1', 'mcp'],
-            dynamicRequired: true,
+            dynamicRequired,
             evidenceLanes: [...PUBLIC_SURFACE_EVIDENCE_LANES],
           },
         ],
@@ -254,12 +254,37 @@ async function runDeterministicVerdictThroughVerify(item = null) {
       return {
         met: true,
         confidence: 'high',
-        risk: 'low',
+        // Injecting a refutation means the test wants the escalation path; a low-risk, high-confidence
+        // triage short-circuits before any lens runs, which is correct behaviour but not what these
+        // two tests are about.
+        risk: refutation ? 'high' : 'low',
         evidence: 'fixture:1',
       };
     }
     if (options.label.startsWith('refute:')) {
+      // A refutation is a CLAIM now, not a ballot. `item.refutation` lets a test inject exactly one
+      // dissenting lens so the adjudication path can be exercised in both directions.
+      if (refutation && options.label.endsWith(refutation.lensSuffix)) {
+        return {
+          lens: options.label,
+          refuted: true,
+          reason: refutation.reason,
+          evidence: refutation.evidence,
+        };
+      }
       return { lens: options.label, refuted: false, reason: 'survives' };
+    }
+    if (options.label.startsWith('dynamic:') && options.label !== 'dynamic:public-surface-verdict') {
+      // The non-public ground-truth probe. These two tests are about how a REFUTATION is resolved,
+      // so the probe finds nothing and the verdict must turn on adjudication alone.
+      return { lens: 'dynamic', refuted: false, reason: 'fixture probe found nothing' };
+    }
+    if (options.label.startsWith('adjudicate:')) {
+      return {
+        confirmed: refutation?.confirmed ?? false,
+        reasoning: 'fixture adjudication',
+        correction: refutation?.confirmed ? '' : 'fixture: claim did not hold',
+      };
     }
     if (options.label === 'check:gap' || options.label === 'check:scope') {
       return [];
@@ -953,6 +978,34 @@ test('an extra MCP internalFlag forwarded outside the registry exact set becomes
   assert.equal(verify.pass, false);
   assert.equal(verify.unmet, 1);
   assert.ok(verify.reopenedTasks.includes(leaked.requirementIds[0]));
+});
+
+test('one adjudicated refutation makes a requirement unmet, however many lenses found nothing', async () => {
+  // The regression this pins: a lone correct, evidence-citing lens used to lose the majority vote
+  // (`refutedCount < ceil(total/2)`) to lenses that looked and found nothing, and the change shipped
+  // reported MET. Absence of evidence is not evidence of absence.
+  const verify = await runDeterministicVerdictThroughVerify(null, {
+    lensSuffix: 'correctness',
+    reason: 'the orchestrator still names the collaborator under a renamed identifier',
+    evidence: 'guardrails.service.ts:109-111 and :912-915',
+    confirmed: true,
+  }, false);
+  // rawUnmet is the pipeline's own verdict, before the routing agent decides what to reopen — it is
+  // exactly the survival rule under test, with no dependency on how findings are later routed.
+  assert.equal(verify.rawUnmet, 1, 'a confirmed refutation must carry regardless of the other lenses');
+});
+
+test('a refutation the adjudicator cannot confirm does not block the archive', async () => {
+  // The other direction, which a blunt "any refutation blocks" rule would get wrong: the lens bank
+  // has produced false positives before, and one must not be able to hold a change hostage.
+  const verify = await runDeterministicVerdictThroughVerify(null, {
+    lensSuffix: 'correctness',
+    reason: 'suspicion with nothing behind it',
+    evidence: '',
+    confirmed: false,
+  }, false);
+  assert.equal(verify.rawUnmet, 0, 'an unconfirmed claim is discarded, not counted');
+  assert.equal(verify.pass, true);
 });
 
 test('fixture repository lifecycle cannot touch a bystander repo named by hook env', () => {
