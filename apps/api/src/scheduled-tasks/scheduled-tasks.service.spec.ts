@@ -821,7 +821,7 @@ function buildHarness(
         const task = prisma.tasks.find((row) => row.id === taskId);
         if (task) task.admissionWork = { taskId };
       }
-      return options.admissionOutcome ?? 'legacy-admitted';
+      return options.admissionOutcome ?? 'durable-woken';
     },
   } as unknown as TasksService;
   return {
@@ -2680,7 +2680,7 @@ test('post-commit admission failure leaves one pending task for startup recovery
 });
 
 test('dispatch retains only the run admission lease when admission leaves the task pending', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true });
+  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true, admissionOutcome: 'fail-closed' });
   const now = new Date();
   addDueSchedule(prisma, {
     nextRunAt: new Date(now.getTime() - 1_000),
@@ -2762,7 +2762,7 @@ test('recovery drains more than one batch of pending scheduled tasks', async () 
 });
 
 test('recovery retains its lease when admission resolves but leaves the task pending', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true });
+  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true, admissionOutcome: 'fail-closed' });
   addRecoverableRun(prisma);
 
   assert.equal(await service.recoverPendingAdmissions(), 0);
@@ -2794,7 +2794,7 @@ test('recovery outcome fence releases a raced durable work item without spinning
 });
 
 test('run-level admission leases do not block sibling recovery or the next cadence', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true });
+  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true, admissionOutcome: 'fail-closed' });
   const firstRun = addRecoverableRun(prisma);
   const schedule = prisma.schedules[0];
   schedule.overlapPolicy = 'enqueue';

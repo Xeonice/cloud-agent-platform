@@ -1219,19 +1219,16 @@ export class ScheduledTasksService
             recovered += 1;
             continue;
           }
-          if (outcome === 'fail-closed') continue;
-          const current = await this.prisma.task.findUnique({
-            where: { id: row.task.id },
-            select: { status: true },
-          });
-          release = current === null || current.status !== 'pending';
-          if (release && current !== null) {
-            recovered += 1;
-          } else if (current !== null) {
-            this.logger.warn(
-              `scheduled task recovery left ${row.task.id} pending; retry is deferred until the claim lease expires`,
-            );
-          }
+          // The result union has exactly two members, so `fail-closed` is the
+          // only one left here: nothing can admit this row. The claim is
+          // deliberately NOT released — releasing it would re-claim the same
+          // unadmittable row on the very next sweep. The block that used to
+          // follow re-read the task to decide between a third outcome and this
+          // one; narrowing the union to two made it unreachable, so it left with
+          // the outcome it existed for. `satisfies` keeps that honest: adding a
+          // third member breaks the build here instead of silently reviving a
+          // fall-through.
+          outcome satisfies 'fail-closed';
         } catch (err) {
           this.logger.warn(
             `scheduled task recovery admission failed for ${row.task.id}: ${errorMessage(err)}`,

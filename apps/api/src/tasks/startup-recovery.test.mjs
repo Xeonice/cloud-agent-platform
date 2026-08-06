@@ -5,14 +5,18 @@
  * protected first, legacy survivors are re-adopted only from complete provider
  * + terminal evidence, legacy orphans are reclaimed only after a definitive
  * absence, the persisted slot ceiling is restored, provider inventory is
- * reconciled, and only then is legacy queued work re-offered by the stable
- * `(createdAt, id)` FIFO before durable-worker polling begins.
+ * reconciled, and only then does durable-worker polling begin.
+ *
+ * There is no boot re-offer phase. `TasksService.reofferQueuedOnStartup` and
+ * the `guardrails.admit` seam it fed were retired with the synchronous
+ * in-request pipeline that used to consume it, and the mirror moved
+ * with its subject rather than staying green against a method that no longer
+ * exists — a model that outlives what it models reports coverage nobody has.
  *
  * This inlines a FAITHFUL mirror of ONLY the seams under test — the
  * `onApplicationBootstrap` / `readoptSurvivorsOnStartup` /
- * `reclaimOrphanedOnStartup` / `reofferQueuedOnStartup` logic of
- * `tasks.service.ts` — plus a fake guardrails service whose `admit`/`readopt`
- * mirror `ConcurrencySemaphore.offer` / `restoreRunning`. The production
+ * `reclaimOrphanedOnStartup` logic of `tasks.service.ts` — plus a fake
+ * guardrails service whose `readopt` mirrors `restoreRunning`. The production
  * classes are covered separately by `tasks-startup-durable-recovery.spec.ts`;
  * this file remains the fast no-transpile historical model.
  */
@@ -223,7 +227,6 @@ class FakeGuardrails {
     this.ceiling = envCeiling;
     this.persistedCeiling = persistedCeiling;
     this.running = [];
-    this.queue = [];
     this.armed = new Map(); // taskId -> params handed to admit (watcher arming)
     this.selectedRuns = new Map(); // taskId -> selected-run metadata handed to readopt
     this.events = []; // ordered log proving phase/ceiling ordering
@@ -236,18 +239,6 @@ class FakeGuardrails {
     if (this.persistedCeiling !== null) {
       this.ceiling = this.persistedCeiling;
     }
-  }
-
-  async admit(taskId, params = {}) {
-    this.events.push(`admit:${taskId}`);
-    this.eventSink?.push(`admit:${taskId}`);
-    if (this.running.length < this.ceiling) {
-      this.running.push(taskId);
-      this.armed.set(taskId, params);
-      return 'running';
-    }
-    this.queue.push(taskId);
-    return 'queued';
   }
 
   /**
@@ -326,7 +317,6 @@ class RecoveryHarness {
         return task === null;
       },
     });
-    await this.reofferQueuedOnStartup();
     this.worker?.start?.();
   }
 
@@ -501,43 +491,6 @@ class RecoveryHarness {
     return reclaimed;
   }
 
-  // mirrors TasksService.reofferQueuedOnStartup
-  async reofferQueuedOnStartup() {
-    if (!this.guardrails) {
-      return 0;
-    }
-    const queued = await this.prisma.task.findMany({
-      where: {
-        admissionWork: { is: null },
-        OR: [
-          { status: 'queued' },
-          { status: 'pending', scheduleRun: { is: null } },
-        ],
-      },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: {
-        id: true,
-        ownerUserId: true,
-        deadlineMs: true,
-        idleTimeoutMs: true,
-        auditEvents: true,
-      },
-    });
-    let reoffered = 0;
-    for (const task of queued) {
-      try {
-        await this.guardrails.admit(task.id, {
-          deadlineMs: task.deadlineMs ?? undefined,
-          idleTimeoutMs: task.idleTimeoutMs ?? undefined,
-          userId: task.ownerUserId ?? task.auditEvents?.[0]?.userId ?? undefined,
-        });
-        reoffered += 1;
-      } catch {
-        // best-effort per task
-      }
-    }
-    return reoffered;
-  }
 }
 
 const queuedRow = (id, createdAt, extra = {}) => ({
@@ -560,130 +513,22 @@ const pendingRow = (id, createdAt, extra = {}) => ({
 
 // --- tests -------------------------------------------------------------------
 
-test('restart with K queued, ceiling M: stable createdAt/id FIFO admits oldest and strands none', async () => {
-  // Equal timestamps and shuffled rows prove `id asc` is the deterministic
-  // tie-break rather than incidental database return order.
-  const prisma = new FakePrisma([
-    queuedRow('t4', 2),
-    queuedRow('t2', 1),
-    queuedRow('t3', 2),
-    queuedRow('t1', 1),
-    queuedRow('t5', 3),
-  ]);
-  const guardrails = new FakeGuardrails({ envCeiling: 2 });
-  const harness = new RecoveryHarness(prisma, guardrails);
-
-  await harness.onApplicationBootstrap();
-
-  // Oldest min(5, 2) = 2 begin admission, in FIFO order.
-  assert.deepEqual(guardrails.running, ['t1', 't2'], 'the 2 oldest are admitted FIFO');
-  // The remaining 3 stay queued IN ORDER rather than being lost.
-  assert.deepEqual(guardrails.queue, ['t3', 't4', 't5'], 'remainder queued in createdAt order');
-  // No stranding: every one of the K queued tasks was re-offered.
-  const offered = guardrails.events.filter((e) => e.startsWith('admit:'));
-  assert.deepEqual(
-    offered,
-    ['admit:t1', 'admit:t2', 'admit:t3', 'admit:t4', 'admit:t5'],
-    'all K queued tasks are re-offered by (createdAt, id)',
-  );
-});
-
-test('restart re-offers direct pending admissions with the durable owner but leaves scheduled pending to schedule recovery', async () => {
-  const prisma = new FakePrisma([
-    pendingRow('direct', 1, { ownerUserId: 'owner-a' }),
-    pendingRow('scheduled', 2, {
-      ownerUserId: 'owner-a',
-      scheduleRun: { id: 'run-1' },
-    }),
-  ]);
-  const guardrails = new FakeGuardrails({ envCeiling: 2 });
-  const harness = new RecoveryHarness(prisma, guardrails);
-
-  await harness.onApplicationBootstrap();
-
-  assert.deepEqual(guardrails.running, ['direct']);
-  assert.equal(guardrails.armed.get('direct')?.userId, 'owner-a');
-  assert.equal(
-    guardrails.events.includes('admit:scheduled'),
-    false,
-    'scheduled pending tasks remain behind the occurrence-level recovery lease',
-  );
-});
-
-test('restart leaves queued and pending tasks with durable admission work exclusively to the worker', async () => {
-  const prisma = new FakePrisma([
-    pendingRow('durable-pending', 1, {
-      admissionWork: { taskId: 'durable-pending', state: 'accepted' },
-    }),
-    queuedRow('durable-queued', 2, {
-      admissionWork: { taskId: 'durable-queued', state: 'queued' },
-    }),
-    pendingRow('legacy-pending', 3),
-    queuedRow('legacy-queued', 4),
-  ]);
-  const guardrails = new FakeGuardrails({ envCeiling: 4 });
-  const harness = new RecoveryHarness(prisma, guardrails);
-
-  await harness.onApplicationBootstrap();
-
-  assert.deepEqual(guardrails.running, ['legacy-pending', 'legacy-queued']);
-  assert.equal(guardrails.events.includes('admit:durable-pending'), false);
-  assert.equal(guardrails.events.includes('admit:durable-queued'), false);
-});
-
-test('ceiling-first: persisted 2 with env 5 and 3 queued admits exactly 2 (DB override before re-offer)', async () => {
+test('ceiling-first: the persisted ceiling overrides the env seed at boot', async () => {
   const prisma = new FakePrisma([queuedRow('a', 1), queuedRow('b', 2), queuedRow('c', 3)]);
   const guardrails = new FakeGuardrails({ envCeiling: 5, persistedCeiling: 2 });
   const harness = new RecoveryHarness(prisma, guardrails);
 
   await harness.onApplicationBootstrap();
 
-  assert.deepEqual(guardrails.running, ['a', 'b'], 'exactly the persisted ceiling (2) admitted, not env (5)');
-  assert.deepEqual(guardrails.queue, ['c'], 'the third task stays queued');
-  // The override load PRECEDES every re-offer in the event order.
-  const loadIndex = guardrails.events.indexOf('loadPersistedCeiling');
-  const firstAdmit = guardrails.events.findIndex((e) => e.startsWith('admit:'));
-  assert.ok(loadIndex !== -1, 'persisted ceiling load happens');
-  assert.ok(loadIndex < firstAdmit, 'ceiling loaded BEFORE Phase 2 re-offer');
+  // The DB value winning over the env seed used to be observed through how many
+  // rows the boot re-offer admitted. With the re-offer retired the ceiling
+  // itself is the observable, which is more direct, not weaker.
+  assert.equal(guardrails.ceiling, 2, 'persisted ceiling (2) overrides the env seed (5)');
+  assert.ok(guardrails.events.includes('loadPersistedCeiling'), 'the persisted ceiling is loaded');
+  assert.deepEqual(guardrails.running, [], 'boot admits nothing: there is no re-offer step left');
 });
 
-test('no persisted ceiling: env seed stays effective for the re-offer', async () => {
-  const prisma = new FakePrisma([queuedRow('a', 1), queuedRow('b', 2), queuedRow('c', 3)]);
-  const guardrails = new FakeGuardrails({ envCeiling: 5, persistedCeiling: null });
-  const harness = new RecoveryHarness(prisma, guardrails);
-
-  await harness.onApplicationBootstrap();
-
-  assert.deepEqual(guardrails.running, ['a', 'b', 'c'], 'all 3 fit under the env ceiling of 5');
-  assert.deepEqual(guardrails.queue, [], 'nothing left queued');
-});
-
-test('re-offered tasks restore persisted deadlineMs/idleTimeoutMs from the task row', async () => {
-  const prisma = new FakePrisma([
-    queuedRow('with-params', 1, { deadlineMs: 60000, idleTimeoutMs: 30000 }),
-    queuedRow('without-params', 2), // persisted as null/null (omitted at create)
-  ]);
-  const guardrails = new FakeGuardrails({ envCeiling: 5 });
-  const harness = new RecoveryHarness(prisma, guardrails);
-
-  await harness.onApplicationBootstrap();
-
-  // Watchers arm with the persisted values, identical to pre-restart admission.
-  assert.deepEqual(
-    guardrails.armed.get('with-params'),
-    { deadlineMs: 60000, idleTimeoutMs: 30000, userId: undefined },
-    'persisted guardrail params are handed to admit()',
-  );
-  // Persisted null coalesces back to undefined: no deadline, idle left to the
-  // operator-level default — never a fabricated 0/null watcher value.
-  assert.deepEqual(
-    guardrails.armed.get('without-params'),
-    { deadlineMs: undefined, idleTimeoutMs: undefined, userId: undefined },
-    'null params read back as undefined (watchers not armed with fabricated values)',
-  );
-});
-
-test('Phase 1 reclaim runs BEFORE Phase 2 re-offer; queued rows are untouched by reclaim', async () => {
+test('Phase 1 reclaim fails orphaned in-flight tasks and leaves queued rows untouched', async () => {
   const prisma = new FakePrisma([
     { id: 'orphan-running', status: 'running', createdAt: 1, deadlineMs: null, idleTimeoutMs: null },
     { id: 'orphan-awaiting', status: 'awaiting_input', createdAt: 2, deadlineMs: null, idleTimeoutMs: null },
@@ -699,18 +544,10 @@ test('Phase 1 reclaim runs BEFORE Phase 2 re-offer; queued rows are untouched by
     ['orphan-running', 'orphan-awaiting'],
     'both orphaned in-flight tasks are reclaimed to failed',
   );
-  const lastFail = guardrails.events.map((e) => e.startsWith('fail:')).lastIndexOf(true);
-  const firstAdmit = guardrails.events.findIndex((e) => e.startsWith('admit:'));
-  assert.ok(lastFail < firstAdmit, 'every Phase 1 reclaim precedes the first Phase 2 re-offer');
-  assert.deepEqual(guardrails.running, ['q1'], 'only the queued task is re-offered/admitted');
-});
-
-test('guardrails not wired: re-offer is a no-op returning 0 (boot never blocks)', async () => {
-  const prisma = new FakePrisma([queuedRow('q1', 1)]);
-  const harness = new RecoveryHarness(prisma, undefined);
-
-  await harness.onApplicationBootstrap();
-  assert.equal(await harness.reofferQueuedOnStartup(), 0, 'no guardrails -> 0 re-offered');
+  assert.equal(harness.failed.includes('q1'), false, 'reclaim does not touch queued rows');
+  // The ordering half of this test (every reclaim precedes the first re-offer)
+  // went with the re-offer step. Boot now admits nothing at all.
+  assert.deepEqual(guardrails.running, [], 'nothing is admitted at boot');
 });
 
 // --- Phase 0 re-adoption (survive-api-redeploy guardrails-recovery 4.2/4.4) ---
@@ -726,7 +563,7 @@ const runningRow = (id, createdAt, extra = {}) => ({
   ...extra,
 });
 
-test('unfinished durable work is protected; async readopt and reconcile finish before legacy re-offer and worker start', async () => {
+test('unfinished durable work is protected; async readopt and reconcile finish before worker start', async () => {
   const events = [];
   const prisma = new FakePrisma([
     runningRow('durable-running', 1, {
@@ -779,7 +616,6 @@ test('unfinished durable work is protected; async readopt and reconcile finish b
   const bootstrap = harness.onApplicationBootstrap();
   await readoptStarted;
   assert.equal(events.includes('provider-reconcile'), false, 'bootstrap awaits terminal attach');
-  assert.equal(events.includes('admit:legacy-queued'), false, 'legacy re-offer has not started');
   assert.equal(events.includes('worker-start'), false, 'worker polling has not started');
   releaseReadopt();
   await bootstrap;
@@ -814,8 +650,7 @@ test('unfinished durable work is protected; async readopt and reconcile finish b
   const index = (event) => events.indexOf(event);
   assert.ok(index('terminal-attach-done') < index('loadPersistedCeiling'));
   assert.ok(index('loadPersistedCeiling') < index('provider-reconcile'));
-  assert.ok(index('provider-reconcile') < index('admit:legacy-queued'));
-  assert.ok(index('admit:legacy-queued') < index('worker-start'));
+  assert.ok(index('provider-reconcile') < index('worker-start'));
 });
 
 test('a live-session task is re-adopted: kept running (not failed), slot held, timers armed from persisted params', async () => {
@@ -865,10 +700,14 @@ test('persisted owner rows drive restart re-adoption when provider listing is em
     ['boxlite-alive'],
     'only in-flight persisted owners are reattach candidates when provider listing is empty',
   );
+  // `queued-owner` used to appear here too, put into the running set by the boot
+  // re-offer that has since been retired. Readoption itself never claimed it —
+  // the assertion's own message said so — so dropping it makes the expectation
+  // match the concern the test is named for instead of a neighbouring phase.
   assert.deepEqual(
     guardrails.running,
-    ['boxlite-alive', 'queued-owner'],
-    'only the live running owner is readopted before queued re-offer consumes remaining capacity',
+    ['boxlite-alive'],
+    'only the live running owner is readopted; a queued row is not readopted at all',
   );
   assert.deepEqual(harness.failed, [], 'the live BoxLite survivor is not reclaimed');
   assert.deepEqual(guardrails.armed.get('boxlite-alive'), {
@@ -1037,7 +876,7 @@ test('a survivor that raced to gone between list and reattach is reclaimed, not 
   assert.deepEqual(harness.failed, ['raced'], 'the gone task is force-failed by Phase 1');
 });
 
-test('restoreRunning keeps all survivors above a lowered persisted ceiling and queues new work', async () => {
+test('restoreRunning keeps all survivors above a lowered persisted ceiling', async () => {
   const prisma = new FakePrisma([
     runningRow('survivor-a', 1),
     runningRow('survivor-b', 2),
@@ -1054,7 +893,10 @@ test('restoreRunning keeps all survivors above a lowered persisted ceiling and q
     ['survivor-a', 'survivor-b'],
     'both real survivors remain restored even though the persisted ceiling is one',
   );
-  assert.deepEqual(guardrails.queue, ['q1'], 'new work waits until running drops below the ceiling');
+  // This also used to assert `q1` landed in the semaphore queue. That was only
+  // observable because the boot re-offer handed `q1` to `admit`; with the
+  // re-offer retired nothing touches `q1` at boot, so the assertion left with
+  // its subject rather than being weakened into a softer check.
 });
 
 test('a re-adopted task that later dies terminates cleanly exactly once (slot freed once)', async () => {

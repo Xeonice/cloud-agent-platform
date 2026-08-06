@@ -581,7 +581,15 @@ export class TasksService
    * 3. Restore the persisted ceiling and reconcile only authoritatively deleted
    *    physical orphans. There is no boot re-offer step: re-offering pending
    *    work into the process-local semaphore fed the retired in-request
-   *    pipeline, and pending durable work is recovered by step 4's claim query.
+   *    pipeline, so the step had no sink left. Do NOT read that as "step 4
+   *    recovers those rows instead" — on the pending branch the populations are
+   *    disjoint by construction. The deleted re-offer took `admissionWork: null`
+   *    rows that were `queued`, or `pending` with `scheduleRun: null`; step 4's
+   *    claim query reads through a schedule run that EXISTS, and recovers no
+   *    `queued` row at all. Tasks that do hold durable admission work are
+   *    unaffected — the durable worker leases those. A row committed with no
+   *    admission work is unadmittable and says so at dispatch time
+   *    (`fail-closed`); nothing retries it.
    * 4. Start the polling worker last. Its claim query recovers both accepted
    *    work and expired leases without depending on an in-process wake signal.
    *

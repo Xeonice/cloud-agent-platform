@@ -1,8 +1,11 @@
 # Verification report — retire-legacy-inline-admission
 
-Two verify passes are recorded here. **Pass 1** (below) ran at HEAD `3619b08` and re-opened one code
-task. **Pass 2** (["Verify pass 2"](#verify-pass-2--head-28b9d1d) at the end of this file) ran after
-that task landed, at HEAD `28b9d1d`, and is the pass whose tally gates archive.
+Three verify passes are recorded here. **Pass 1** (below) ran at HEAD `3619b08` and re-opened one
+code task. **Pass 2** (["Verify pass 2"](#verify-pass-2--head-28b9d1d)) ran after that task landed, at
+HEAD `28b9d1d`. **Pass 3** (["Verify pass 3"](#verify-pass-3--head-8064dd2), at the end of this file)
+ran at HEAD `8064dd2` — the first pass with the characterization requirement inside the change's own
+`specs/`, which task 7.1 moved there — and is the pass whose tally gates archive. It re-opens one code
+task (6.2), so archive is gated until that task lands and a further pass clears it.
 
 Tree verified (pass 1): branch `refactor/retire-legacy-inline-admission`, HEAD `3619b08`
 ("refactor(admission): retire the legacy inline pipeline and admit unconditionally durably"),
@@ -369,3 +372,142 @@ and its `protocolDifferences: []` remains a true exclusion.
    block after `scheduled-tasks.service.ts:1222` (`findUnique` → `release` → `recovered`) is
    unreachable — `outcome` narrows to `never` past the two guards. Dead rather than wrong, and the
    residue of the removed third outcome.
+
+---
+
+## Verify pass 3 — HEAD `8064dd2`
+
+Tree verified: branch `refactor/retire-legacy-inline-admission`, HEAD `8064dd2`
+("docs(openspec): re-pin the characterization baseline this retirement invalidated"), working tree
+clean apart from the unrelated untracked change directory
+(`openspec/changes/extract-runner-minutes-ledger/`).
+
+Executable baseline re-run live during this adjudication:
+
+- `node scripts/spec-assert.mjs retire-legacy-inline-admission` → **26/26 passed**, 12 requirements
+  decided without an LLM pass. (Pass 2 recorded 23/23; the three additions came with task 7.1's
+  characterization re-pin: `characterization-baseline-live`, `characterization-per-file-distribution`,
+  `audit-hotspot-lines-unmoved-except-retired`.)
+
+### Adjudication summary (pass 3)
+
+| Route | Count | Ids |
+| --- | --- | --- |
+| Re-opened as code tasks | 1 | `guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization` |
+| Spec defects (design.md Open Questions) | 0 | — |
+| Archive-blocking spec defects | 0 | — |
+| Re-classified MET | 1 | `guardrails/sandboxprovisioned-is-published-on-both-provisioning-paths-after-the-provider-boundary-succeeds` |
+
+### Re-classified MET (pass 3)
+
+#### `guardrails/sandboxprovisioned-is-published-on-both-provisioning-paths-after-the-provider-boundary-succeeds` — MET (retired correctly)
+
+The skeptic's refutation is correct on its own terms and irrelevant to the route: the heading pins
+`both` — a count of two — and this change exists to retire the second path, so probing the heading
+text against the retired tree necessarily fails. That is the removal working, not a defect. Re-traced
+end-to-end at `8064dd2` rather than carried over from pass 2:
+
+- The heading lives in `## REMOVED Requirements` (`specs/guardrails/spec.md:661-669`, section starts
+  at `:649`) with Reason + Migration only and **zero** `#### Scenario` children — there is no live
+  behavioural scenario attached to it to satisfy.
+- Its Reason is true by measurement: `ls apps/api/src/inline-admission` → *No such file or directory*;
+  `grep -rn "publishSandboxProvisioned" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'` returns
+  the declaration (`guardrails.service.ts:901`) plus exactly **one** caller (`:1260`). The second path
+  is gone, not dormant.
+- Its Migration target is implemented. The ADDED requirement ("SandboxProvisioned is published on the
+  one surviving provisioning path after the provider boundary succeeds") and all four of its scenarios
+  re-trace in source order: `provider.provision(...)` at `:1229` → ownership re-check throwing
+  `TaskAdmissionLeaseLostError` at `:1231-1236` (a superseded fence exits before the publish) →
+  `lease.authorize()` / `runtime_setup` / `readiness` checkpoints (`:1237-1246`) → connection
+  registered at `:1248` → publish at `:1260-1265`, whose payload is assembled only from
+  `{ taskId, connection, selectedRun, plan: provisionPlan }` — values already in hand at that seam, no
+  new provider call, no new database read, no new resolver. `admissionMode: 'durable'` is fixed inside
+  the payload builder (`:901-911`), which takes no `admissionMode` argument.
+- Assertion `sandbox-provisioned-one-live-publisher` (`assertions.json:261-275`, `stdoutEquals: "1"`)
+  re-run live: `ok`.
+
+### Re-opened as a code task (pass 3)
+
+`guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization` — **UNMET**,
+re-opened as task 6.2. This requirement entered the change's `specs/` only at HEAD `8064dd2`, as the
+`## MODIFIED Requirements` block task 7.1 wrote, so passes 1 and 2 could not have adjudicated it: at
+their HEADs it was a live-spec requirement outside the change's delta, which is exactly the blind
+spot task 7.1's own closing note names. This is the first pass with it in field of view.
+
+It is a code/artifact defect, not an ambiguous requirement: the failing scenario is precisely
+testable, and it fails.
+
+- The requirement's deletion clause is unconditional and unscoped: "Such a deletion SHALL be
+  classified **(c) subject retired** and SHALL name the `## REMOVED Requirements` heading (or the
+  retiring requirement) that warrants it… A (c) entry without a warrant is indistinguishable from
+  erosion and SHALL be treated as one." Its scenario "Every rewritten assertion carries a classified
+  ledger entry" (`specs/guardrails/spec.md:629-634`) applies to "any assertion **in the repository**".
+- `git diff --diff-filter=D --name-only main...HEAD` lists three deleted `*.spec.ts` outside
+  `apps/api/src/guardrails/`: `inline-admission/inline-admission-domain-event-publishing.spec.ts`
+  (−245), `tasks/tasks-legacy-request-lifetime.spec.ts` (−1518), `tasks/tasks-pending-recovery.spec.ts`
+  (−100). Ledger entries 7.2 (a) and 7.3 (c) name only the two guardrails files.
+- The first two have a warrant reachable in the ledger (tasks 3.1 and 3.2, both naming the
+  retired-whole requirement) but no classified (c) entry recording the three required things.
+- `tasks-pending-recovery.spec.ts` is the real gap: 2 tests / 6 assertions pinning the FIFO boot
+  re-offer (verified with `git show main:…`), named by no task in `tasks.md` (`grep` returns only this
+  report's own scope finding 6), and pass 2 already recorded that no requirement in `specs/` covers
+  the removal of `reofferQueuedOnStartup()` / `admit()`. Under this requirement, an unwarranted
+  deletion is erosion — so the warrant has to be decided, not asserted. Task 6.2 states the candidate
+  (the retired-whole requirement plus the startup coordinator docstring at `tasks.service.ts:582-584`)
+  and the alternative if it does not hold under trace.
+- Routed to code rather than to Open Questions because nothing here needs a design decision that the
+  change has not already taken: the ledger form is fixed by the requirement, and the warrant is a
+  matter of tracing what the deleted tests pinned against what step 4's claim query still pins.
+
+### Gap finding (pass 3) — no requirement lacks a traceable implementation
+
+Re-audited independently and reproduced pass 2's conclusion. On this tree: 26/26 `spec-assert.mjs`
+assertions pass; `apps/api/src/inline-admission/` is absent; live publish-site counts re-measured as
+**2 / 1 / 1 / 2** (`task.run_started` / `publishSandboxProvisioned` / `task.admitted` /
+`task.superseded`); the runner-minutes getter over its two backing members exists at
+`guardrails.service.ts:588-616`; the DELETE-only migration
+`20260806120000_delete_legacy_admission_diagnostic_rows` is present; the enum is narrowed to
+`z.enum(['durable'])` in `packages/contracts/src/task-provisioning-diagnostics.ts`;
+`admission-mode-policy.ts` implements the total one-member mapping; and no reverse-callback-port
+symbol survives outside the deleted directory (the surviving `onAdmit`/`onQueue`/`onRefuse` matches
+are unrelated semaphore/websocket code).
+
+**Every requirement in this change's `specs/` has a traceable implementation.** The re-opened defect
+is not a missing implementation — it is a missing ledger entry for three deletions the requirement
+governs, described in full in task 6.2.
+
+### Scope findings (pass 3) — code in the diff that no requirement describes
+
+Recorded, not routed. None is undeclared **public** impact. `PostCommitAdmissionResult` is an
+internal type in `apps/api/src/tasks/tasks.service.ts` with two internal consumers; `POST /v1/tasks`
+still returns 201 (D1 admits unconditionally rather than refusing); the boot-recovery change is a
+process-local startup step. `surface-impact.json`'s `publicV1` declaration therefore remains accurate,
+and its `protocolDifferences: []` remains a **true** exclusion for the reason that file states at
+length: the empty array is the REST↔MCP projection-difference channel that
+`scripts/openspec-metadata.mjs` reconciles against `PUBLIC_V1_OPERATIONS[…].mcp.differences`, and
+`tasks.provisioningDiagnostics` declares `NO_MCP_DIFFERENCES` while the enum narrowing lands on both
+projections equally — an earlier `'response-enum-narrowed'` entry there was a category error already
+caught and corrected by a live run of `scripts/public-surface-adversarial.mjs verify`.
+
+Items 1–7 are carried forward from pass 2 unchanged (`PostCommitAdmissionResult` narrowed to
+`'durable-woken' | 'fail-closed'`; `admitCreatedTask`'s new fail-closed branch; the two
+`scheduled-tasks.service.ts` ripples at `:1222` and `:1404`; the now-unreachable `findUnique` →
+`release` → `recovered` block past those guards; the deletion of `reofferQueuedOnStartup()` and of
+`admit()` from `IGuardrailsService`; and the deletion of `tasks-pending-recovery.spec.ts`). Item 6
+has since been **partly routed**: the deleted test is now the subject of re-opened task 6.2, while the
+unspecified boot-recovery behaviour change itself remains a scope finding.
+
+New in pass 3:
+
+8. `apps/api/src/tasks/startup-recovery.test.mjs:12-13,241,329,504-505,529,675,713` — orphaned test
+   mirror. The file's own docstring calls it a "FAITHFUL mirror" of the
+   `onApplicationBootstrap` / `readoptSurvivorsOnStartup` / `reclaimOrphanedOnStartup` /
+   `reofferQueuedOnStartup` logic of `tasks.service.ts`, and its fake guardrails service mirrors
+   `admit`. Two of those production seams no longer exist —
+   `grep -rn "reofferQueuedOnStartup" apps/api/src --include='*.ts'` returns zero — so the harness now
+   models behaviour that is nowhere in production, and asserts on it (`:675` "persisted guardrail
+   params are handed to admit()", `:713` "no guardrails -> 0 re-offered"). The docstring's own escape
+   hatch ("The production classes are covered separately by `tasks-startup-durable-recovery.spec.ts`")
+   is false for this seam: that spec only pushes dead `'legacy-reoffer'` event labels (`:425`, `:616`)
+   that no assertion reads. Not mentioned by any task or requirement; folded into task 6.2's "while
+   here" clause rather than routed on its own, since it is the same removal's residue.

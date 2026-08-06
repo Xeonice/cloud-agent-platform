@@ -394,6 +394,81 @@
       "expect": {
         "stdoutEquals": "46 61 5"
       }
+    },
+    {
+      "id": "boot-reoffer-gone-from-code",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "非注释行里 reofferQueuedOnStartup 归零（注释里点名退役是刻意保留的记录）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"reofferQueuedOnStartup\" apps/api/src --include=\"*.ts\" --include=\"*.mjs\" | grep -vE \":[[:space:]]*(\\*|//)\" | wc -l | tr -d \" \""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "startup-model-moved-with-its-subject",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "手写启动模型不再声明镜像方法、其 fake guardrails 不再声明 admit（production 接口已无该成员）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -cE \"^  async (admit|reofferQueuedOnStartup)\\(\" apps/api/src/tasks/startup-recovery.test.mjs || true"
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "no-residual-arm-after-union-narrowing",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "两成员联合收窄后无残留分支——用 satisfies 让编译器守住，而非注释",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c \"outcome satisfies .fail-closed.\" apps/api/src/scheduled-tasks/scheduled-tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "fail-closed-says-why",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "无 durable admission work 的已提交行返回具名 fail-closed 并说明退役原因，而非静默或伪装成功",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c \"the synchronous in-request pipeline that used to pick such rows up is retired\" apps/api/src/tasks/tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "retired-outcome-absent-from-doubles",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "退役成员 'legacy-admitted' 在任何代码行上归零（含未受类型约束的测试替身）——注释里的说明刻意保留",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"legacy-admitted\" apps packages scripts --include=\"*.ts\" --include=\"*.mjs\" 2>/dev/null | grep -v node_modules | grep -v \"/dist/\" | grep -v archive | grep -vE \":[[:space:]]*(\\*|//)\" | wc -l | tr -d \" \""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
     }
   ]
 }

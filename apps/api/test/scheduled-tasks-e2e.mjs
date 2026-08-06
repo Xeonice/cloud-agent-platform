@@ -180,7 +180,10 @@ function taskPort(prisma, options = {}) {
       options.admissionAttempts?.push(taskId);
       if (options.admitThrows) throw new Error(options.admitThrows);
       await prisma.task.update({ where: { id: taskId }, data: { status: 'queued' } });
-      return 'legacy-admitted';
+      // The retired third outcome ('legacy-admitted') was what this fake used to
+      // return. Post-commit dispatch is a two-member union now, and the member
+      // that means 'this task is on its way' is the durable one.
+      return 'durable-woken';
     },
   };
 }
