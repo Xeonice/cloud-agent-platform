@@ -28,6 +28,7 @@ import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-
 import type { RuntimeModelPreflightService } from '@/runtime-models/runtime-model-preflight.service';
 import { RuntimeModelPreflightError } from '@/runtime-models/runtime-model-preflight.error';
 import type { TaskModelCapabilityService } from '@/runtime-models/task-model-capability.service';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -104,7 +105,7 @@ function makeFakePrisma(runtimeOverride?: string | null): PrismaService {
     };
   }
 
-  return {
+  const client = {
     repo: {
       findUnique: async () => repoRow,
     },
@@ -117,7 +118,25 @@ function makeFakePrisma(runtimeOverride?: string | null): PrismaService {
       findMany: async () => [],
       findUnique: async () => null,
     },
-  } as unknown as PrismaService;
+    // Acceptance is a single transaction now that there is one admission path:
+    // the Task row, its unique admission work item, and the creation audit all
+    // commit together. Run the callback inline against this same fake client.
+    taskAdmissionWork: {
+      create: async ({ data }: { data: { taskId: string } }) => ({
+        ...data,
+        state: 'accepted',
+        stage: 'accepted',
+        attempt: 0,
+        updatedAt: new Date(),
+      }),
+    },
+    auditEvent: {
+      upsert: async () => ({}),
+    },
+    $transaction: async <T,>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+      fn(client),
+  };
+  return client as unknown as PrismaService;
 }
 
 /** A fake registry that records every resolve() call. */
@@ -154,6 +173,39 @@ function makeOpenTaskModelCapability(): TaskModelCapabilityService {
 }
 
 /** Build a TasksService with the given optional collaborators (no guardrails, no audit, no sandbox). */
+/**
+ * The durable admission collaborators every acceptance now needs.
+ *
+ * Acceptance takes ONE path — the in-request pipeline that used to serve a
+ * closed gate is retired — so a service built without an environment resolver
+ * and a branch resolver can no longer prepare a task at all. These doubles are
+ * the minimum that path requires; each test still supplies its own environment
+ * resolver when the environment is what it is asserting about.
+ */
+function makeDurableAdmissionEnvironments(): SandboxEnvironmentsService {
+  return {
+    async resolveTaskAdmission() {
+      return {
+        environment: null,
+        providerId: 'aio-local',
+        providerFamily: 'aio',
+        provisioningPolicy: {
+          resources: {},
+          workspaceMaterializationDeadlineMs: 900_000,
+        },
+      };
+    },
+  } as unknown as SandboxEnvironmentsService;
+}
+
+function makeBranchResolver(): TaskBranchResolver {
+  return {
+    async prepareForCreate() {
+      return { resolvedBranch: 'main' };
+    },
+  } as unknown as TaskBranchResolver;
+}
+
 function buildService(opts: {
   prisma: PrismaService;
   registry?: IAgentRuntimeRegistry;
@@ -161,9 +213,12 @@ function buildService(opts: {
   sandboxEnvironments?: SandboxEnvironmentsService;
   runtimeModelPreflight?: RuntimeModelPreflightService;
   taskModelCapability?: TaskModelCapabilityService;
+  taskBranchResolver?: TaskBranchResolver;
 }): TasksService {
   // TasksService constructor signature (positional DI):
-  //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?, sandboxOwners?, sandboxEnvironments?)
+  //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?,
+  //    sandboxOwners?, sandboxEnvironments?, runtimeModelPreflight?,
+  //    taskModelCapability?, taskAdmissionGate?, taskBranchResolver?)
   return new TasksService(
     opts.prisma,
     undefined,       // guardrails (optional)
@@ -172,9 +227,11 @@ function buildService(opts: {
     opts.registry,
     opts.claudeReadiness,
     undefined,       // sandboxOwners (optional)
-    opts.sandboxEnvironments,
+    opts.sandboxEnvironments ?? makeDurableAdmissionEnvironments(),
     opts.runtimeModelPreflight,
     opts.taskModelCapability,
+    undefined,       // taskAdmissionGate (optional)
+    opts.taskBranchResolver ?? makeBranchResolver(),
   );
 }
 
@@ -363,14 +420,26 @@ test('create with sandboxEnvironmentId resolves and persists the selected enviro
   const { prisma, box } = makeCapturingPrisma();
   const calls: Array<{ selection: unknown; runtimeId: string }> = [];
   const sandboxEnvironmentId = '00000000-0000-4000-a000-000000000777';
+  // Environment selection now reaches the resolver through the durable
+  // admission seam, which is the only one left: `resolveTaskAdmission` returns
+  // the environment together with the provisioning policy the acceptance write
+  // freezes. The selection this test asserts on is unchanged.
   const sandboxEnvironments = {
-    async resolveForTask(args: { selection: { kind: string; environmentId?: string }; runtimeId: string }) {
+    async resolveTaskAdmission(args: { selection: { kind: string; environmentId?: string }; runtimeId: string }) {
       calls.push(args);
       return {
-        environmentId: args.selection.environmentId,
-        sourceKind: 'aio-docker-image',
-        sourceRef: 'cap/aio:latest',
+        environment: {
+          environmentId: args.selection.environmentId,
+          sourceKind: 'aio-docker-image',
+          sourceRef: 'cap/aio:latest',
+          providerFamily: 'aio',
+        },
+        providerId: 'aio-local',
         providerFamily: 'aio',
+        provisioningPolicy: {
+          resources: {},
+          workspaceMaterializationDeadlineMs: 900_000,
+        },
       };
     },
   } as unknown as SandboxEnvironmentsService;
@@ -404,13 +473,21 @@ test('create without sandboxEnvironmentId resolves the current user default imag
   const { prisma, box } = makeCapturingPrisma({ defaultSandboxEnvironmentId });
   const calls: Array<{ selection: unknown; runtimeId: string }> = [];
   const sandboxEnvironments = {
-    async resolveForTask(args: { selection: { kind: string; environmentId?: string }; runtimeId: string }) {
+    async resolveTaskAdmission(args: { selection: { kind: string; environmentId?: string }; runtimeId: string }) {
       calls.push(args);
       return {
-        environmentId: args.selection.environmentId,
-        sourceKind: 'aio-docker-image',
-        sourceRef: 'cap/aio:latest',
+        environment: {
+          environmentId: args.selection.environmentId,
+          sourceKind: 'aio-docker-image',
+          sourceRef: 'cap/aio:latest',
+          providerFamily: 'aio',
+        },
+        providerId: 'aio-local',
         providerFamily: 'aio',
+        provisioningPolicy: {
+          resources: {},
+          workspaceMaterializationDeadlineMs: 900_000,
+        },
       };
     },
   } as unknown as SandboxEnvironmentsService;
@@ -447,9 +524,17 @@ test('create with sandboxEnvironmentId=null bypasses the current user default im
   });
   const calls: Array<{ selection: unknown; runtimeId: string }> = [];
   const sandboxEnvironments = {
-    async resolveForTask(args: { selection: unknown; runtimeId: string }) {
+    async resolveTaskAdmission(args: { selection: unknown; runtimeId: string }) {
       calls.push(args);
-      return null;
+      return {
+        environment: null,
+        providerId: 'aio-local',
+        providerFamily: 'aio',
+        provisioningPolicy: {
+          resources: {},
+          workspaceMaterializationDeadlineMs: 900_000,
+        },
+      };
     },
   } as unknown as SandboxEnvironmentsService;
   const svc = buildService({

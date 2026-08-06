@@ -28,6 +28,9 @@ const PLATFORM_DEPENDENCY_FAILURE_MIGRATION =
   '20260716130000_add_platform_dependency_failure_codes';
 const PROVISIONING_DIAGNOSTICS_MIGRATION =
   '20260717120000_add_task_provisioning_diagnostics';
+const LEGACY_ADMISSION_SCRUB_MIGRATION =
+  '20260806120000_delete_legacy_admission_diagnostic_rows';
+const RETIRED_ADMISSION_MODE = 'legacy';
 const PLATFORM_DEPENDENCY_FAILURE_CODE =
   'provisioning_platform_dependency_unavailable';
 const EXPECTED_WORK_COLUMNS = [
@@ -192,6 +195,79 @@ assert.match(
   'retry cause provenance must remain compatible with rolling old writers',
 );
 
+assert.ok(
+  migrationNames.includes(LEGACY_ADMISSION_SCRUB_MIGRATION),
+  `missing legacy admission scrub migration ${LEGACY_ADMISSION_SCRUB_MIGRATION}`,
+);
+const legacyAdmissionScrubMigrationSql = readFileSync(
+  path.join(sourceMigrationsDir, LEGACY_ADMISSION_SCRUB_MIGRATION, 'migration.sql'),
+  'utf8',
+);
+assert.doesNotMatch(
+  legacyAdmissionScrubMigrationSql,
+  /UPDATE\s+"task_provisioning_diagnostic_(?:attempts|events)"/i,
+  'the scrub must DELETE rows recording the retired mode; relabeling them to the ' +
+    'surviving value would assert those tasks were admitted durably when they were not',
+);
+assert.deepEqual(
+  readdirSync(
+    path.join(sourceMigrationsDir, LEGACY_ADMISSION_SCRUB_MIGRATION),
+  ).sort(),
+  ['migration.sql'],
+  'an irreversible deletion must not ship a down migration that pretends otherwise',
+);
+
+/**
+ * The narrowed vocabulary is READ from the single declaration rather than
+ * restated here. A copy would pass this test on the day the enum widens again,
+ * which is the day it most needs to fail.
+ *
+ * Membership in this list is parse-equivalence only while the declaration stays
+ * a bare `z.enum([...])` — no transform, no catch, no preprocess would leave a
+ * rejected string rejected. The extraction below therefore matches that exact
+ * shape and fails loudly if it ever stops holding.
+ */
+function readContractEnumMembers(source, exportName) {
+  const declaration = new RegExp(
+    `export const ${exportName}\\s*(?::[^=]+)?=\\s*z\\.enum\\(\\[([\\s\\S]*?)\\]\\)\\s*;`,
+    'u',
+  );
+  const match = declaration.exec(source);
+  if (!match) {
+    throw new Error(
+      `${exportName} is not a bare z.enum([...]) in the contracts source — ` +
+        'membership can no longer stand in for parsing, so this check must be rewritten',
+    );
+  }
+  return [...match[1].matchAll(/'([^']+)'/gu)].map((m) => m[1]);
+}
+
+const contractsDiagnosticsSource = readFileSync(
+  path.join(
+    apiDir,
+    '..',
+    '..',
+    'packages',
+    'contracts',
+    'src',
+    'task-provisioning-diagnostics.ts',
+  ),
+  'utf8',
+);
+const NARROWED_ADMISSION_MODES = readContractEnumMembers(
+  contractsDiagnosticsSource,
+  'TaskProvisioningDiagnosticAdmissionModeSchema',
+);
+assert.ok(
+  NARROWED_ADMISSION_MODES.length > 0,
+  'the admission-mode validator must still enumerate at least one member',
+);
+assert.ok(
+  !NARROWED_ADMISSION_MODES.includes(RETIRED_ADMISSION_MODE),
+  `the read-path validator still accepts '${RETIRED_ADMISSION_MODE}' — ` +
+    'the scrub below would then be proving nothing',
+);
+
 const tempRoot = mkdtempSync(path.join(tmpdir(), 'cap-task-admission-migration-'));
 const oldPrismaDir = path.join(tempRoot, 'prisma');
 const oldMigrationsDir = path.join(oldPrismaDir, 'migrations');
@@ -222,6 +298,14 @@ const preProvisioningDiagnosticsPrismaDir = path.join(
 );
 const preProvisioningDiagnosticsMigrationsDir = path.join(
   preProvisioningDiagnosticsPrismaDir,
+  'migrations',
+);
+const preLegacyAdmissionScrubPrismaDir = path.join(
+  tempRoot,
+  'pre-legacy-admission-scrub-prisma',
+);
+const preLegacyAdmissionScrubMigrationsDir = path.join(
+  preLegacyAdmissionScrubPrismaDir,
   'migrations',
 );
 
@@ -367,6 +451,30 @@ function preparePreProvisioningDiagnosticsMigrationFixture() {
       cpSync(
         path.join(sourceMigrationsDir, name),
         path.join(preProvisioningDiagnosticsMigrationsDir, name),
+        { recursive: true },
+      );
+    }
+  }
+}
+
+function preparePreLegacyAdmissionScrubMigrationFixture() {
+  mkdirSync(preLegacyAdmissionScrubMigrationsDir, { recursive: true });
+  cpSync(
+    path.join(sourcePrismaDir, 'schema.prisma'),
+    path.join(preLegacyAdmissionScrubPrismaDir, 'schema.prisma'),
+  );
+  cpSync(
+    path.join(sourceMigrationsDir, 'migration_lock.toml'),
+    path.join(preLegacyAdmissionScrubMigrationsDir, 'migration_lock.toml'),
+  );
+  for (const name of migrationNames) {
+    if (
+      name < LEGACY_ADMISSION_SCRUB_MIGRATION &&
+      name !== 'migration_lock.toml'
+    ) {
+      cpSync(
+        path.join(sourceMigrationsDir, name),
+        path.join(preLegacyAdmissionScrubMigrationsDir, name),
         { recursive: true },
       );
     }
@@ -959,6 +1067,420 @@ async function verifyProvisioningDiagnosticsUpgradeCompatibility() {
       `),
       'a historical task cannot be relabeled as diagnostics-capable after upgrade',
     );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+/**
+ * Fixture rows for the legacy-admission scrub, written through the PRE-scrub
+ * schema — that is the whole point: they are evidence this service wrote about
+ * itself before the enum narrowed, and the narrowing is only sound if the read
+ * path can no longer meet a value its validator rejects.
+ */
+const SCRUB_FIXTURE = {
+  legacyAttemptId: 'a1a1a1a1-0000-4000-8000-000000000001',
+  legacyEventId: 'a1a1a1a1-0000-4000-8000-0000000000e1',
+  durableAttemptId: 'b2b2b2b2-0000-4000-8000-000000000001',
+  durableEventId: 'b2b2b2b2-0000-4000-8000-0000000000e1',
+  crossedAttemptId: 'c3c3c3c3-0000-4000-8000-000000000001',
+  crossedEventId: 'c3c3c3c3-0000-4000-8000-0000000000e1',
+  survivingAttemptId: 'c3c3c3c3-0000-4000-8000-000000000002',
+  survivingEventId: 'c3c3c3c3-0000-4000-8000-0000000000e2',
+  operationId: 'd4d4d4d4-0000-4000-8000-000000000001',
+};
+
+async function insertScrubFixtureAttempt(
+  prisma,
+  { id, taskId, attemptNumber, admissionMode },
+) {
+  await prisma.$executeRawUnsafe(
+    `
+      INSERT INTO "task_provisioning_diagnostic_attempts" (
+        "id", "task_id", "schema_version", "attempt_number",
+        "admission_mode", "provider_family", "state", "stage", "coverage",
+        "primary_outcome", "primary_cause", "primary_retryable",
+        "primary_exit_code", "primary_observed_at",
+        "cleanup_state", "cleanup_attempt_count",
+        "event_count", "truncated", "started_at", "finished_at",
+        "completeness_marked_at", "updated_at"
+      ) VALUES (
+        $1, $2, 1, $3,
+        $4, 'boxlite', 'failed', 'runtime_setup', 'complete',
+        'failed', 'command_failed', false,
+        17, CURRENT_TIMESTAMP,
+        'not_required', 0,
+        1, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+    `,
+    id,
+    taskId,
+    attemptNumber,
+    admissionMode,
+  );
+}
+
+async function insertScrubFixtureEvent(
+  prisma,
+  { id, attemptId, taskId, admissionMode, idempotencyKey },
+) {
+  await prisma.$executeRawUnsafe(
+    `
+      INSERT INTO "task_provisioning_diagnostic_events" (
+        "id", "attempt_id", "task_id", "schema_version",
+        "idempotency_key", "sequence", "operation_id",
+        "admission_mode", "provider_family", "stage", "operation", "channel",
+        "command_kind", "outcome", "observed_at", "duration_ms",
+        "cause", "retryable", "native_state", "exit_code"
+      ) VALUES (
+        $1, $2, $3, 1,
+        $4, 1, $5,
+        $6, 'boxlite', 'runtime_setup', 'runtime_setup', 'primary',
+        'runtime_setup', 'failed', CURRENT_TIMESTAMP, 1200,
+        'command_failed', false, 'failed', 17
+      )
+    `,
+    id,
+    attemptId,
+    taskId,
+    idempotencyKey,
+    SCRUB_FIXTURE.operationId,
+    admissionMode,
+  );
+}
+
+async function seedPreLegacyAdmissionScrubRows() {
+  const prisma = client();
+  try {
+    const [scrubApplied] = await prisma.$queryRawUnsafe(
+      `
+        SELECT count(*)::integer AS count
+        FROM "_prisma_migrations"
+        WHERE "migration_name" = $1
+      `,
+      LEGACY_ADMISSION_SCRUB_MIGRATION,
+    );
+    assert.equal(
+      scrubApplied.count,
+      0,
+      'the upgrade fixture must stop BEFORE the scrub, or the rows below are ' +
+        'written after the deletion they are meant to be subject to',
+    );
+
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "users" ("id", "name", "allowed")
+      VALUES ('pre-scrub-user', 'Pre Scrub User', true)
+    `);
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "repos" ("id", "name", "git_source")
+      VALUES (
+        'pre-scrub-repo',
+        'Pre Scrub Repo',
+        'https://example.invalid/pre-scrub.git'
+      )
+    `);
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "tasks" (
+        "id", "repo_id", "owner_user_id", "prompt", "status",
+        "provisioning_diagnostic_schema_version",
+        "provisioning_diagnostic_next_attempt"
+      ) VALUES
+        (
+          'pre-scrub-legacy-task',
+          'pre-scrub-repo',
+          'pre-scrub-user',
+          'admitted through the retired inline path',
+          'failed',
+          1,
+          2
+        ),
+        (
+          'pre-scrub-durable-task',
+          'pre-scrub-repo',
+          'pre-scrub-user',
+          'admitted durably before the narrowing',
+          'failed',
+          1,
+          2
+        ),
+        (
+          'pre-scrub-crossed-task',
+          'pre-scrub-repo',
+          'pre-scrub-user',
+          'one attempt whose event records the retired mode, one that does not',
+          'failed',
+          1,
+          3
+        )
+    `);
+
+    await insertScrubFixtureAttempt(prisma, {
+      id: SCRUB_FIXTURE.legacyAttemptId,
+      taskId: 'pre-scrub-legacy-task',
+      attemptNumber: 1,
+      admissionMode: RETIRED_ADMISSION_MODE,
+    });
+    await insertScrubFixtureEvent(prisma, {
+      id: SCRUB_FIXTURE.legacyEventId,
+      attemptId: SCRUB_FIXTURE.legacyAttemptId,
+      taskId: 'pre-scrub-legacy-task',
+      admissionMode: RETIRED_ADMISSION_MODE,
+      idempotencyKey: 'pre-scrub-legacy-1',
+    });
+
+    await insertScrubFixtureAttempt(prisma, {
+      id: SCRUB_FIXTURE.durableAttemptId,
+      taskId: 'pre-scrub-durable-task',
+      attemptNumber: 1,
+      admissionMode: 'durable',
+    });
+    await insertScrubFixtureEvent(prisma, {
+      id: SCRUB_FIXTURE.durableEventId,
+      attemptId: SCRUB_FIXTURE.durableAttemptId,
+      taskId: 'pre-scrub-durable-task',
+      admissionMode: 'durable',
+      idempotencyKey: 'pre-scrub-durable-1',
+    });
+
+    // The column lives on TWO tables, so a scrub keyed only on the attempt
+    // would leave the retired value reachable through the event table. This
+    // pair is the crossed case that tells those two scrubs apart.
+    await insertScrubFixtureAttempt(prisma, {
+      id: SCRUB_FIXTURE.crossedAttemptId,
+      taskId: 'pre-scrub-crossed-task',
+      attemptNumber: 1,
+      admissionMode: 'durable',
+    });
+    await insertScrubFixtureEvent(prisma, {
+      id: SCRUB_FIXTURE.crossedEventId,
+      attemptId: SCRUB_FIXTURE.crossedAttemptId,
+      taskId: 'pre-scrub-crossed-task',
+      admissionMode: RETIRED_ADMISSION_MODE,
+      idempotencyKey: 'pre-scrub-crossed-1',
+    });
+    await insertScrubFixtureAttempt(prisma, {
+      id: SCRUB_FIXTURE.survivingAttemptId,
+      taskId: 'pre-scrub-crossed-task',
+      attemptNumber: 2,
+      admissionMode: 'durable',
+    });
+    await insertScrubFixtureEvent(prisma, {
+      id: SCRUB_FIXTURE.survivingEventId,
+      attemptId: SCRUB_FIXTURE.survivingAttemptId,
+      taskId: 'pre-scrub-crossed-task',
+      admissionMode: 'durable',
+      idempotencyKey: 'pre-scrub-crossed-2',
+    });
+
+    await insertDiagnosticCompaction(prisma, 'pre-scrub-legacy-task');
+
+    const [seeded] = await prisma.$queryRawUnsafe(
+      `
+        SELECT
+          (
+            SELECT count(*)::integer
+            FROM "task_provisioning_diagnostic_attempts"
+            WHERE "admission_mode" = $1
+          ) AS attempts,
+          (
+            SELECT count(*)::integer
+            FROM "task_provisioning_diagnostic_events"
+            WHERE "admission_mode" = $1
+          ) AS events
+      `,
+      RETIRED_ADMISSION_MODE,
+    );
+    assert.deepEqual(
+      seeded,
+      { attempts: 1, events: 2 },
+      'the fixture must actually hold the retired value on both tables, or a ' +
+        'scrub that does nothing would pass',
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+async function verifyLegacyAdmissionScrubUpgrade() {
+  const prisma = client();
+  try {
+    const [retired] = await prisma.$queryRawUnsafe(
+      `
+        SELECT
+          (
+            SELECT count(*)::integer
+            FROM "task_provisioning_diagnostic_attempts"
+            WHERE "admission_mode" = $1
+          ) AS attempts,
+          (
+            SELECT count(*)::integer
+            FROM "task_provisioning_diagnostic_events"
+            WHERE "admission_mode" = $1
+          ) AS events
+      `,
+      RETIRED_ADMISSION_MODE,
+    );
+    assert.deepEqual(
+      retired,
+      { attempts: 0, events: 0 },
+      'rows recording the retired admission mode survived the scrub',
+    );
+
+    // Stated against the validator's own member list rather than against the
+    // surviving literal: whatever the enum admits today is exactly what the
+    // read path can parse, and no stored row may fall outside it.
+    const modeList = NARROWED_ADMISSION_MODES.map((mode) => `'${mode}'`).join(', ');
+    const [outsideEnum] = await prisma.$queryRawUnsafe(`
+      SELECT
+        (
+          SELECT count(*)::integer
+          FROM "task_provisioning_diagnostic_attempts"
+          WHERE "admission_mode" NOT IN (${modeList})
+        ) AS attempts,
+        (
+          SELECT count(*)::integer
+          FROM "task_provisioning_diagnostic_events"
+          WHERE "admission_mode" NOT IN (${modeList})
+        ) AS events
+    `);
+    assert.deepEqual(
+      outsideEnum,
+      { attempts: 0, events: 0 },
+      'a stored admission mode outside the narrowed enum would fail to parse ' +
+        'on the read path, breaking a read of old tasks',
+    );
+
+    const survivingAttempts = await prisma.$queryRawUnsafe(`
+      SELECT "id", "task_id", "attempt_number", "admission_mode"
+      FROM "task_provisioning_diagnostic_attempts"
+      ORDER BY "id"
+    `);
+    assert.deepEqual(
+      survivingAttempts.map((row) => row.id),
+      [
+        SCRUB_FIXTURE.durableAttemptId,
+        SCRUB_FIXTURE.survivingAttemptId,
+      ].sort(),
+      'the scrub must remove exactly the attempt recording the retired mode ' +
+        'and the attempt whose event did, and nothing else',
+    );
+    const survivingEvents = await prisma.$queryRawUnsafe(`
+      SELECT "id", "attempt_id", "admission_mode"
+      FROM "task_provisioning_diagnostic_events"
+      ORDER BY "id"
+    `);
+    assert.deepEqual(
+      survivingEvents.map((row) => row.id),
+      [SCRUB_FIXTURE.durableEventId, SCRUB_FIXTURE.survivingEventId].sort(),
+      'events of a deleted attempt must go with it rather than outlive it',
+    );
+
+    // The read this change is really about: evidence WRITTEN BEFORE the
+    // migration, read back after it, whole and unrewritten.
+    const [preMigrationRow] = await prisma.$queryRawUnsafe(
+      `
+        SELECT
+          "task_id", "attempt_number", "admission_mode", "provider_family",
+          "state", "stage", "coverage", "primary_outcome", "primary_cause",
+          "primary_retryable", "primary_exit_code", "event_count", "truncated"
+        FROM "task_provisioning_diagnostic_attempts"
+        WHERE "id" = $1
+      `,
+      SCRUB_FIXTURE.durableAttemptId,
+    );
+    assert.deepEqual(preMigrationRow, {
+      task_id: 'pre-scrub-durable-task',
+      attempt_number: 1,
+      admission_mode: 'durable',
+      provider_family: 'boxlite',
+      state: 'failed',
+      stage: 'runtime_setup',
+      coverage: 'complete',
+      primary_outcome: 'failed',
+      primary_cause: 'command_failed',
+      primary_retryable: false,
+      primary_exit_code: 17,
+      event_count: 1,
+      truncated: false,
+    });
+    assert.ok(
+      NARROWED_ADMISSION_MODES.includes(preMigrationRow.admission_mode),
+      'a pre-migration diagnostic row must still parse against the narrowed enum',
+    );
+
+    // Not rewritten: the scrub deletes, so the durable population is exactly
+    // what was seeded durable — never the seeded legacy rows wearing a new label.
+    const [durableCount] = await prisma.$queryRawUnsafe(`
+      SELECT count(*)::integer AS count
+      FROM "task_provisioning_diagnostic_attempts"
+      WHERE "admission_mode" = 'durable'
+    `);
+    assert.equal(
+      durableCount.count,
+      2,
+      'relabeling the retired rows would show up here as durable attempts that ' +
+        'were never admitted durably',
+    );
+
+    // Honest incompleteness rather than a fabricated whole: the task whose only
+    // attempt was deleted still reports an allocated attempt number, so its
+    // evidence reads partial.
+    assert.deepEqual(
+      await readDiagnosticCoverageFixture(prisma, 'pre-scrub-legacy-task'),
+      {
+        schema_version: 1,
+        next_attempt: 2,
+        attempt_count: 0,
+        coverage: 'partial',
+      },
+      'a task scrubbed of its only attempt must read as partial evidence',
+    );
+    assert.deepEqual(
+      await readDiagnosticCoverageFixture(prisma, 'pre-scrub-durable-task'),
+      {
+        schema_version: 1,
+        next_attempt: 2,
+        attempt_count: 1,
+        coverage: 'not_started',
+      },
+      'a durably admitted task keeps the evidence it had before the migration',
+    );
+
+    const [compactions] = await prisma.$queryRawUnsafe(`
+      SELECT count(*)::integer AS count
+      FROM "task_provisioning_diagnostic_compactions"
+      WHERE "task_id" = 'pre-scrub-legacy-task'
+    `);
+    assert.equal(
+      compactions.count,
+      1,
+      'compaction aggregates carry no admission mode; rewriting them would ' +
+        'falsify counts the scrub cannot honestly restate',
+    );
+
+    // The CHECK constraints still enumerate the retired value on purpose — the
+    // migration says so in its own text. What keeps it from coming back is the
+    // retirement of every writer, so this test pins the constraint as LEFT
+    // ALONE rather than as a second, silent guard.
+    const constraintDefinitions = await prisma.$queryRawUnsafe(`
+      SELECT "conname" AS name, pg_get_constraintdef("oid") AS definition
+      FROM "pg_constraint"
+      WHERE "conname" IN (
+        'task_provisioning_diagnostic_attempts_admission_mode_check',
+        'task_provisioning_diagnostic_events_admission_mode_check'
+      )
+      ORDER BY "conname"
+    `);
+    assert.equal(constraintDefinitions.length, 2);
+    for (const constraint of constraintDefinitions) {
+      assert.match(
+        constraint.definition,
+        new RegExp(`'${RETIRED_ADMISSION_MODE}'`),
+        `${constraint.name} was narrowed too; this change deliberately leaves ` +
+          'the historical schema record standing',
+      );
+    }
   } finally {
     await prisma.$disconnect();
   }
@@ -3635,6 +4157,7 @@ try {
   preparePreLegacyAioIdentityMigrationFixture();
   preparePrePlatformDependencyMigrationFixture();
   preparePreProvisioningDiagnosticsMigrationFixture();
+  preparePreLegacyAdmissionScrubMigrationFixture();
 
   await resetPublicSchema();
   migrate(path.join(oldPrismaDir, 'schema.prisma'));
@@ -3667,6 +4190,12 @@ try {
   await verifyProvisioningDiagnosticsUpgradeCompatibility();
 
   await resetPublicSchema();
+  migrate(path.join(preLegacyAdmissionScrubPrismaDir, 'schema.prisma'));
+  await seedPreLegacyAdmissionScrubRows();
+  migrate(path.join(sourcePrismaDir, 'schema.prisma'));
+  await verifyLegacyAdmissionScrubUpgrade();
+
+  await resetPublicSchema();
   migrate(path.join(sourcePrismaDir, 'schema.prisma'));
   await verifyFreshSchemaAndBehavior();
   await verifyProvisioningDiagnosticsFreshSchemaAndBehavior();
@@ -3675,8 +4204,9 @@ try {
     'task-admission migration: historical null compatibility, pre-deadline ' +
       'rolling upgrade, legacy AIO readoption identity normalization, platform ' +
       'dependency compatibility, provisioning diagnostics fresh/upgrade/' +
-      'rollback compatibility, honest unavailable/partial evidence, controlled ' +
-      'compaction, exact constraints, and task-owned cascades passed',
+      'rollback compatibility, legacy admission-mode scrub leaving no row the ' +
+      'narrowed validator rejects, honest unavailable/partial evidence, ' +
+      'controlled compaction, exact constraints, and task-owned cascades passed',
   );
 } finally {
   await resetPublicSchema();

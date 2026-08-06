@@ -19,6 +19,8 @@ import assert from 'node:assert/strict';
 import { TasksService } from './tasks.service';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { Deliver } from '@cap-console/contracts';
+import type { SandboxEnvironmentsService } from '@/sandbox-environments/sandbox-environments.service';
+import type { TaskBranchResolver } from '@/forge/task-branch-resolver';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,9 +50,12 @@ function makeFakePrisma(): PrismaService {
     gitlabProjectId: null,
   };
 
-  return {
+  const client = {
     repo: {
       findUnique: async () => repoRow,
+    },
+    accountSettings: {
+      findUnique: async () => null,
     },
     task: {
       create: async ({ data }: { data: Record<string, unknown> }) => ({
@@ -74,16 +79,60 @@ function makeFakePrisma(): PrismaService {
         changeRequestNumber: null,
       }),
       findMany: async () => [],
-      findUnique: async () => null,
+      findUnique: async () => ({ ownerUserId: null }),
     },
-  } as unknown as PrismaService;
+    // Acceptance commits the Task, its unique admission work item, and the
+    // creation audit in one transaction — there is one admission path left, so
+    // even a fixture that only cares about `deliver` goes through it.
+    taskAdmissionWork: {
+      create: async ({ data }: { data: { taskId: string } }) => ({
+        ...data,
+        state: 'accepted',
+        stage: 'accepted',
+        attempt: 0,
+        updatedAt: new Date(),
+      }),
+      findUnique: async ({ where }: { where: { taskId: string } }) => ({
+        taskId: where.taskId,
+      }),
+    },
+    auditEvent: {
+      upsert: async () => ({}),
+    },
+    $transaction: async <T,>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+      fn(client),
+  };
+  return client as unknown as PrismaService;
 }
 
 /** Build TasksService with no guardrails / audit / sandbox — the delivery
- *  selector is purely a store-and-echo field at creation time. */
+ *  selector is purely a store-and-echo field at creation time. The environment
+ *  and branch resolvers are not optional any more: durable admission is the
+ *  only path a create can take, so every acceptance resolves a provisioning
+ *  policy and a branch before it writes. */
 function buildService(): TasksService {
-  // Constructor signature:
-  //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?)
+  const sandboxEnvironments = {
+    async resolveTaskAdmission() {
+      return {
+        environment: null,
+        providerId: 'aio-local',
+        providerFamily: 'aio',
+        provisioningPolicy: {
+          resources: {},
+          workspaceMaterializationDeadlineMs: 900_000,
+        },
+      };
+    },
+  } as unknown as SandboxEnvironmentsService;
+  const taskBranchResolver = {
+    async prepareForCreate() {
+      return { resolvedBranch: 'main' };
+    },
+  } as unknown as TaskBranchResolver;
+  // Constructor signature (positional DI):
+  //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?,
+  //    sandboxOwners?, sandboxEnvironments?, runtimeModelPreflight?,
+  //    taskModelCapability?, taskAdmissionGate?, taskBranchResolver?)
   return new TasksService(
     makeFakePrisma(),
     undefined, // guardrails
@@ -91,6 +140,12 @@ function buildService(): TasksService {
     undefined, // sandbox
     undefined, // runtimes
     undefined, // claudeReadiness
+    undefined, // sandboxOwners
+    sandboxEnvironments,
+    undefined, // runtimeModelPreflight
+    undefined, // taskModelCapability
+    undefined, // taskAdmissionGate
+    taskBranchResolver,
   );
 }
 

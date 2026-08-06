@@ -480,11 +480,11 @@ describe('task provisioning diagnostic observer adapter', () => {
     assert.equal(received.length, 1);
   });
 
-  it('keeps legacy allocation recorder-owned and makes begin failures non-blocking', async () => {
-    let legacyBegin: unknown;
+  it('keeps unfenced allocation recorder-owned and makes begin failures non-blocking', async () => {
+    let unfencedBegin: unknown;
     const unavailable: TaskProvisioningDiagnosticObserverBeginRecorder = {
       async beginAttempt(input) {
-        legacyBegin = input;
+        unfencedBegin = input;
         return {
           ok: false,
           code: 'diagnostics_unavailable',
@@ -505,12 +505,12 @@ describe('task provisioning diagnostic observer adapter', () => {
     assert.equal(
       await tryBeginTaskProvisioningDiagnosticObserver(unavailable, {
         taskId: TASK_ID,
-        admissionMode: 'legacy',
+        admissionMode: 'durable',
       }),
       undefined,
     );
     assert.equal(
-      Object.prototype.hasOwnProperty.call(legacyBegin, 'expectedAttempt'),
+      Object.prototype.hasOwnProperty.call(unfencedBegin, 'expectedAttempt'),
       false,
     );
     assert.equal(
@@ -845,7 +845,7 @@ describe('task provisioning diagnostic observer adapter', () => {
       recorder,
       {
         taskId: TASK_ID,
-        admissionMode: 'legacy',
+        admissionMode: 'durable',
       },
     );
     assert.ok(begun);
@@ -914,7 +914,7 @@ describe('task provisioning diagnostic observer adapter', () => {
       harness.recorder,
       {
         taskId: TASK_ID,
-        admissionMode: 'legacy',
+        admissionMode: 'durable',
       },
     );
     assert.ok(begun);

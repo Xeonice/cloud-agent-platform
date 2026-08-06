@@ -137,24 +137,22 @@ export type DomainEventEnvelope = z.infer<typeof DomainEventEnvelopeSchema>;
 /**
  * The canonical fence token carried by admission-related events (D10).
  *
- * It is the **admission transition token minted for that transition**, on both
- * paths:
- * - durable: the `transitionToken` minted by the capacity reservation in
- *   `tasks.service.ts` — NOT `claim.leaseToken`. The lease token belongs to the
- *   admission-work lease's lifetime, not to this transition, and substituting
- *   it would make the two publishers disagree silently about what the field
- *   means.
- * - legacy: the token `guardrails.admit()` fenced that admission with.
+ * It is the **admission transition token minted for that transition**: the
+ * `transitionToken` minted by the capacity reservation in `tasks.service.ts` —
+ * NOT `claim.leaseToken`. The lease token belongs to the admission-work lease's
+ * lifetime, not to this transition, and substituting it would make the two
+ * publishers disagree silently about what the field means.
  *
- * Which path produced it is stated explicitly by `admissionMode`, so no
- * subscriber ever has to infer provenance from a token's shape.
+ * The path that produced it is still carried explicitly by `admissionMode`, so
+ * no subscriber ever has to infer provenance from a token's shape.
  */
 const DomainEventFenceTokenSchema = z.string().min(1);
 
 /**
- * `durable` | `legacy`, derived from the admission-mode vocabulary this package
- * already declares for provisioning diagnostics. Deriving keeps one list: an
- * admission path added there cannot leave this catalog behind.
+ * `durable`, derived from the admission-mode vocabulary this package already
+ * declares for provisioning diagnostics. Deriving keeps one list: an admission
+ * path added there cannot leave this catalog behind — and the narrowing that
+ * retired the legacy member reached this catalog without editing it.
  */
 export const DomainEventAdmissionModeSchema = z.enum(
   TaskProvisioningDiagnosticAdmissionModeSchema.options,

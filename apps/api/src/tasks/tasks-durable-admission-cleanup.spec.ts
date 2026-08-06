@@ -1055,7 +1055,6 @@ test('succeeded durable work defers ordinary terminal cleanup and recovers the o
   const clock = new TerminalCleanupStoryClock();
   const store = new SucceededTerminalCleanupStoryStore(clock);
   const ownerStore = new InMemorySandboxRunOwnerStore();
-  const promoted: string[] = [];
   const destroyedSessions: string[] = [];
   const auditRows = new Set<string>();
   const diagnosticHarness = terminalCleanupDiagnosticHarness();
@@ -1186,9 +1185,6 @@ test('succeeded durable work defers ordinary terminal cleanup and recovers the o
     diagnosticHarness.recorder,
     writeGate,
   );
-  Object.assign(guardrails, {
-    onAdmit: async (taskId: string) => promoted.push(taskId),
-  });
   const semaphore = (
     guardrails as unknown as {
       semaphore: {
@@ -1237,7 +1233,6 @@ test('succeeded durable work defers ordinary terminal cleanup and recovers the o
   assert.equal(physicalSandboxPresent, true);
   assert.equal(semaphore.runningCount, 1);
   assert.equal(semaphore.queuedCount, 1);
-  assert.deepEqual(promoted, []);
   const pending = await router.getSandboxCleanupAuthority(TASK_ID);
   assert.equal(pending.state, 'pending');
   assert.equal(pending.attemptCount, 1);
@@ -1261,7 +1256,6 @@ test('succeeded durable work defers ordinary terminal cleanup and recovers the o
   assert.equal(physicalSandboxPresent, false);
   assert.equal((await router.getSandboxCleanupAuthority(TASK_ID)).status, 'removed');
   assert.equal(semaphore.queuedCount, 0);
-  assert.deepEqual(promoted, ['legacy-waiter']);
   assert.deepEqual(destroyedSessions, [TASK_ID]);
   assert.deepEqual(
     diagnosticHarness.cleanupRows.map((row) => row.state),
@@ -1281,7 +1275,6 @@ test('succeeded durable work defers ordinary terminal cleanup and recovers the o
     eventCount: 2,
   });
   assert.equal(auditRows.size, 1);
-  assert.deepEqual(promoted, ['legacy-waiter']);
   assert.deepEqual(destroyedSessions, [TASK_ID]);
 });
 
@@ -1290,7 +1283,6 @@ test('real terminal policy releases one durable slot only after bounded physical
   const store = new SucceededTerminalCleanupStoryStore(clock);
   const ownerStore = new InMemorySandboxRunOwnerStore();
   const diagnosticHarness = terminalCleanupDiagnosticHarness();
-  const promoted: string[] = [];
   const destroyedSessions: string[] = [];
   const auditRows = new Set<string>();
   let provisionCalls = 0;
@@ -1405,9 +1397,6 @@ test('real terminal policy releases one durable slot only after bounded physical
     diagnosticHarness.recorder,
     { isEnabled: () => true } as TaskProvisioningDiagnosticsWriteGatePort,
   );
-  Object.assign(guardrails, {
-    onAdmit: async (taskId: string) => promoted.push(taskId),
-  });
   const semaphore = (
     guardrails as unknown as {
       semaphore: {
@@ -1445,7 +1434,6 @@ test('real terminal policy releases one durable slot only after bounded physical
   assert.equal(physicalSandboxPresent, true);
   assert.equal(semaphore.runningCount, 1);
   assert.equal(semaphore.queuedCount, 1);
-  assert.deepEqual(promoted, []);
   assert.equal((await router.getSandboxCleanupAuthority(TASK_ID)).state, 'pending');
   assert.deepEqual(
     diagnosticHarness.cleanupRows.map((row) => row.state),
@@ -1470,9 +1458,8 @@ test('real terminal policy releases one durable slot only after bounded physical
     'terminal policy relinquishes authority without fabricating absence',
   );
   assert.equal(store.state, 'cancelled');
-  assert.equal(semaphore.runningCount, 1, 'promoted waiter owns the one slot');
+  assert.equal(semaphore.runningCount, 1, 'the dequeued waiter owns the one slot');
   assert.equal(semaphore.queuedCount, 0);
-  assert.deepEqual(promoted, ['legacy-waiter']);
   assert.deepEqual(destroyedSessions, [TASK_ID]);
   assert.deepEqual(
     diagnosticHarness.cleanupRows.map((row) => row.state),
@@ -1492,6 +1479,5 @@ test('real terminal policy releases one durable slot only after bounded physical
     completionMarked: true,
     eventCount: 2,
   });
-  assert.deepEqual(promoted, ['legacy-waiter']);
   assert.deepEqual(destroyedSessions, [TASK_ID]);
 });

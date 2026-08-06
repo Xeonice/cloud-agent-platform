@@ -66,35 +66,6 @@
     ],
     "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）。collapse-three-collaborator-groups：8 → 7。对账（防伪造）：8 − 7 = 1，恰等于本次删除的仅类型导入 `@/runner-metrics/metrics-projection`（投影访问器一并删除）。本刀新增的两处导入都不计数，因为两者都是合法形态的 `*.port.ts`：`@/runner-metrics/capacity-projection.port`（投影属主）与 `@/session-transcripts/session-transcript.port`（转录捕获端口的无操作替身）。7 是用闸门自己跑出来的活计数，不是从删了几行推算的"
   },
-  "cross-context-import:apps/api/src/inline-admission/inline-admission-state.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission-state.ts:26 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
-    ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
-  },
-  "cross-context-import:apps/api/src/inline-admission/inline-admission.entry.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission.entry.ts:21 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
-    ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
-  },
-  "cross-context-import:apps/api/src/inline-admission/inline-admission.pipeline.ts": {
-    "count": 2,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission.pipeline.ts:46 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-primary.classifier'",
-      "apps/api/src/inline-admission/inline-admission.pipeline.ts:49 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
-    ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
-  },
-  "cross-context-import:apps/api/src/inline-admission/inline-admission.port.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission.port.ts:34 imports '@/task-provisioning-diagnostics/task-provisioning-diagnostic-observer.adapter'"
-    ],
-    "change": "阶段 4–6 燃尽（事件订阅 + 对方 *.port.ts 显式导出 + 阶段6归拢）"
-  },
   "cross-context-import:apps/api/src/mail/smtp.controller.ts": {
     "count": 3,
     "samples": [
@@ -576,13 +547,6 @@
     "count": 1,
     "samples": [
       "apps/api/src/guardrails/retention-cleaner.ts:10 reaches Prisma outside a store file"
-    ],
-    "change": "阶段 5 燃尽（四核心域 store 化）"
-  },
-  "prisma-outside-store:apps/api/src/inline-admission/inline-admission.pipeline.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission.pipeline.ts:41 reaches Prisma outside a store file"
     ],
     "change": "阶段 5 燃尽（四核心域 store 化）"
   },
@@ -1136,27 +1100,6 @@
     "count": 1,
     "samples": [
       "apps/api/src/guardrails/transfer-progress-throttle.ts matches no file→layer rule"
-    ],
-    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
-  },
-  "unclassified-file:apps/api/src/inline-admission/inline-admission-state.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission-state.ts matches no file→layer rule"
-    ],
-    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
-  },
-  "unclassified-file:apps/api/src/inline-admission/inline-admission.entry.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission.entry.ts matches no file→layer rule"
-    ],
-    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
-  },
-  "unclassified-file:apps/api/src/inline-admission/inline-admission.pipeline.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/inline-admission/inline-admission.pipeline.ts matches no file→layer rule"
     ],
     "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
   },

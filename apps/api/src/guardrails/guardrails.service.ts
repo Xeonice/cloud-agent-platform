@@ -55,11 +55,9 @@ import {
   isSandboxWorkspaceMaterializationError,
   isSandboxCleanupCoordinationPendingError,
   isSandboxWorkspaceTransferDetachedSignal,
-  normalizeSandboxPhysicalCleanupResult,
   type AgentTerminalLaunchOutcome,
   type SandboxDetachedWorkspaceTransferJob,
   type SandboxWorkspaceTransferDetachment,
-  type SandboxPhysicalCleanupResult,
   type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
   type SandboxRunCleanupAuthorityProjection,
@@ -99,8 +97,6 @@ import {
   isTaskBranchResolutionError,
 } from '@/forge/task-branch-resolver';
 import { isWorkspaceSourceResolutionError } from '@/sandbox/workspace-source-resolver';
-import type { InlineAdmissionPort } from '@/inline-admission/inline-admission.entry';
-import { InlineAdmissionPipeline } from '@/inline-admission/inline-admission.pipeline';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
@@ -195,14 +191,17 @@ type RecoveredFailedAdmission =
  * (12.1), wall-clock deadline watcher (12.2), idle tracker (12.3), and start/turn
  * circuit breaker (12.4) — and WIRES their cross-track call sites:
  *
- *  - admit-queued: the semaphore's `onAdmit` callback drives the lifecycle
- *    `queued -> running` transition for the oldest queued task when a slot frees.
+ *  - capacity mirror: durable admission reserves capacity in the database and
+ *    reflects the granted slot here. Nothing offers into the semaphore's local
+ *    backlog any more — the in-request pipeline that did was retired — so it
+ *    carries no queue-promotion callback; a durable acceptance that loses the
+ *    capacity race is settled `queued` on its work ROW and re-claimed there.
  *  - force-fail + teardown + slot-release: the deadline / idle / circuit-breaker
  *    callbacks transition the task to `failed`, tear down its session-scoped
- *    credentials (the primary safety boundary), and release its concurrency slot
- *    (which may admit the next queued task). Under the connect-in model there is
- *    no per-task `TASK_TOKEN` to revoke — the session-scoped credentials are the
- *    sole authentication boundary.
+ *    credentials (the primary safety boundary), and release its concurrency
+ *    slot. Under the connect-in model there is no per-task `TASK_TOKEN` to
+ *    revoke — the session-scoped credentials are the sole authentication
+ *    boundary.
  *
  * The guardrail CLASSES own no task state and perform no writes; this service is
  * the integration seam that turns their decisions into lifecycle transitions and
@@ -374,12 +373,11 @@ export interface GuardrailsReadoptOptions {
 export type GuardrailsReadoptResult = 'attached' | 'absent' | 'superseded';
 
 /**
- * What either provisioning path holds when it publishes `SandboxProvisioned`.
+ * What the provisioning path holds when it publishes `SandboxProvisioned`.
  *
  * Structural on purpose: the durable seam passes the plan it built and the run
- * it re-read strictly, the legacy pipeline passes the same two values through
- * its orchestrator port. Neither has to fetch anything to satisfy this shape,
- * which is the "no new data pipeline" rule expressed as a type.
+ * it re-read strictly. It does not have to fetch anything to satisfy this
+ * shape, which is the "no new data pipeline" rule expressed as a type.
  */
 export interface SandboxProvisionedEventSource {
   readonly taskId: string;
@@ -395,12 +393,11 @@ export interface SandboxProvisionedEventSource {
 /**
  * ── `SandboxProvisioned` payload builders (add-domain-event-bus 4.5 / 4.9) ────
  *
- * ONE copy, shared by BOTH provisioning paths — the durable one publishes from
- * this file directly, the legacy pipeline publishes through
- * `publishSandboxProvisioned` on its orchestrator port. Two hand-maintained
- * copies is precisely the drift this payload exists to prevent: the whole point
- * of the event is that a subscriber cannot tell which path provisioned the
- * sandbox except by reading `admissionMode`.
+ * ONE copy, and now only one caller: the second provisioning path these
+ * builders were shared with — the retired in-request pipeline, which published
+ * through the orchestrator port — is gone. Keeping a single copy is still what
+ * prevents the drift the payload exists to prevent, and it is what a second
+ * provisioning path would have to reuse rather than reimplement.
  *
  * All three are pure functions of values the seam already holds. No provider
  * call, no database read, no resolver — the requirement, written as code.
@@ -430,9 +427,8 @@ function domainEventSandboxReference(
   return {
     baseUrl: source.connection.baseUrl,
     wsUrl: source.connection.wsUrl,
-    // Optional in the schema because the legacy seam's selected-run lookup is
-    // allowed to come back empty; the connection above always exists at both
-    // publish points.
+    // Optional in the schema because the selected-run lookup is allowed to come
+    // back empty; the connection above always exists at the publish point.
     ...(source.selectedRun?.providerId === undefined
       ? {}
       : { providerId: source.selectedRun.providerId }),
@@ -528,19 +524,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly provisioningDiagnostics: TaskProvisioningDiagnosticsObserverLifecyclePort;
   private readonly cleanupTerminalPolicyMaxAttempts: number;
   /**
-   * Guardrail params ({deadlineMs?, idleTimeoutMs?}) parked for tasks admitted to
-   * `queued` (no free slot at admit time). The semaphore's `AdmitCallback` is
-   * taskId-only, so the params are stashed here at `admit()` and consumed when the
-   * task is later promoted `queued -> running` in {@link onAdmit} — so a
-   * queued-then-admitted task still arms its deadline/idle watchers, not only a
-   * task that runs immediately.
-   */
-  private readonly pendingGuardrails = new Map<string, GuardrailParams>();
-  private readonly admissionsInFlight = new Map<
-    string,
-    Promise<'running' | 'queued'>
-  >();
-  /**
    * One valid durable claim owns one process execution. Retain the settled
    * promise for the lifetime of the claim object so concurrent and sequential
    * re-entry cannot repeat capacity reservation, diagnostic operations, or a
@@ -557,17 +540,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     TaskAdmissionProcessorContext['claim'],
     Promise<TaskAdmissionTerminalRecovery>
   >();
-  /**
-   * The synchronous, in-request admission pipeline taken when the deployment
-   * cannot prove `task-admission-v2`.
-   *
-   * It is constructed here rather than injected so that every context which
-   * builds a `GuardrailsService` — including the focused unit tests, which pass
-   * this constructor's optional arguments positionally — gets the same wiring
-   * without being edited. Deleting the pipeline directory leaves exactly the
-   * calls to this field as compile errors, which is the point.
-   */
-  private readonly inlineAdmission: InlineAdmissionPort;
   /** Coalesces duplicate startup readoption and keeps terminal fences live. */
   private readonly readoptionsInFlight = new Map<
     string,
@@ -734,79 +706,23 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     private readonly bus?: DomainEventBusPort,
   ) {
     // collapse-three-collaborator-groups — the two diagnostics collaborators are
-    // read ONCE, here, and handed to the two consumers that need them: the
-    // lifecycle owner built at the end of this constructor, which performs every
-    // begin/resume now that the wrappers are gone, and the legacy pipeline
-    // pass-through below, which is why both constructor parameters are still
-    // live and why this group's floor is 4 rather than 2. A second read would be
-    // a second reference to a budgeted symbol with no second consumer behind it.
+    // read ONCE, here, and handed to the lifecycle owner built at the end of
+    // this constructor, which performs every begin/resume now that the wrappers
+    // are gone. A second read would be a second reference to a budgeted symbol
+    // with no second consumer behind it.
     const diagnosticCollaborators = {
       recorder: this.provisioningDiagnosticRecorder,
       writeGate: this.provisioningDiagnosticWriteGate,
     };
 
-    // The inline pipeline's whole coupling to this orchestrator, written out
-    // once. Nothing reaches back in except through this adapter, so the cost of
-    // keeping the pipeline is countable and the cost of removing it is this
-    // literal plus the directory.
-    this.inlineAdmission = new InlineAdmissionPipeline(
-      {
-        logger: () => this.logger,
-        clearAdmissionRuntime: (taskId) => this.clearAdmissionRuntime(taskId),
-        waitForRunningAdmission: (taskId, token, signal) =>
-          this.waitForRunningAdmission(taskId, token, signal),
-        settleProvisioningDiagnostics: (attempt, input) =>
-          this.settleProvisioningDiagnostics(attempt, input),
-        settleCleanupDiagnostics: (settlement, evidence) =>
-          this.settleCleanupDiagnostics(settlement, evidence),
-        tryResumeProvisioningDiagnostics: (input) =>
-          this.provisioningDiagnostics.tryResume(input),
-        forceFail: (taskId, cause) => this.forceFail(taskId, cause),
-        failProvisioning: (taskId, error) => this.failProvisioning(taskId, error),
-        terminalTaskStatus: (taskId) => this.terminalTaskStatus(taskId),
-        isTerminallyFenced: (taskId) => this.terminalTasks.has(taskId),
-        terminalStatusOf: (taskId) => this.terminalTaskStatuses.get(taskId),
-        resolveProvisionPlan: (taskId) => this.resolveProvisionPlan(taskId),
-        resolveWorkspaceSource: (taskId, plan, capabilities) =>
-          this.resolveWorkspaceSource(taskId, plan, capabilities),
-        resolveSelectedRun: (taskId) => this.resolveSelectedRun(taskId),
-        buildWorkspaceProgressChain: (options) =>
-          this.buildWorkspaceProgressChain(options),
-        registerConnection: (taskId, connection) => {
-          this.connections.set(taskId, connection);
-        },
-        // add-domain-event-bus 4.9/4.10 — the pipeline publishes THROUGH this
-        // adapter rather than holding the bus itself. That keeps one error
-        // boundary and one payload builder for both provisioning paths, and it
-        // keeps the pipeline's dependency list honest: the bus stays part of the
-        // coupling written out here, not a new import in that directory.
-        publishSandboxProvisioned: (source) =>
-          this.publishSandboxProvisioned('legacy', source),
-        publishRunSupersession: (taskId, fenceToken) => {
-          this.publishDomainEvent({
-            ...this.domainEventEnvelope('task.superseded', taskId),
-            observationPoint: 'inline_pipeline_run',
-            fenceToken,
-          });
-        },
-        hasTerminalGateway: () => this.gateway !== undefined,
-        openTerminalSession: (connection, selectedRun) => {
-          const gateway = this.gateway;
-          if (!gateway) throw new Error('Terminal gateway is not resolved');
-          return gateway.openSession(connection, selectedRun);
-        },
-      },
-      this.sandbox,
-      this.prisma,
-      diagnosticCollaborators.recorder,
-      diagnosticCollaborators.writeGate,
-    );
-
-    // admit-queued: when a slot frees, drive `queued -> running` for the admitted
-    // task (FIFO) — the cross-track lifecycle call site for 12.1.
+    // The semaphore is the durable path's local capacity mirror: durable
+    // admission reserves against the database and calls
+    // {@link restoreDurableAdmissionSlot} to reflect the reservation here, and
+    // every terminal settlement releases through it. It has no queue promotion
+    // callback any more — nothing enqueues, because the retired inline pipeline
+    // was the only producer of process-local queued admissions.
     this.semaphore = new ConcurrencySemaphore({
       maxConcurrentTasks: config.maxConcurrentTasks,
-      onAdmit: (taskId) => void this.onAdmit(taskId),
     });
 
     // Operator-level idle default (off when null); per-task idleTimeoutMs overrides.
@@ -944,8 +860,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * THE publish seam for this service and for the inline pipeline it owns
-   * (add-domain-event-bus 4.2).
+   * THE publish seam for this service (add-domain-event-bus 4.2).
    *
    * Two guarantees, both load-bearing:
    *  - `this.bus?.` — with no bus bound (cutover closed, or the positional
@@ -974,23 +889,21 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * THE `SandboxProvisioned` publish, shared by both provisioning paths
-   * (add-domain-event-bus 4.5 / 4.9).
+   * THE `SandboxProvisioned` publish (add-domain-event-bus 4.5 / 4.9).
    *
-   * The durable path calls it inline; the legacy inline pipeline calls it
-   * through its orchestrator port, which is that pipeline's single declared
-   * coupling surface. Routing both through one method is what makes the two
-   * paths' payloads identical by construction rather than by review — a
-   * subscriber must not be able to tell the paths apart except by reading
-   * `admissionMode`.
+   * There is one provisioning path left, so `admissionMode` is no longer a
+   * parameter: it was the discriminator a subscriber used to tell the durable
+   * seam from the retired in-request pipeline, and only one of the two can
+   * publish. It stays on the payload — the event's schema still carries it —
+   * but the value is fixed at the single publish point rather than travelling
+   * as an argument that no caller can vary.
    */
   private publishSandboxProvisioned(
-    admissionMode: 'durable' | 'legacy',
     source: SandboxProvisionedEventSource,
   ): void {
     this.publishDomainEvent({
       ...this.domainEventEnvelope('sandbox.provisioned', source.taskId),
-      admissionMode,
+      admissionMode: 'durable',
       providerFamily: domainEventProviderFamily(source),
       sandbox: domainEventSandboxReference(source),
       environment: domainEventEnvironmentSnapshot(source),
@@ -1048,34 +961,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * Offer a newly created task to the concurrency semaphore (12.1). When a slot
-   * is free the task is admitted to `running` and its guardrail timers are armed;
-   * otherwise it is held `queued` (no sandbox provisioned) and its lifecycle is
-   * moved to `queued`. Returns the admission outcome.
-   */
-  async admit(taskId: string, params: GuardrailParams = {}): Promise<'running' | 'queued'> {
-    const inFlight = this.admissionsInFlight.get(taskId);
-    if (inFlight) return inFlight;
-    if (this.semaphore.isRunning(taskId)) return 'running';
-    if (this.semaphore.isQueued(taskId)) return 'queued';
-
-    const admission = this.admitUntracked(taskId, params);
-    this.admissionsInFlight.set(taskId, admission);
-    try {
-      return await admission;
-    } finally {
-      if (this.admissionsInFlight.get(taskId) === admission) {
-        this.admissionsInFlight.delete(taskId);
-      }
-      this.releaseTerminalFenceIfIdle(taskId);
-    }
-  }
-
-  /**
-   * Durable admission path. Capacity is linearized by TasksService against the
-   * shared database; this method never inserts durable work into the legacy
-   * process-local semaphore queue, whose taskId-only onAdmit callback has no
-   * lease/version authority.
+   * Durable admission path — the ONLY admission path. Capacity is linearized by
+   * TasksService against the shared database and mirrored into the local
+   * semaphore; nothing enters a process-local queue any more.
    */
   processDurableAdmission(
     context: TaskAdmissionProcessorContext,
@@ -1133,8 +1021,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
       if (reservation.outcome === 'running') {
         // The reservation transaction has already committed the durable slot.
-        // Mirror it before the next lease await so a lease-loss/crash window
-        // cannot let a legacy admission consume the same local capacity.
+        // Mirror it before the next lease await so the local ceiling matches
+        // the database's decision across a lease-loss/crash window.
         this.restoreDurableAdmissionSlot(taskId);
       }
       if (reservation.transitioned) {
@@ -1157,8 +1045,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
 
     // The DB transaction above is the durable capacity authority. Mirror its
-    // running winner into the legacy process-local semaphore so mixed rollout
-    // tasks cannot consume that same local slot. restoreRunning is idempotent.
+    // running winner into the process-local semaphore, which is this replica's
+    // view of that authority. restoreRunning is idempotent.
     this.restoreDurableAdmissionSlot(taskId);
 
     const interruptsPreviousDiagnostic =
@@ -1312,10 +1200,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           );
         },
         onWorkspaceProgress: this.buildWorkspaceProgressChain({
-          // detach-workspace-clone D11: same shared chain as the legacy
-          // provisioning context. The durable checkpoint hook is the only
-          // load-bearing step; a rejected checkpoint write fences a
-          // superseded holder at the write point and must propagate.
+          // detach-workspace-clone D11: the shared progress chain. The durable
+          // checkpoint hook is the only load-bearing step; a rejected
+          // checkpoint write fences a superseded holder at the write point and
+          // must propagate.
           checkpoint: (stage) => lease.checkpoint(stage),
           transferProgress: createThrottledTransferProgressWriter({
             write: (stage, progress) => lease.transferProgress(stage, progress),
@@ -1369,7 +1257,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       // Every value comes from what this seam ALREADY holds — the provision plan
       // it just built and the selected run it just re-read. No new provider call,
       // no new database read, no new resolver.
-      this.publishSandboxProvisioned('durable', {
+      this.publishSandboxProvisioned({
         taskId,
         connection,
         selectedRun,
@@ -1717,82 +1605,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       if (error instanceof TaskAdmissionCoordinationError) throw error;
       throw new TaskAdmissionCoordinationError('checkpoint', taskId, error);
     }
-  }
-
-  private async admitUntracked(
-    taskId: string,
-    params: GuardrailParams,
-  ): Promise<'running' | 'queued'> {
-    const outcome = this.semaphore.offer(taskId);
-    // The token this admission is fenced with, minted here so the publish below
-    // can carry the SAME one the transition used (D10).
-    const transitionToken = randomUUID();
-
-    if (outcome === 'running') {
-      const started = await this.startRunning(taskId, params, transitionToken);
-      if (started === 'failed') {
-        this.semaphore.release(taskId);
-        throw new Error(`task ${taskId} could not transition to running`);
-      }
-      if (started === 'already-transitioned' || started === 'superseded') {
-        this.semaphore.release(taskId);
-      }
-      // Legacy `TaskAdmitted` (add-domain-event-bus 4.6), 1 of the 2 admission
-      // paths. Published only for a transition THIS call committed: a superseded
-      // attempt, or one another actor had already transitioned, admitted nothing
-      // here and publishing for it would fabricate an admission — the same rule
-      // the durable publisher applies to its own reservation, so the two
-      // publishers cannot disagree about what `TaskAdmitted` means.
-      //
-      // Once per admission, not once per caller: this runs inside the untracked
-      // admission that `admit()` stores in `admissionsInFlight`, so concurrent
-      // callers joining that promise publish nothing of their own.
-      if (started === 'transitioned') {
-        this.publishDomainEvent({
-          ...this.domainEventEnvelope('task.admitted', taskId),
-          admissionMode: 'legacy',
-          outcome: 'running',
-          fenceToken: transitionToken,
-        });
-      }
-    } else {
-      // Park the guardrail params so they arm when the slot frees and this queued
-      // task is promoted to running (onAdmit), not silently dropped.
-      if (
-        params.deadlineMs !== undefined ||
-        params.idleTimeoutMs !== undefined ||
-        params.userId !== undefined
-      ) {
-        this.pendingGuardrails.set(taskId, params);
-      }
-      const queuedTransition = await this.safeAdmissionTransition(
-        taskId,
-        'queued',
-        params.userId,
-        transitionToken,
-      );
-      if (queuedTransition === 'failed') {
-        this.pendingGuardrails.delete(taskId);
-        this.semaphore.release(taskId);
-        throw new Error(`task ${taskId} could not transition to queued`);
-      }
-      if (queuedTransition === 'superseded') {
-        this.pendingGuardrails.delete(taskId);
-        this.semaphore.release(taskId);
-        throw new Error(`task ${taskId} queued admission was superseded`);
-      }
-      // The queued half of the same legacy publish point, under the same
-      // committed-only rule as the running half above.
-      if (queuedTransition === 'transitioned') {
-        this.publishDomainEvent({
-          ...this.domainEventEnvelope('task.admitted', taskId),
-          admissionMode: 'legacy',
-          outcome: 'queued',
-          fenceToken: transitionToken,
-        });
-      }
-    }
-    return outcome;
   }
 
   /**
@@ -2237,16 +2049,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     return this.connections.get(taskId);
   }
 
-  private async resolveSelectedRun(taskId: string): Promise<SelectedSandboxRun | null> {
-    try {
-      return (await this.sandbox?.getSelectedSandboxRun?.(taskId)) ?? null;
-    } catch {
-      this.logger.warn(
-        `selected sandbox run metadata for task ${taskId} unavailable (details redacted; continuing with connection only)`,
-      );
-      return null;
-    }
-  }
 
   /** Durable create/readopt must fail closed on an indeterminate owner lookup. */
   private async resolveSelectedRunStrict(
@@ -2333,22 +2135,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * detach-workspace-clone D11: the durable admission chain and the legacy
-   * provisioning chain share exactly this workspace-progress handler so
-   * additive progress variants (e.g. the detached clone percent/objects/bytes
-   * event) always flow through both chains identically and can never drift.
-   * Apply-time decision per D11: the legacy chain is kept — it still has live
-   * callers — and routed through this shared chain rather than retired.
-   * Forwarding is best-effort by contract (a dropped progress write is never
-   * an error); the optional durable checkpoint hook is the only load-bearing
-   * step and fires only for stage `started` events, exactly as before.
+   * detach-workspace-clone D11: the workspace-progress handler additive
+   * progress variants (e.g. the detached clone percent/objects/bytes event)
+   * flow through. It was shared with the legacy provisioning chain so the two
+   * could never drift; that chain has since been retired, leaving the durable
+   * one as the only caller. Forwarding is best-effort by contract (a dropped
+   * progress write is never an error); the optional durable checkpoint hook is
+   * the only load-bearing step and fires only for stage `started` events.
    */
   private buildWorkspaceProgressChain(options: {
     readonly checkpoint?: (stage: TaskProvisioningStage) => Promise<void>;
     /**
      * Best-effort transfer-progress sink (chunk-archive-injection-with-progress
-     * D2). Only the durable chain supplies one; legacy admission has no work
-     * row, so progress events are silently dropped there by construction.
+     * D2). Supplied by the durable chain, which owns the work row the progress
+     * is written onto.
      */
     readonly transferProgress?: ThrottledTransferProgressWriter;
     readonly forward?: SandboxWorkspaceProgressReporter;
@@ -2372,8 +2172,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
   /**
    * detach-workspace-clone D3/D9: cooperative parking seam for the durable
-   * admission chain only (the legacy chain deliberately passes none and keeps
-   * the inline blocking await of the detached job — D11). `park` opts the
+   * admission chain — since the retirement, the only chain there is. `park`
+   * opts the
    * staged materialization into handing back the probe/kill seam instead of
    * holding this worker slot through the transfer. For a claim that resumed a
    * parked row (`claim.parkedLeaseToken` present — both same-process resume
@@ -2424,7 +2224,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     );
     this.terminalTasks.add(taskId);
     if (status !== undefined) this.terminalTaskStatuses.set(taskId, status);
-    this.inlineAdmission.abortProvisioning(taskId);
     this.clearTimers(taskId);
     this.runnerMinutes.recordEnd(taskId);
     if (settledStatus !== undefined) {
@@ -2448,7 +2247,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         forced && forced.status === status
           ? forced.plan
           : terminalSettlePlan();
-      await this.settleTask(taskId, plan, status);
+      await this.settleTask(taskId, plan);
     } finally {
       this.forcedTerminalPlans.delete(taskId);
       this.readoptionAuthorityChecks.delete(taskId);
@@ -2608,12 +2407,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  /** Mirror a DB-authorized durable running task into the legacy local ceiling. */
+  /** Mirror a DB-authorized durable running task into the local ceiling. */
   restoreDurableAdmissionSlot(taskId: string): void {
-    // This compatibility mirror is replica-local. Cross-replica mixed-legacy
-    // safety depends on the deployment-time admission-v2 capability gate and
-    // drain precondition (8.1); a process-local environment switch alone does
-    // not enforce that rollout invariant.
+    // This mirror is replica-local: it keeps THIS process's ceiling honest
+    // about a slot the database already granted. The database reservation, not
+    // this set, is the capacity authority across replicas.
     this.semaphore.restoreRunning(taskId);
   }
 
@@ -2622,7 +2420,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * durable work is still unfinished, only terminal recovery may perform the
    * exact-owner teardown and release the mirrored slot. A failed authority
    * read is conservatively treated the same way: releasing on uncertainty can
-   * over-admit legacy work while a provisioning/running/deleting owner is live.
+   * over-admit while a provisioning/running/deleting owner is still live.
    */
   private async deferTerminalSettlementToDurableRecovery(
     taskId: string,
@@ -2643,8 +2441,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
       // A normally launched durable task settles Work as succeeded while its
       // generation-fenced SandboxRun remains live. The terminal Task CAS makes
-      // that same row claimable again solely for cleanup recovery. Legacy and
-      // ownerless rows deliberately stay on ordinary process-local settlement.
+      // that same row claimable again solely for cleanup recovery. Ownerless
+      // rows deliberately stay on ordinary process-local settlement.
       const getCleanupAuthority = this.sandbox?.getSandboxCleanupAuthority;
       if (!getCleanupAuthority) return true;
       const authority = await getCleanupAuthority.call(this.sandbox, taskId);
@@ -2678,13 +2476,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async settleTask(
     taskId: string,
     plan: SandboxSettlePlan,
-    terminalStatus?: TaskStatus,
   ): Promise<void> {
-    const diagnosticAttempt =
-      await this.inlineAdmission.resolveTerminalDiagnosticAttempt(taskId);
     let cleanupAuthority: SandboxRunCleanupAuthorityProjection | undefined;
-    let providerBoundaryCrossed =
-      this.inlineAdmission.providerBoundaryCrossed(taskId);
     const getCleanupAuthority = this.sandbox?.getSandboxCleanupAuthority;
     if (getCleanupAuthority) {
       try {
@@ -2692,25 +2485,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           this.sandbox,
           taskId,
         );
-        // A persisted owner/create fence may belong to another replica. Only an
-        // explicit null status proves that no provider boundary needs cleanup;
-        // an undefined/malformed projection remains fail-closed.
-        if (cleanupAuthority?.status !== null) providerBoundaryCrossed = true;
       } catch {
-        // Cross-replica cleanup authority is load-bearing for diagnostic
-        // completeness. Read uncertainty must never become not_required.
-        providerBoundaryCrossed = true;
+        // An indeterminate cross-replica read stays fail-closed below: the
+        // generation-ownership checks simply do not fire.
       }
     }
-    if (diagnosticAttempt) {
-      await this.inlineAdmission.settleTerminalPrimary(
-        taskId,
-        diagnosticAttempt,
-        terminalStatus ?? (await this.terminalTaskStatus(taskId)),
-        providerBoundaryCrossed,
-      );
-    }
-    const cleanupNotRequired = this.inlineAdmission.cleanupNotRequired(taskId);
     if (
       cleanupAuthority?.ownershipKind === 'generation' &&
       (cleanupAuthority.status === 'provisioning' ||
@@ -2728,7 +2507,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     if (plan.deliverWorkspace) {
       await this.deliverResult(taskId);
     }
-    let physicalCleanup: SandboxPhysicalCleanupResult | undefined;
     const generationCleanupAlreadySettled =
       cleanupAuthority?.ownershipKind === 'generation' &&
       (cleanupAuthority.status === 'terminal' ||
@@ -2740,15 +2518,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       !generationCleanupAlreadySettled
     ) {
       try {
-        const result = await this.sandbox.teardownSandbox(taskId, {
+        await this.sandbox.teardownSandbox(taskId, {
           disposition: 'terminal-retain',
-          ...(diagnosticAttempt && !cleanupNotRequired
-            ? { diagnostics: diagnosticAttempt.diagnostics }
-            : {}),
         });
-        physicalCleanup = normalizeSandboxPhysicalCleanupResult(result);
       } catch {
-        physicalCleanup = normalizeSandboxPhysicalCleanupResult(undefined);
         this.logger.warn(
           `sandbox teardown for task ${taskId} failed (provider details redacted)`,
         );
@@ -2757,23 +2530,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         cleanupAuthority =
           await this.sandbox.getSandboxCleanupAuthority?.(taskId);
       } catch {
-        // Legacy admission has no automatic exact-owner recovery. Keep only
-        // the bounded physical observation below and release its local slot.
+        // An indeterminate re-read keeps only the bounded physical observation
+        // above and releases this task's local slot.
       }
     }
-    if (!cleanupNotRequired) {
-      const cleanupSummary =
-        cleanupAuthority?.status
-          ? cleanupSummaryFromAuthority(cleanupAuthority)
-          : physicalCleanup
-            ? cleanupSummaryFromPhysicalAttempt(physicalCleanup)
-            : noCleanupRequiredSummary();
-      await this.settleCleanupDiagnostics(
-        diagnosticAttempt?.settlement,
-        cleanupSummary,
-      );
-    }
-    this.inlineAdmission.forget(taskId);
     if (
       cleanupAuthority?.ownershipKind === 'generation' &&
       (cleanupAuthority.status === 'provisioning' ||
@@ -2910,143 +2670,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   // Internal wiring
   // -------------------------------------------------------------------------
 
-  /** Admit a previously-queued task: `queued -> running` + arm timers (12.1). */
-  private async onAdmit(taskId: string): Promise<void> {
-    // release()/setMaxConcurrentTasks() may synchronously promote a task while
-    // its original pending -> queued CAS is awaiting the database. Chain that
-    // exact promise so queued is durable before queued -> running begins.
-    const queuedAdmission = this.admissionsInFlight.get(taskId);
-    const admission = (async (): Promise<'running'> => {
-      if (queuedAdmission) await queuedAdmission;
-      return this.promoteQueuedTask(taskId);
-    })();
-    this.admissionsInFlight.set(taskId, admission);
-    try {
-      await admission;
-    } catch (err) {
-      this.logger.warn(
-        `queued task ${taskId} could not transition to running; its slot was released: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    } finally {
-      if (this.admissionsInFlight.get(taskId) === admission) {
-        this.admissionsInFlight.delete(taskId);
-      }
-      this.releaseTerminalFenceIfIdle(taskId);
-    }
-  }
-
-  private async promoteQueuedTask(taskId: string): Promise<'running'> {
-    // Consume the guardrail params parked at admit() so a queued-then-admitted
-    // task arms its deadline/idle watchers just like one that ran immediately.
-    const parked = this.pendingGuardrails.get(taskId) ?? {};
-    this.pendingGuardrails.delete(taskId);
-    const started = await this.startRunning(taskId, parked);
-    if (started !== 'transitioned') {
-      this.semaphore.release(taskId);
-      if (started === 'failed') {
-        throw new Error(`task ${taskId} could not transition to running`);
-      }
-    }
-    return 'running';
-  }
-
-  /** Transition to `running`, arm the idle tracker (if opted in) and deadline (if any). */
-  private async startRunning(
-    taskId: string,
-    params: GuardrailParams = {},
-    /*
-     * The token this admission is fenced with. Defaulted so the queued-promotion
-     * caller is unchanged; `admitUntracked` passes one in because it must PUBLISH
-     * that token on `TaskAdmitted` (add-domain-event-bus 4.6/D10) and the
-     * canonical fence token is the token that actually fenced the transition —
-     * not a second one minted for the event.
-     */
-    transitionToken = randomUUID(),
-  ): Promise<AdmissionTransitionResult | 'failed'> {
-    const transition = await this.safeAdmissionTransition(
-      taskId,
-      'running',
-      params.userId,
-      transitionToken,
-    );
-    if (transition !== 'transitioned') return transition;
-    if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-      return 'superseded';
-    }
-
-    const diagnosticAttempt = await this.beginProvisioningDiagnostics({
-      taskId,
-      admissionMode: 'legacy',
-    });
-    // Diagnostic begin is deliberately bounded, but it still introduces an
-    // await after the original running fence. Recheck before arming runtime or
-    // crossing a provider boundary so an operator terminal transition that won
-    // during that window cannot start stale provisioning work.
-    if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-      await this.inlineAdmission.settleProvisioningSupersession(
-        taskId,
-        diagnosticAttempt,
-        undefined,
-        false,
-      );
-      return 'superseded';
-    }
-    const processRunning = () =>
-      this.startRunningAfterCapacity(
-        taskId,
-        params,
-        transitionToken,
-        diagnosticAttempt,
-      );
-    return diagnosticAttempt
-      ? runWithTaskProvisioningAttemptLog(
-          diagnosticAttempt.context,
-          processRunning,
-        )
-      : processRunning();
-  }
-
-  /** Continue only after the legacy running transition is proven current. */
-  private async startRunningAfterCapacity(
-    taskId: string,
-    params: GuardrailParams,
-    transitionToken: string,
-    diagnosticAttempt?: BegunTaskProvisioningDiagnosticObserver,
-  ): Promise<AdmissionTransitionResult | 'failed'> {
-    // Idle tracking is OPT-IN: arm only when an effective ceiling exists — the
-    // task's own `idleTimeoutMs`, else the operator-level default. With neither,
-    // the task is NOT idle-tracked and is never force-failed for idleness, so a
-    // legitimately long, quiet task is not reclaimed.
-    const idleMs = params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
-    if (idleMs !== undefined) {
-      this.idle.start(taskId, idleMs);
-    }
-    // Begin the runner-minutes interval the moment the task enters RUNNING (5.4).
-    this.runnerMinutes.recordStart(taskId);
-    // Run-start publish point 2 of 3 (add-domain-event-bus 4.3): the legacy
-    // inline path. Adjacent to the recordStart above, which is neither replaced
-    // nor moved. This seam knows its admission path statically.
-    this.publishDomainEvent({
-      ...this.domainEventEnvelope('task.run_started', taskId),
-      startPoint: 'legacy_capacity',
-      admissionMode: 'legacy',
-    });
-    if (params.deadlineMs !== undefined) {
-      this.deadlines.armAfter(taskId, params.deadlineMs);
-    }
-    // Provision the execution sandbox under the connect-in model: `provision()`
-    // creates the per-task AIO container and returns an addressable
-    // `SandboxConnection` the orchestrator dials by container name on `cap-net` —
-    // there is no dial-back to authenticate, so NO per-task TASK_TOKEN is minted.
-    // The returned handle is captured (stashed by taskId) AND handed to the
-    // terminal gateway, which opens an `AioPtyClient` to `connection.wsUrl` and
-    // registers the `TerminalSession` (4.2). Best-effort: a provision failure is
-    // logged, not fatal to the lifecycle transition.
-    return this.inlineAdmission.run(taskId, transitionToken, diagnosticAttempt);
-  }
-
 
   /**
    * Open evidence for one provisioning attempt, carrying the ADMISSION-side
@@ -3055,41 +2678,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * Whether evidence can be written at all is no longer decided here: the owner
    * answers with an observer or with the "no observer" result, and this method
    * cannot tell a closed deployment switch from an unwired recorder from a write
-   * that outran its bound. What IS admission knowledge stays here — remembering
-   * a legacy attempt for the inline pipeline's cleanup, and retiring one that
-   * arrived after the bound already detached the write — so neither piece had to
-   * travel into the diagnostics context to make the move.
+   * that outran its bound. What IS admission knowledge stays here — retiring an
+   * attempt that arrived after the bound already detached the write — so that
+   * piece did not have to travel into the diagnostics context to make the move.
    */
   private beginProvisioningDiagnostics(
     input: BeginTaskProvisioningDiagnosticObserverInput,
   ): Promise<BegunTaskProvisioningDiagnosticObserver | undefined> {
     return this.provisioningDiagnostics.tryBegin(input, {
-      onBegun: (attempt) => {
-        if (input.admissionMode !== 'legacy') return;
-        // A terminal CAS may have completed while the recorder allocated this
-        // attempt. Never re-attach that late controller after the terminal
-        // owner has already drained the process-local maps; the admission
-        // continuation will settle it directly from the retained terminal
-        // fence before returning.
-        if (!this.terminalTasks.has(input.taskId)) {
-          this.inlineAdmission.rememberBegunAttempt(input.taskId, attempt);
-        }
-      },
       onDetachedWrite: async (lateAttempt) => {
         // A database transaction may commit after the owner's write bound
         // expired. Admission has already moved on, so retire the now-detached
         // attempt as explicitly indeterminate rather than leaving an orphaned
         // active row. The emitter is intentionally not attached to provider work
         // that continued past that best-effort boundary.
-        if (input.admissionMode === 'legacy' && this.terminalTasks.has(input.taskId)) {
-          await this.inlineAdmission.settleProvisioningSupersession(
-            input.taskId,
-            lateAttempt,
-            undefined,
-            false,
-          );
-          return;
-        }
         await this.settleProvisioningDiagnostics(lateAttempt, {
           state: 'interrupted',
           stage: 'provider_selection',
@@ -3114,12 +2716,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     input: TaskProvisioningDiagnosticPrimarySettlementInput,
   ): Promise<void> {
     if (!attempt) return;
-    if (
-      attempt.context.admissionMode === 'legacy' &&
-      input.completion === 'mark_if_complete'
-    ) {
-      this.inlineAdmission.markCleanupNotRequired(attempt.context.taskId);
-    }
     // `settlePrimary` selects its immutable first winner synchronously. Invoke
     // it directly so a Task-CAS terminal continuation cannot overtake an
     // already-authorized settlement between this call and a queued microtask.
@@ -3237,57 +2833,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  private async waitForRunningAdmission(
-    taskId: string,
-    transitionToken: string,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    let attempt = 0;
-    for (;;) {
-      if (this.terminalTasks.has(taskId) || signal?.aborted) return false;
-      const checker = this.tasks.isAdmissionTransitionCurrent;
-      // Guardrails-only tests may provide the historical narrow mock. Production
-      // always resolves the concrete TasksService with the durable token check.
-      if (typeof checker !== 'function') return true;
-      try {
-        const current = await raceWithAbortSignal(
-          Promise.resolve().then(() =>
-            checker.call(
-              this.tasks,
-              taskId,
-              'running',
-              transitionToken,
-            ),
-          ),
-          signal,
-        );
-        return (
-          current === true &&
-          !this.terminalTasks.has(taskId) &&
-          !signal?.aborted
-        );
-      } catch (err) {
-        if (signal?.aborted) return false;
-        attempt += 1;
-        if (attempt === 1 || attempt % 10 === 0) {
-          this.logger.warn(
-            `running admission check for task ${taskId} failed; provider start remains fenced: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-        try {
-          await delay(
-            Math.min(5_000, 50 * 2 ** Math.min(attempt - 1, 7)),
-            undefined,
-            signal ? { signal } : undefined,
-          );
-        } catch {
-          if (signal?.aborted) return false;
-        }
-      }
-    }
-  }
 
 
 
@@ -3375,7 +2920,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
   private releaseTerminalFenceIfIdle(taskId: string): void {
     if (
-      !this.admissionsInFlight.has(taskId) &&
       !this.readoptionsInFlight.has(taskId) &&
       !this.terminalSettlementsInFlight.has(taskId)
     ) {
@@ -3502,52 +3046,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  private async failProvisioning(
-    taskId: string,
-    error: unknown,
-  ): Promise<TaskStatus | undefined> {
-    // This is only an in-process provider fence. The terminal status remains
-    // unknown until TasksService confirms the lifecycle CAS winner.
-    this.fenceTerminal(taskId);
-    this.forcedTerminalPlans.set(taskId, {
-      status: 'failed',
-      plan: forceFailSettlePlan({ terminal: 'failed' }),
-    });
-    try {
-      if (isTaskBranchResolutionError(error)) {
-        try {
-          await this.tasks.failWithProvisioningFailure(
-            taskId,
-            error.failureCode,
-          );
-          return await this.terminalTaskStatus(taskId);
-        } catch (persistError) {
-          this.logger.debug(
-            `branch resolution failure transition for task ${taskId} skipped: ${
-              persistError instanceof Error
-                ? persistError.message
-                : String(persistError)
-            }`,
-          );
-        }
-      }
-      if (isSandboxRuntimeModelSetupError(error)) {
-        if (
-          await this.failRuntime(
-            taskId,
-            'runtime_model_setup_failed',
-            null,
-            false,
-          )
-        ) {
-          return await this.terminalTaskStatus(taskId);
-        }
-      }
-      return await this.forceFail(taskId, 'provision_failed');
-    } finally {
-      this.forcedTerminalPlans.delete(taskId);
-    }
-  }
 
   /**
    * Reclaim a task from a guardrail trip: stop/kill its running sandbox (VR.2), tear
@@ -3628,8 +3126,6 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private clearTimers(taskId: string): void {
     this.deadlines.clear(taskId);
     this.idle.stop(taskId);
-    // Drop any guardrail params parked while the task was queued but never promoted.
-    this.pendingGuardrails.delete(taskId);
     this.durableRuntimeArmed.delete(taskId);
   }
 
@@ -4086,28 +3582,6 @@ function cleanupSummaryFromAuthority(
   };
 }
 
-/** One legacy best-effort disposition is evidence, never a retry authority. */
-function cleanupSummaryFromPhysicalAttempt(
-  physical: SandboxPhysicalCleanupResult,
-): TaskProvisioningDiagnosticCleanupSummary {
-  const observedAt = new Date();
-  if (physical.outcome === 'succeeded') {
-    return {
-      state: 'succeeded',
-      cause: null,
-      attemptCount: 1,
-      lastAttemptOutcome: 'succeeded',
-      observedAt,
-    };
-  }
-  return {
-    state: physical.outcome === 'failed' ? 'failed' : 'pending',
-    cause: physical.cause,
-    attemptCount: 1,
-    lastAttemptOutcome: physical.outcome,
-    observedAt,
-  };
-}
 
 function isCleanupCoordinationPending(error: unknown): boolean {
   try {
@@ -4147,27 +3621,3 @@ function isTerminalTaskStatus(status: TaskStatus): boolean {
   );
 }
 
-function raceWithAbortSignal<T>(
-  promise: Promise<T>,
-  signal?: AbortSignal,
-): Promise<T | undefined> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.resolve(undefined);
-  return new Promise<T | undefined>((resolve, reject) => {
-    const onAbort = (): void => {
-      signal.removeEventListener('abort', onAbort);
-      resolve(undefined);
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
-}

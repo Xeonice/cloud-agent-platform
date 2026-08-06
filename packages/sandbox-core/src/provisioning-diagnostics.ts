@@ -13,8 +13,12 @@ export const SANDBOX_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION = 1 as const;
 export const SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT = 64 as const;
 export const SANDBOX_PROVISIONING_DIAGNOSTIC_SAFE_TEXT_MAX_LENGTH = 160 as const;
 
+/**
+ * One member, mirroring the narrowed contract enum: durable admission is the
+ * only path a provisioning attempt can arrive by. Kept as an array so the
+ * vocabulary-parity gate keeps reconciling it against the schema side.
+ */
 export const SANDBOX_PROVISIONING_DIAGNOSTIC_ADMISSION_MODES = [
-  'legacy',
   'durable',
 ] as const;
 export type SandboxProvisioningDiagnosticAdmissionMode =

@@ -116,10 +116,10 @@
       "run": [
         "bash",
         "-c",
-        "grep -rl \"admission_mode\" apps/api/prisma/migrations 2>/dev/null | xargs grep -l \"legacy\" 2>/dev/null | xargs grep -i \"UPDATE\" 2>/dev/null || true"
+        "if grep -rqiE \"set[^;]*admission_mode[[:space:]]*=|update[[:space:]]+\\\"?task_provisioning_diagnostic_(attempts|events)\\\"?\" apps/api/prisma/migrations 2>/dev/null; then echo REWRITES; else echo DELETES_ONLY; fi"
       ],
       "expect": {
-        "stdoutAbsent": "UPDATE"
+        "stdoutEquals": "DELETES_ONLY"
       }
     },
     {
@@ -242,18 +242,83 @@
       }
     },
     {
-      "id": "publish-point-counts-match-live",
+      "id": "task-run-started-two-live-publish-points",
       "requirements": [
+        "guardrails/taskrunstarted-is-published-at-exactly-two-declared-points",
         "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
       ],
-      "describe": "发布点计数与活计数一致——数出来的，不是从旧数减一",
+      "describe": "TaskRunStarted 活发布点恰好 2 个（readoption + durable_arm），数出来的",
       "run": [
         "bash",
         "-c",
-        "node -e \"const{execSync}=require('child_process');const n=execSync(\\\"grep -rn 'TaskRunStarted' apps/api/src --include='*.ts' | grep -i publish | grep -v spec | wc -l\\\",{encoding:'utf8'}).trim();console.log(String(Number(n)>=0?'COUNTED':'X'))\""
+        "grep -rn \"domainEventEnvelope('task.run_started'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
       ],
       "expect": {
-        "stdoutEquals": "COUNTED"
+        "stdoutEquals": "2"
+      }
+    },
+    {
+      "id": "sandbox-provisioned-one-live-publisher",
+      "requirements": [
+        "guardrails/sandboxprovisioned-is-published-on-the-one-surviving-provisioning-path-after-the-provider-boundary-succeeds",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "SandboxProvisioned 载荷构造器只剩 1 个活调用点（第二条 in-request 路径随管线消失）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"this.publishSandboxProvisioned(\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "task-admitted-one-live-publish-point",
+      "requirements": [
+        "guardrails/taskadmitted-is-published-on-the-one-surviving-admission-path",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "TaskAdmitted 活发布点恰好 1 个（durable 预留提交处）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"domainEventEnvelope('task.admitted'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "task-superseded-two-live-publish-points",
+      "requirements": [
+        "guardrails/tasksuperseded-is-published-once-per-observation-at-two-declared-producer-boundaries",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "TaskSuperseded 活生产边界恰好 2 个（预留 + 准入迁移）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"domainEventEnvelope('task.superseded'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "2"
+      }
+    },
+    {
+      "id": "retired-discriminants-unproduced-but-still-declared",
+      "requirements": [
+        "guardrails/taskrunstarted-is-published-at-exactly-two-declared-points",
+        "guardrails/tasksuperseded-is-published-once-per-observation-at-two-declared-producer-boundaries"
+      ],
+      "describe": "legacy_capacity / inline_pipeline_run 无活生产者，但仍留在已发布契约里（本改动不窄化该联合）",
+      "run": [
+        "bash",
+        "-c",
+        "if grep -rn \"legacy_capacity\\|inline_pipeline_run\" apps/api/src --include='*.ts' 2>/dev/null | grep -qv '\\.spec\\.ts'; then echo LIVE_PRODUCER; elif grep -q \"'legacy_capacity'\" packages/contracts/src/domain-event.ts && grep -q \"'inline_pipeline_run'\" packages/contracts/src/domain-event.ts; then echo UNPRODUCED_STILL_DECLARED; else echo CONTRACT_NARROWED; fi"
+      ],
+      "expect": {
+        "stdoutEquals": "UNPRODUCED_STILL_DECLARED"
       }
     }
   ]

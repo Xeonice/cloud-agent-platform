@@ -50,7 +50,7 @@ const CONTEXT: TaskProvisioningDiagnosticAttemptContext = Object.freeze({
 const BEGIN_INPUT: BeginTaskProvisioningDiagnosticObserverInput =
   Object.freeze({
     taskId: TASK_ID,
-    admissionMode: 'legacy' as const,
+    admissionMode: 'durable' as const,
   });
 
 const RESUME_INPUT: ResumeTaskProvisioningDiagnosticObserverInput =
@@ -245,7 +245,7 @@ describe('task provisioning diagnostics observer lifecycle', () => {
     assert.equal(begun[0], attempt);
     assert.equal(harness.beganWith.length, 1);
     assert.equal(harness.beganWith[0]?.taskId, TASK_ID);
-    assert.equal(harness.beganWith[0]?.admissionMode, 'legacy');
+    assert.equal(harness.beganWith[0]?.admissionMode, 'durable');
     assert.equal(harness.beganWith[0]?.expectedAttempt, undefined);
   });
 

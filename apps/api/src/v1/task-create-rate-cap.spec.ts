@@ -154,6 +154,10 @@ before(async () => {
         sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
         model: body.model ?? null,
         executionEnvironmentSnapshot: null,
+        admissionMode: 'durable-v2' as const,
+        resolvedBranch: 'main',
+        resourceSnapshot: {},
+        workspaceMaterializationDeadlineMs: 60_000,
       };
     },
     async acceptPreparedTask(_prepared: PreparedTaskCreate): Promise<TaskResponse> {

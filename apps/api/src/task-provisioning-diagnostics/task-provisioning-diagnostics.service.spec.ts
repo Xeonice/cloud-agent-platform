@@ -473,7 +473,6 @@ describe('TaskProvisioningDiagnosticsService', () => {
     Object.assign(terminalPartial, { eventCount: 2 });
     const terminalComplete = db.settledAttempt(3);
     Object.assign(terminalComplete, {
-      admissionMode: 'legacy',
       providerFamily: 'cloud-http',
       coverage: 'complete',
       eventCount: 4,
@@ -518,7 +517,7 @@ describe('TaskProvisioningDiagnosticsService', () => {
         },
       },
       {
-        admissionMode: 'legacy' as const,
+        admissionMode: 'durable' as const,
         attempt: 3,
         attemptId: terminalComplete.id,
         state: 'failed',
@@ -574,6 +573,9 @@ describe('TaskProvisioningDiagnosticsService', () => {
     const invalidInputs = [
       { taskId: 'not-a-task-id', admissionMode: 'durable', attempt: 1 },
       { taskId: TASK_ID, admissionMode: 'other', attempt: 1 },
+      // The retired admission mode is now just another rejected value: resume
+      // cannot re-open an attempt the narrowed enum no longer admits.
+      { taskId: TASK_ID, admissionMode: 'legacy', attempt: 1 },
       { taskId: TASK_ID, admissionMode: 'durable', attempt: 0 },
       {
         taskId: TASK_ID,
@@ -592,7 +594,6 @@ describe('TaskProvisioningDiagnosticsService', () => {
 
     for (const input of [
       { taskId: TASK_ID, admissionMode: 'durable' as const, attempt: 99 },
-      { taskId: TASK_ID, admissionMode: 'legacy' as const, attempt: 1 },
     ]) {
       assert.deepEqual(await service.resumeAttempt(input), {
         ok: false,
@@ -920,7 +921,7 @@ describe('TaskProvisioningDiagnosticsService', () => {
 
     const opened = await service.beginAttempt({
       taskId: TASK_ID,
-      admissionMode: 'legacy',
+      admissionMode: 'durable',
     });
 
     assert.equal(opened.ok, true);

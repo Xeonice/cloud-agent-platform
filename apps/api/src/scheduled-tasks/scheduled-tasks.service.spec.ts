@@ -720,6 +720,10 @@ function buildHarness(
       sandboxEnvironmentId: body.sandboxEnvironmentId ?? ENV_ID,
       model: body.model ?? null,
       executionEnvironmentSnapshot: null,
+      admissionMode: 'durable-v2' as const,
+      resolvedBranch: 'main',
+      resourceSnapshot: {},
+      workspaceMaterializationDeadlineMs: 60_000,
     };
   }
   const tasks = {

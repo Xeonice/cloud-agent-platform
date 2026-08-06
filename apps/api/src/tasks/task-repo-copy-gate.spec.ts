@@ -76,7 +76,7 @@ function makeHarness(copyStatus: string | null | undefined): GateHarness {
 
   let taskRow: Record<string, unknown> | null = null;
 
-  const prisma = {
+  const prisma: Record<string, unknown> = {
     repo: {
       findUnique: async ({ where }: { where: { id: string } }) => {
         repoReads += 1;
@@ -105,7 +105,24 @@ function makeHarness(copyStatus: string | null | undefined): GateHarness {
       findMany: async () => [],
       findUnique: async () => taskRow,
     },
-  } as unknown as PrismaService;
+    // Acceptance is one transaction over Task + admission work + creation
+    // audit. There is a single admission path now, so the copy gate is
+    // exercised in front of that one path rather than in front of a choice.
+    taskAdmissionWork: {
+      create: async ({ data }: { data: { taskId: string } }) => ({
+        ...data,
+        state: 'accepted',
+        stage: 'accepted',
+        attempt: 0,
+        updatedAt: new Date('2026-07-20T00:00:01.000Z'),
+      }),
+      findUnique: async ({ where }: { where: { taskId: string } }) =>
+        taskRow && taskRow.id === where.taskId ? { taskId: where.taskId } : null,
+    },
+    auditEvent: { upsert: async () => ({}) },
+    $transaction: async <T,>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+      fn(prisma),
+  };
 
   const registry: IAgentRuntimeRegistry = {
     resolve(runtime) {
@@ -118,8 +135,45 @@ function makeHarness(copyStatus: string | null | undefined): GateHarness {
     },
   };
 
-  // Positional DI: (prisma, guardrails?, audit?, sandbox?, runtimes?, ...).
-  const service = new TasksService(prisma, undefined, undefined, undefined, registry);
+  // The durable admission collaborators every acceptance needs: the in-request
+  // pipeline that could accept without them is retired.
+  const sandboxEnvironments = {
+    async resolveTaskAdmission() {
+      return {
+        environment: null,
+        providerId: 'aio-local',
+        providerFamily: 'aio',
+        provisioningPolicy: {
+          resources: {},
+          workspaceMaterializationDeadlineMs: 900_000,
+        },
+      };
+    },
+  };
+  const taskBranchResolver = {
+    async prepareForCreate() {
+      return { resolvedBranch: 'main' };
+    },
+  };
+
+  // Positional DI: (prisma, guardrails?, audit?, sandbox?, runtimes?,
+  //   claudeReadiness?, sandboxOwners?, sandboxEnvironments?,
+  //   runtimeModelPreflight?, taskModelCapability?, taskAdmissionGate?,
+  //   taskBranchResolver?).
+  const service = new TasksService(
+    prisma as unknown as PrismaService,
+    undefined,
+    undefined,
+    undefined,
+    registry,
+    undefined,
+    undefined,
+    sandboxEnvironments as never,
+    undefined,
+    undefined,
+    undefined,
+    taskBranchResolver as never,
+  );
 
   return {
     service,

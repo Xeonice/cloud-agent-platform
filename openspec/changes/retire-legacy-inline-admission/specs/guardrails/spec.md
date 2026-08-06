@@ -83,6 +83,179 @@ burn-down gets forged:
 - **THEN** the provisioning-diagnostics recorder and write gate report the same counts as before the
   change, both entries are still present in the baseline, and no record claims a decrease
 
+### Requirement: TaskRunStarted is published at exactly two declared points
+
+`TaskRunStarted` SHALL be published at exactly the two seams that begin a run's runner-minutes
+interval, and nowhere else: (1) the readoption recovery path that restores a running task after
+restart, publishing `startPoint: readoption`, and (2) the durable path `armDurableRuntime`,
+publishing `startPoint: durable_arm`. Each SHALL publish exactly once per run start, adjacent to that
+path's existing `runnerMinutes.recordStart(taskId)` call, and SHALL NOT replace or move it.
+
+TWO IS A COUNT, NOT THREE MINUS ONE. It comes from
+`grep -rn "'task.run_started'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'`, which reports
+two publish sites on the retired tree, both in `guardrails.service.ts`. The R11 measurement of
+`this.runnerMinutes` over the same file independently reports four write references, exactly two of
+them `recordStart`, one beside each surviving publish. The third point was `startPoint:
+legacy_capacity` inside `startRunningAfterCapacity`; it left with the legacy admission chain together
+with the `recordStart` it sat beside — the same single reference the runner-minutes ratchet entry
+falls by, so the two measurements corroborate each other rather than restating one number twice.
+
+The `legacy_capacity` member SHALL remain declared in the published event contract, and this
+requirement SHALL NOT be read as removing it: no live site produces that value, but narrowing that
+union is a published-contract change this change does not make.
+
+#### Scenario: Readoption publishes once
+
+- **WHEN** startup recovery readopts a task that was running before restart
+- **THEN** exactly one `TaskRunStarted` is published for that task, carrying `startPoint: readoption`,
+  and the existing `recordStart` call still runs
+
+#### Scenario: The durable path publishes once
+
+- **WHEN** a task's durable runtime is armed through `armDurableRuntime`
+- **THEN** exactly one `TaskRunStarted` is published for that task, carrying `admissionMode: durable`
+  and `startPoint: durable_arm`
+
+#### Scenario: Re-arming the durable runtime does not publish twice
+
+- **WHEN** `armDurableRuntime` is invoked a second time for a task whose runtime is already armed and
+  it early-returns
+- **THEN** no second `TaskRunStarted` is published for that task
+
+#### Scenario: There is no third publish point
+
+- **WHEN** the tree is searched for `TaskRunStarted` publish call sites
+- **THEN** exactly two are found, each sits in one of the two declared paths, and no site publishes
+  the retired `legacy_capacity` start point
+
+### Requirement: SandboxProvisioned is published on the one surviving provisioning path after the provider boundary succeeds
+
+`SandboxProvisioned` SHALL be published on exactly the one orchestration path that crosses the
+provider boundary — the durable path in `GuardrailsService` — once, only after
+`provider.provision(...)` has returned successfully, the ownership re-check has proven the attempt
+still holds its fence, and the resulting connection has been registered, using the environment
+snapshot and selected-run data already in hand. No new data pipeline SHALL be introduced to populate
+the payload.
+
+ONE IS A COUNT OF THE LIVE CALLERS. The single payload builder `publishSandboxProvisioned` has
+exactly one call site on the retired tree —
+`grep -rn 'publishSandboxProvisioned' apps/api/src --include='*.ts' | grep -v '\.spec\.ts'` reports
+its declaration plus that one caller. The second path was the in-request pipeline, which published
+through an orchestrator adapter callback rather than holding the bus itself; the callback and the
+pipeline are gone together.
+
+`admissionMode` SHALL remain on the payload — the event's schema still carries it — but with one
+publisher it SHALL be fixed at the publish point rather than passed in as an argument: a
+discriminator no caller can vary is not an argument, and keeping it as one would leave the retired
+path's shape behind in the signature.
+
+#### Scenario: The durable path publishes after a successful provision
+
+- **WHEN** the durable orchestration completes `provider.provision(...)`, re-verifies ownership, and
+  registers the connection
+- **THEN** exactly one `SandboxProvisioned` is published carrying the task id, sandbox reference,
+  provider family, and the environment snapshot already built for the provision context
+
+#### Scenario: A failed provision publishes nothing
+
+- **WHEN** `provider.provision(...)` throws, is cancelled, or unwinds for a detaching transfer
+- **THEN** zero `SandboxProvisioned` events are published for that attempt
+
+#### Scenario: A superseded provision publishes nothing
+
+- **WHEN** the ownership re-check after `provision(...)` shows the attempt lost its fence and the
+  sandbox is discarded
+- **THEN** zero `SandboxProvisioned` events are published for that attempt
+
+#### Scenario: No new pipeline is added to build the payload
+
+- **WHEN** the diff at the surviving publish point is inspected
+- **THEN** the payload is assembled from values already present at that seam (provision plan
+  environment, selected run, connection reference), with no new provider call, no new database read,
+  and no new resolver
+
+### Requirement: TaskAdmitted is published on the one surviving admission path
+
+`TaskAdmitted` SHALL be published on exactly one admission path: the durable path, once the capacity
+reservation has committed the task's transition. The event SHALL carry the transition token that
+fenced that admission, the resulting admission outcome (`running` or `queued`), and the
+`admissionMode` discriminant. A refused or superseded reservation SHALL NOT publish `TaskAdmitted`.
+
+ONE IS A COUNT OF THE LIVE SITES:
+`grep -rn "'task.admitted'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'` reports a single
+publish site, in `tasks.service.ts`. The second was the orchestrator's legacy publish point — one
+point with a running half and a queued half, each guarded to fire only for a transition that call
+itself committed — and it left with the admission chain that reached it. The in-flight-join rule the
+old scenario protected leaves with it: no orchestrator seam stores an in-flight admission promise any
+more, so there is no second caller that could publish a duplicate.
+
+#### Scenario: The durable path publishes on a committed reservation
+
+- **WHEN** the durable reservation commits a transition to `running` or `queued`
+- **THEN** exactly one `TaskAdmitted` is published carrying that outcome, `admissionMode: durable`,
+  and the transition token minted for that reservation
+
+#### Scenario: A superseded reservation publishes no admission
+
+- **WHEN** the durable reservation returns the `superseded` outcome and the lease transition is
+  rolled back
+- **THEN** zero `TaskAdmitted` events are published for that attempt
+
+#### Scenario: There is no second publish point
+
+- **WHEN** the tree is searched for `TaskAdmitted` publish call sites
+- **THEN** exactly one is found, and no orchestrator seam publishes an admission of its own
+
+### Requirement: TaskSuperseded is published once per observation at two declared producer boundaries
+
+`TaskSuperseded` SHALL be published where a supersession is actually observed, at exactly two
+producer boundaries: (1) the durable capacity reservation returning the `superseded` outcome,
+publishing `observationPoint: durable_capacity_reservation`, and (2) the durable admission transition
+returning `superseded`, publishing `observationPoint: durable_admission_transition`. Each event SHALL
+carry only what the observer holds — the superseded task id, the fence token the loser held, and the
+observation-point discriminant — and SHALL NOT carry any superseder identity.
+
+TWO IS A COUNT OF THE LIVE SITES:
+`grep -rn "'task.superseded'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'` reports two
+publish sites, both in `tasks.service.ts`. The third boundary was the in-request pipeline run
+returning `superseded`, published through an orchestrator adapter callback; the callback and the
+pipeline are gone together, and with them the rule that a single pipeline run collapse its several
+internal `superseded` early-returns into at most one event — there is no pipeline run left to
+collapse.
+
+The `inline_pipeline_run` member SHALL remain declared in the published event contract, and this
+requirement SHALL NOT be read as removing it: no live site produces that value, but narrowing that
+union is a published-contract change this change does not make.
+
+#### Scenario: A superseded reservation publishes once
+
+- **WHEN** the durable capacity reservation returns the `superseded` outcome
+- **THEN** exactly one `TaskSuperseded` is published carrying that boundary's observation point and
+  the fence token the loser held
+
+#### Scenario: A superseded admission transition publishes once
+
+- **WHEN** the durable admission transition returns `superseded`
+- **THEN** exactly one `TaskSuperseded` is published carrying that boundary's observation point
+
+#### Scenario: No superseder is fabricated
+
+- **WHEN** any published `TaskSuperseded` payload is inspected
+- **THEN** it contains no field naming the superseding task, lease, worker, or request — because no
+  observation point in the code holds that handle
+
+#### Scenario: A non-superseded outcome publishes nothing
+
+- **WHEN** a reservation or an admission transition completes with any outcome other than
+  `superseded`
+- **THEN** zero `TaskSuperseded` events are published for it
+
+#### Scenario: There is no third producer boundary
+
+- **WHEN** the tree is searched for `TaskSuperseded` publish call sites
+- **THEN** exactly two are found, and no site publishes the retired `inline_pipeline_run`
+  observation point
+
 ## MODIFIED Requirements
 
 ### Requirement: Admission mode is chosen by an explicit total policy over the capability gate
@@ -167,15 +340,17 @@ correctness guarantee into an ordering the framework does not promise, so the aw
 retained and only the optional-reference guard beside it SHALL disappear. A change that reports this
 group as burned down, or that removes the awaited call in exchange for an event, SHALL be refused.
 
-The diagnostics floor is **4, not 2**, because the two constructor parameters survive: the
-orchestrator still passes both into the legacy inline-admission adapter, and that pass-through is
-out of that change's scope. **The claim that the floor moves to 2 after legacy retirement is FALSE
-and is corrected here by measurement**: retiring the legacy pipeline leaves the floor at 4, delta
-ZERO. The mechanism is that the orchestrator's single read of the diagnostic collaborators feeds TWO
-consumers — the legacy adapter and the durable diagnostics owner — so retirement removes one
-consumer while the read itself survives. Verified by SIMULATE-THEN-MEASURE: deleting the adapter
-literal from the source and running the dependency-budget gate's own measurement over the result
-reports recorder 2 and write gate 2. A future change SHALL NOT delete these two entries on the
+The diagnostics floor is **4, not 2**, because the two constructor parameters survive. When that
+floor was first recorded the surviving second reference was the orchestrator's hand-off of both
+collaborators into the legacy adapter, which was out of that earlier change's scope. **The claim that
+the floor moves to 2 after legacy retirement is FALSE and is corrected here by measurement**:
+retiring the legacy pipeline leaves the floor at 4, delta ZERO. The mechanism is that the
+orchestrator reads the diagnostic collaborators exactly ONCE and that single read fed TWO consumers —
+the legacy adapter and the durable diagnostics owner — so retirement removes one consumer while the
+read itself survives with the owner that still needs it. Predicted by SIMULATE-THEN-MEASURE at
+propose time (deleting the adapter literal from the source and running the dependency-budget gate's
+own measurement reported recorder 2 and write gate 2) and CONFIRMED on the retired tree by the same
+measurement: recorder 2, write gate 2. A future change SHALL NOT delete these two entries on the
 strength of the retired claim; their collaborator has not left.
 
 #### Scenario: Each group's post-change count is measured, not inferred
@@ -194,11 +369,13 @@ strength of the retired claim; their collaborator has not left.
   the surviving reference is that awaited call, and the transition, teardown, and slot release still
   proceed unconditionally when capture fails
 
-#### Scenario: The diagnostics pass-through into legacy is untouched
+#### Scenario: The single read of the diagnostic collaborators outlives the consumer that left
 
-- **WHEN** the orchestrator's construction of the legacy inline-admission pipeline is read
-- **THEN** it still passes both the diagnostic recorder and the write gate, so both constructor
-  parameters remain live and the group's floor is 4 rather than 2
+- **WHEN** the orchestrator's constructor is read after the retirement, at the one place it names
+  both diagnostic collaborators
+- **THEN** that single read is still there, handing both to the durable diagnostics lifecycle owner,
+  so both constructor parameters remain live and the group's floor is 4 rather than 2 — the consumer
+  that left took no reference with it
 
 #### Scenario: No group is reported as burned down
 
@@ -206,3 +383,172 @@ strength of the retired claim; their collaborator has not left.
 - **THEN** none of the three is described as burned down or as reaching zero, and in particular
   metrics-projection is described as unmoved at 2 with its entry retained, because its old symbol's
   zero was a rename rather than a removal
+
+### Requirement: "In place and unchanged" governs the seam, and this change keeps the call text byte-identical anyway
+
+The existing "in place and unchanged" constraints on the runner-minutes call sites SHALL be read
+as governing the **seam** — which method the call sits in, its position relative to the publish,
+and the fact that it still runs — and NOT the identity of the object the call is dispatched on.
+Those constraints are that `TaskRunStarted` is published "adjacent to that path's existing
+`runnerMinutes.recordStart(taskId)` call, and SHALL NOT replace or move it", and that "Both
+`recordEnd` call sites SHALL remain in place and unchanged".
+Because the runner-minutes ledger change kept the accessed member name `runnerMinutes` and changed
+only how the orchestrator obtains the object behind it — the data field became a private getter over
+two differently-named backing members, one resolved from DI and one an injector-less fallback — the
+call-site statements it left behind were byte-identical, so the seam reading was not exercised at the
+byte level and neither existing requirement needed restating. Renaming the accessed
+member SHALL NOT be used to make a ratchet count fall, since the R11 counter is a `\b`-anchored
+regex over the exact symbol `this.runnerMinutes` and a rename would be a forged burn-down. The
+backing members SHALL NOT be named such that they match that regex, and — because the R11 counter
+scans raw source text without stripping comments — no comment added to
+`guardrails.service.ts` SHALL contain the literal `this.runnerMinutes`, which would silently
+restore a count a deletion removed.
+
+The counts this requirement's scenarios pin are RE-PINNED here by measurement, because the legacy
+retirement deleted one publish point and one call site: the declared `TaskRunStarted` publish points
+are **two**, and the surviving `this.runnerMinutes` references are **four**. Both figures are live
+counts on the retired tree — `grep -rn "'task.run_started'" apps/api/src --include='*.ts' | grep -v '\.spec\.ts'`
+and the ratchet's own `measureSource` — not the old figures minus one. The deleted `recordStart` and
+the deleted publish sat beside each other inside `startRunningAfterCapacity`, which is why both
+figures move by exactly one and neither move is a rename.
+
+#### Scenario: Each publish stays adjacent to its retained recordStart
+
+- **WHEN** each of the two declared `TaskRunStarted` publish points is read on the integrated
+  tree
+- **THEN** the retained `runnerMinutes.recordStart(taskId)` call is still in the same method, on
+  the same side of the publish as before, and no call site moved into a different method
+
+#### Scenario: Both recordEnd sites still run at their original seams
+
+- **WHEN** `fenceTerminal` runs for a task reaching a terminal status, and `clearAdmissionRuntime`
+  runs for a superseded admission attempt whose task has not reached a terminal status
+- **THEN** each invokes `recordEnd` exactly once as before, and `clearAdmissionRuntime` still
+  publishes zero `TaskSettled`
+
+#### Scenario: The measured symbol string is unchanged
+
+- **WHEN** all four surviving call sites are inspected after the change
+- **THEN** the accessed symbol is still `this.runnerMinutes`, so the recorded count reflects a
+  deleted reference rather than a symbol the ratchet regex stopped matching
+
+#### Scenario: Only the member's declaration is restructured, never its call sites
+
+- **WHEN** the diff hunks touching the `runnerMinutes` member are read
+- **THEN** every edited line is part of its declaration — the data field is replaced by a private
+  getter plus two backing members — zero surviving call-site lines are edited, and the member's
+  accessed name is unchanged
+
+#### Scenario: The resolution plumbing does not re-introduce the symbol
+
+- **WHEN** the ratchet's own `measureSource` is run over the post-change file
+- **THEN** it counts exactly 4 occurrences of `this.runnerMinutes`, and neither the getter body,
+  the backing member declarations, the `onModuleInit` resolution, nor any comment contributes an
+  occurrence
+
+### Requirement: The orchestrator constructor and its positional construction sites are untouched
+
+`GuardrailsService` SHALL keep exactly its existing 11 constructor parameters in their existing
+order and types, with the `@Optional()` bus still last, so that the **20** positional
+`new GuardrailsService(...)` sites across **16** files (**11** of them outside
+`apps/api/src/guardrails/`) compile and run unchanged. The site count is measured, not asserted, and
+it moves under this requirement's own nose: it was 22 across 15 files, then 23 across 16 when a later
+change added an integration test that constructs the orchestrator positionally, then 24 across 17
+when the runner-minutes ledger change's transcript-ordering assertion constructed one too, and it is
+20 across 16 now that this retirement deleted `apps/api/src/tasks/tasks-legacy-request-lifetime.spec.ts`,
+whose subject was the retired path and which held four of those sites. Every number here was
+RE-COUNTED live on the retired tree with `node scripts/guardrails-construction-sites.mjs`, which
+prints `20 16 11 16 12 8`, rather than adjusted by subtraction — the figure has drifted twice already
+in this epic, and the previously recorded "12 of them outside" was itself one ahead of a live count of
+11 when it was written, which is exactly how a stale count makes a future change mis-scope the blast
+radius of touching the signature.
+
+The `runnerMinutes` member SHALL be usable from the moment an instance
+exists under BOTH DI construction and positional construction: an instance built positionally,
+with no injector from which to resolve the port, SHALL still answer `recordStart`, `recordEnd`,
+and `intervals()` without a null-reference error, because existing reflective unit assertions
+call `intervals()` on positionally constructed instances. The injector-less fallback SHALL be
+initialized by a field initializer, which the compiler emits before the constructor body runs, so
+it is in place before any collaborator the constructor builds can reach the member.
+
+Removing any of the three collaborator parameters is OUT of scope for a change that keeps this
+requirement, and the reason is measured rather than stylistic: **16** of those construction sites
+pass a value in the transcripts position or beyond, **12** of them across **8** files outside
+`apps/api/src/guardrails/`, and one of them is `guardrails.service.spec.ts`. The threshold that
+produces those numbers SHALL be stated with them, because it is where this count goes wrong:
+`transcripts` is the EIGHTH parameter, so the affected set is every site passing at least eight
+arguments — including the six that pass exactly eight, whose final argument IS the transcripts value.
+That six is unchanged by this retirement: all four deleted sites passed eleven arguments. Counting
+from nine instead silently drops those six and understates the blast radius by more than a third,
+which is precisely the mis-scoping this requirement exists to prevent. A change that needs the
+parameters gone SHALL modify this requirement in the same commit as the signature.
+
+#### Scenario: The constructor signature is unchanged
+
+- **WHEN** the `GuardrailsService` constructor signature is compared with its pre-change form
+- **THEN** it has the same 11 parameters in the same order and types, the bus is still the last
+  parameter and still `@Optional()`, and zero of the 20 surviving positional construction sites were
+  edited to pass a ledger or port argument
+
+#### Scenario: A positionally constructed instance still accounts for runner minutes
+
+- **WHEN** a `GuardrailsService` is constructed positionally (no injector available) and a task is
+  admitted, started, and settled
+- **THEN** the start and end are recorded and `runnerMinutes.intervals()` returns the closed
+  interval, with no null-reference or undefined-field error at any point in the lifecycle
+
+#### Scenario: The surviving reflective internals assertions pass
+
+- **WHEN** `apps/api/src/guardrails/guardrails.service.spec.ts` is run on the integrated tree
+- **THEN** it passes, including its **six** surviving reflective
+  `internals.runnerMinutes.intervals()` assertions (identifier at `:615`, `:672`, `:730`, `:801`,
+  `:874`, `:941`), each still calling `intervals()` on a positionally constructed instance; the
+  seventh sat inside a legacy-only provisioning test whose subject this change deleted, so its
+  disappearance is a deletion of the test, never a relaxation of the assertion
+
+#### Scenario: The recorded site counts match a live count
+
+- **WHEN** `node scripts/guardrails-construction-sites.mjs` is run on the integrated tree
+- **THEN** its six figures equal the six this requirement states — 20 sites, 16 files, 11 outside
+  files, 16 heavy sites, 12 heavy outside, 8 heavy outside files — so a change reading this
+  requirement to scope a signature edit is reading live numbers
+
+## REMOVED Requirements
+
+### Requirement: TaskRunStarted is published at exactly three declared points
+
+**Reason**: The heading pins the count, and the count is now two: the `legacy_capacity` publish point
+inside `startRunningAfterCapacity` left with the retired admission chain. A MODIFIED block is matched
+to the live specification by heading text, so a heading whose number changed cannot match and the
+modification would silently fail to apply — hence removal plus addition.
+
+**Migration**: Replaced by "TaskRunStarted is published at exactly two declared points", whose count
+is a live count of the publish sites rather than three minus one.
+
+### Requirement: SandboxProvisioned is published on both provisioning paths after the provider boundary succeeds
+
+**Reason**: "both … paths" is a count of two stated in the heading, and only one provisioning path
+survives. The propose-time note flagged only the two headings carrying a number word; a live read
+finds "both" is a number word too, so this heading changes and the re-pinning must be a removal plus
+an addition for the same matching reason.
+
+**Migration**: Replaced by "SandboxProvisioned is published on the one surviving provisioning path
+after the provider boundary succeeds", counted from the single call site of the one payload builder.
+
+### Requirement: TaskAdmitted is published on both admission paths
+
+**Reason**: Same heading-count problem: only the durable admission path publishes now, so "both" is
+false in the heading itself.
+
+**Migration**: Replaced by "TaskAdmitted is published on the one surviving admission path". The
+scenario about a repeated in-flight admission publishing once is not carried over: the orchestrator
+no longer stores an in-flight admission promise for a second caller to join.
+
+### Requirement: TaskSuperseded is published once per observation at three declared producer boundaries
+
+**Reason**: The heading pins three boundaries; the `inline_pipeline_run` boundary left with the
+pipeline, leaving two.
+
+**Migration**: Replaced by "TaskSuperseded is published once per observation at two declared producer
+boundaries". The scenario requiring one pipeline run to collapse its several internal `superseded`
+early-returns into a single event is not carried over: there is no pipeline run left to collapse.

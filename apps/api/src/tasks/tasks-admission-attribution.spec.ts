@@ -8,18 +8,9 @@ import { TasksService, type IGuardrailsService } from './tasks.service';
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 
-test('post-commit admission attributes audit and lifecycle work to the owner', async () => {
+test('post-commit dispatch attributes the creation audit to the persisted owner', async () => {
   const events: string[] = [];
-  const admissions: Array<{
-    taskId: string;
-    params?: { deadlineMs?: number; idleTimeoutMs?: number; userId?: string };
-  }> = [];
   const guardrails: IGuardrailsService = {
-    async admit(taskId, params) {
-      events.push('admit');
-      admissions.push({ taskId, params });
-      return 'running';
-    },
     async onTerminal() {},
     recordFailure() {},
     recordSuccess() {},
@@ -45,11 +36,8 @@ test('post-commit admission attributes audit and lifecycle work to the owner', a
 
   await service.admitCreatedTask(TASK_ID, body, USER_ID);
 
-  assert.deepEqual(events, [`audit:${TASK_ID}:${USER_ID}`, 'admit']);
-  assert.deepEqual(admissions, [
-    {
-      taskId: TASK_ID,
-      params: { deadlineMs: 60_000, idleTimeoutMs: 30_000, userId: USER_ID },
-    },
-  ]);
+  // The owner comes from the PERSISTED row, not from the caller's argument, so
+  // the owner-scoped credential resolver reading this event agrees with the
+  // task's row even when the two disagree.
+  assert.deepEqual(events, [`audit:${TASK_ID}:${USER_ID}`]);
 });
