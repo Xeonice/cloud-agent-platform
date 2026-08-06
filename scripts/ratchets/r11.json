@@ -57,5 +57,15 @@
     "change": "阶段 4 燃尽：五个横切关注点逐个改领域事件订阅。collapse-three-collaborator-groups：本条目 2 → 1，只降不删。对账（防伪造）：2 − 1 = 1，恰等于本次删除的那一处存在性守卫 `if (!this.transcripts) return;`——端口改为非可选注入（组合侧绑定真实捕获属主，未组合时绑定无操作替身，位置构造走参数默认值），于是编排器手里永远是一个实现，没有存在性可判。地板是 1 而不是 0，且原因必须记在这里而不是留成无解的缺口：幸存的那一处引用是两个终态收口处**被 await** 的 capture 调用，它排在只在停止路径上的 teardownSandbox 之前，归档写必须发生在容器还在的时候。这个 happens-before 是由 await 本身承载的；删掉这处调用换成事件，就是把一条正确性保证交给框架并不承诺的顺序。故本组**不是燃尽**，把它记成归零的改动应当被拒绝",
     "symbol": "this.transcripts",
     "concern": "transcript 收尾（capture 改订阅）"
+  },
+  "guardrails-symbol-reference:metrics-projection": {
+    "count": 2,
+    "samples": [
+      "guardrails.service.ts:110   type CapacityProjectionPort,",
+      "guardrails.service.ts:912         .get<CapacityProjectionPort>(CAPACITY_PROJECTION_PORT, {"
+    ],
+    "change": "阶段 4：collapse-three-collaborator-groups：本条**未下降**，2 → 2。投影抽成 port 时符号由 SemaphoreProjectionSource 改名为 CapacityProjectionPort，旧字符串归零而耦合一处未减（旧 2 = import + 返回类型；新 2 = import + onModuleInit 里 .get(CAPACITY_PROJECTION_PORT).bindSource(this.semaphore)）。本刀最初据“归零”把条目删除，被对抗验证的 correctness 透镜揪出：那是改名而非移除，删条目让耦合彻底失measure，比改动前更糟。条目据此恢复并改测新符号。注意 DI token CAPACITY_PROJECTION_PORT 另有 2 处点名，本符号未覆盖，故 2 是耦合的**地板**而非总量。真正归零的前提是 semaphore 状态本身迁出 guardrails——本刀没做，投影只搬走了派生函数。",
+    "symbol": "CapacityProjectionPort",
+    "concern": "metrics（容量投影；状态仍在 guardrails，编排器经 port 把 semaphore 推给所有者）"
   }
 }

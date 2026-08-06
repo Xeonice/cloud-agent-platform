@@ -5,7 +5,7 @@
     {
       "id": "r11-gate-green",
       "requirements": [
-        "domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules",
+        "domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules",
         "guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"
       ],
       "describe": "R11 闸门绿：每个记录计数等于活计数（双向 fail-closed）",
@@ -20,7 +20,7 @@
     {
       "id": "r11-paired-test-green",
       "requirements": [
-        "domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules"
+        "domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules"
       ],
       "describe": "R11 的配对测试绿：硬编码期望已随基线移动",
       "run": [
@@ -34,35 +34,34 @@
       }
     },
     {
-      "id": "collaborators-declared-five",
+      "id": "collaborators-declared-six",
       "requirements": [
-        "domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules"
+        "domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules"
       ],
-      "describe": "闸门的协作者声明从 6 降到 5",
+      "describe": "闸门声明仍是 6 个协作者——改名不等于协作者消失",
       "run": [
         "bash",
         "-c",
         "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(m=>console.log(String(m.COLLABORATORS.length)))\""
       ],
       "expect": {
-        "stdoutEquals": "5"
+        "stdoutEquals": "6"
       }
     },
     {
-      "id": "metrics-projection-entry-deleted",
+      "id": "metrics-projection-entry-retained",
       "requirements": [
-        "domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules",
+        "domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules",
         "resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"
       ],
-      "describe": "投影条目被删除而非写成 count 0",
+      "describe": "投影条目保留且改测新符号（删条目会让活耦合失measure）",
       "run": [
-        "grep",
+        "bash",
         "-c",
-        "metrics-projection",
-        "scripts/ratchets/r11.json"
+        "python3 -c \"import json;d=json.load(open('scripts/ratchets/r11.json'));e=d['guardrails-symbol-reference:metrics-projection'];print(e['symbol'],e['count'])\""
       ],
       "expect": {
-        "stdoutEquals": "0"
+        "stdoutEquals": "CapacityProjectionPort 2"
       }
     },
     {
@@ -150,7 +149,7 @@
       "requirements": [
         "resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"
       ],
-      "describe": "编排器不再点名投影协作者（含仅类型 import——按计数器同一口径直接数源码里的符号）",
+      "describe": "旧投影符号 SemaphoreProjectionSource 在编排器中归零（改名后的真实归零面）",
       "run": [
         "grep",
         "-c",
@@ -278,6 +277,36 @@
       ],
       "expect": {
         "stdoutEquals": "24 17 12 20 16 9"
+      }
+    },
+    {
+      "id": "projection-port-still-named-and-measured",
+      "requirements": [
+        "resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"
+      ],
+      "describe": "编排器仍点名投影 port（2 处），且这一点被 R11 量着——防止改名式假燃尽复发",
+      "run": [
+        "bash",
+        "-c",
+        "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(async m=>{const fs=await import('node:fs');console.log(String(m.measureSource(fs.readFileSync('apps/api/src/guardrails/guardrails.service.ts','utf8')).measured['guardrails-symbol-reference:metrics-projection'])) })\""
+      ],
+      "expect": {
+        "stdoutEquals": "2"
+      }
+    },
+    {
+      "id": "r7-cross-context-improved",
+      "requirements": [
+        "resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder"
+      ],
+      "describe": "本刀真实交付的解耦：r7 guardrails 8→7、metrics 2→1",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c \"import json;d=json.load(open('scripts/ratchets/r7.json'));p='cross-context-import:apps/api/src/';print(d[p+'guardrails/guardrails.service.ts']['count'],d[p+'metrics/metrics.service.ts']['count'])\""
+      ],
+      "expect": {
+        "stdoutEquals": "7 1"
       }
     }
   ]

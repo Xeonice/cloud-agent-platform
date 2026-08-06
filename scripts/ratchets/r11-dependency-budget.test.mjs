@@ -79,16 +79,19 @@ test('the committed baseline equals a live re-count of the real tree', () => {
     // the legacy inline-admission pass-through both survive this change;
     // transcripts stops at 1 because the surviving reference is the AWAITED
     // capture that carries a happens-before, not a call anyone may delete. Only
-    // metrics-projection reached zero, and a zero entry is DELETED — which is why
-    // it is absent from this map and from the declaration.
+    // metrics-projection did NOT reach zero: the port extraction renamed its
+    // symbol (`SemaphoreProjectionSource` -> `CapacityProjectionPort`) while the
+    // orchestrator kept naming it twice, so the entry follows the collaborator
+    // rather than the string and stays at 2.
     [entryKey('provisioningDiagnosticRecorder')]: 2,
     [entryKey('provisioningDiagnosticWriteGate')]: 2,
     [entryKey('this.transcripts')]: 1,
+    [entryKey('metrics-projection')]: 2,
   });
 });
 
-test('the baseline seeds exactly the five declared collaborators, and every key carries the counting convention', () => {
-  assert.equal(COLLABORATORS.length, 5);
+test('the baseline seeds exactly the six declared collaborators, and every key carries the counting convention', () => {
+  assert.equal(COLLABORATORS.length, 6);
   assert.deepEqual(
     Object.keys(REAL_BASELINE).sort(),
     COLLABORATORS.map((c) => entryKey(c.collaborator)).sort(),

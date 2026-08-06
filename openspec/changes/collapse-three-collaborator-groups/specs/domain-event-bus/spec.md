@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: Two budget entries are reduced and one is deleted, in the same commit and by different rules
+### Requirement: Three budget entries are reduced and one is re-pointed, in the same commit and by different rules
 
 This change SHALL exercise BOTH halves of the ratchet's entry discipline at once, so the pair is
 recorded as a worked example rather than as prose for a future change to interpret:
@@ -10,12 +10,15 @@ recorded as a worked example rather than as prose for a future change to interpr
   `symbol` byte-identical, SHALL refresh its `samples` to the surviving references at their
   post-change line numbers, and SHALL carry in its `change` field the arithmetic reconciliation and
   the reason its floor is where it is.
-- **Deleted, never recorded as zero** — the metrics-projection entry reaches a live count of 0 and
-  SHALL be removed from the baseline file entirely. Leaving a `count: 0` entry is as red as leaving
-  a stale one, because the comparator is fail-closed in both directions.
+- **Re-pointed, never deleted on a rename** — the metrics-projection collaborator keeps its entry.
+  Its OLD symbol reaches a live count of 0, but only because the port extraction renamed it; the
+  orchestrator still names the collaborator exactly as many times as before. The entry's `symbol`
+  SHALL therefore follow the collaborator to its new identifier and its `change` field SHALL state
+  that the count did not move. Deleting it would retire the only measurement of a live coupling —
+  the mirror image of a forged burn-down, and strictly worse than the state before this change.
 
-The collaborator declaration in the gate itself SHALL fall from six entries to five in the same
-commit, and the gate's own hard-coded expectation SHALL move with it. The count a change records
+An entry is deleted when its COLLABORATOR is gone, never when its identifier changed. The gate's
+declaration therefore stays at six entries. The count a change records
 SHALL be the gate's measurement of the post-change file, not a count of deleted call sites: a
 reference removed from one line and reintroduced on another — as an assignment, a type annotation,
 or a comment, none of which the counter strips — has moved rather than gone.
@@ -27,11 +30,11 @@ or a comment, none of which the counter strips — has moved rather than gone.
   2 − 1 = 1 removed optional guard for transcripts), states that the measured symbol string is
   unchanged, and names the floor's cause rather than presenting the floor as a target that was hit
 
-#### Scenario: The zeroed entry is deleted rather than zeroed
+#### Scenario: The renamed entry survives and measures the new symbol
 
-- **WHEN** the baseline file is read after the change
-- **THEN** it holds no entry for metrics-projection at all, and the gate's collaborator declaration
-  lists five collaborators rather than six
+- **WHEN** the baseline file and the gate's declaration are read after the change
+- **THEN** the metrics-projection entry is present with the port type as its `symbol` and a count of
+  2, and the declaration still lists six collaborators — so the rename left nothing unmeasured
 
 #### Scenario: The gate agrees with its own baseline on the integrated tree
 

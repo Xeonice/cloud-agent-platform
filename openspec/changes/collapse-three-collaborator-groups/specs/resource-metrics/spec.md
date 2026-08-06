@@ -8,22 +8,44 @@ running-interval ledger already is. The orchestrator SHALL stop exporting a proj
 the accessor SHALL be DELETED rather than left as an uncalled forwarder. The metrics consumer SHALL
 obtain the projection from the owner directly rather than routing through the orchestrator.
 
-This removes the orchestrator's last type-level dependency on the projection module, so the
-orchestrator no longer names that collaborator at all and its budget entry reaches zero. `GET /metrics`
-and `GET /tasks/:taskId/metrics` SHALL be unchanged in field names, types, and values for the same
-observed state; the owner SHALL add no logging, persistence, timers, or error handling the projection
-did not already have.
+What this achieves is a change of FORM, not the removal of the dependency, and the distinction SHALL
+be recorded rather than rounded up. The orchestrator's reference to the projection module becomes a
+`*.port.ts` + DI token reference — the only cross-context form the manifest allows — which is why the
+cross-context-import findings fall for both files. It does NOT stop the orchestrator naming the
+collaborator: the capacity state (the semaphore) still lives in the orchestrator, so the owner cannot
+own it, and the orchestrator hands it over at boot. The budget entry therefore SHALL be re-pointed at
+the collaborator's new symbol and SHALL record that the count did not move, rather than being deleted.
 
-#### Scenario: The forwarding accessor is gone from the tree
+Deleting the entry because its OLD symbol reached zero is forbidden, and the reason is the repository's
+standing anti-forgery rule read in the other direction: a count that falls because a symbol was renamed
+is a forged burn-down, and an entry retired on that basis leaves a live coupling with nothing measuring
+it — strictly worse than before the change. An entry is deleted when its COLLABORATOR is gone, never
+when its identifier changed.
 
-- **WHEN** the tree is searched for the orchestrator's projection accessor by name
+`GET /metrics` and `GET /tasks/:taskId/metrics` SHALL be unchanged in field names, types, and values
+for the same observed state; the owner SHALL add no logging, persistence, timers, or error handling
+the projection did not already have.
+
+#### Scenario: The old accessor and its type are gone from the tree
+
+- **WHEN** the tree is searched for the orchestrator's projection accessor and for the old projection
+  source type
 - **THEN** zero matches are found, in production code and in test doubles alike, and no replacement
-  forwarder exists on any orchestrator
+  accessor exists on any orchestrator
 
-#### Scenario: The orchestrator no longer names the projection
+#### Scenario: The renamed collaborator is still measured, at its true count
 
-- **WHEN** the dependency-budget gate's measurement is run over the post-change orchestrator
-- **THEN** the metrics-projection count is 0, including the type-only import, which the counter counts
+- **WHEN** the dependency-budget gate is run over the post-change orchestrator
+- **THEN** the metrics-projection entry is PRESENT, its symbol is the port type the extraction
+  introduced, and its count is 2 — unmoved from the 2 the old symbol measured — so the rename is
+  visible as a rename rather than as a burn-down
+
+#### Scenario: The cross-context form improved even though the count did not
+
+- **WHEN** the cross-context-import ratchet is compared before and after
+- **THEN** the orchestrator's count falls by one and the metrics consumer's falls by one, because a
+  bare module import became a port import and the consumer stopped importing the orchestrator —
+  which is the decoupling this change actually delivers
 
 #### Scenario: The metrics response is unchanged for the same state
 

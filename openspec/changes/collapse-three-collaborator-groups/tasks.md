@@ -140,11 +140,11 @@
   - surfaces: ["developer-workflow"]
   - verify: "spec-assertions"
 - [x] 4.4 Reduce the two diagnostics entries to 2 and the transcripts entry to 1, refreshing each entry's `samples` to the surviving references at their post-change line numbers and writing the arithmetic plus the floor's cause into each `change` field. Delete the metrics-projection entry outright, drop the gate's collaborator declaration from six to five, and move its hard-coded expectation in the same commit.
-  - requirements: ["domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules"]
+  - requirements: ["domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules"]
   - surfaces: ["developer-workflow"]
   - verify: "spec-assertions"
 - [x] 4.5 Correct the construction-site count in the guardrails delta's MODIFIED requirement against a live count, and confirm the two untouched budget entries are byte-identical to their form at the start of this change.
-  - requirements: ["guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched", "domain-event-bus/two-budget-entries-are-reduced-and-one-is-deleted-in-the-same-commit-and-by-different-rules"]
+  - requirements: ["guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched", "domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules"]
   - surfaces: ["developer-workflow"]
   - verify: "spec-assertions"
 - [x] 4.6 Run `node scripts/spec-assert.mjs collapse-three-collaborator-groups` and record which requirements it decides. Every assertion must pass and the decided set must cover the command-decidable requirements; a requirement left undecided costs an LLM verification pass, so treat a gap as a missing assertion rather than as acceptable.
