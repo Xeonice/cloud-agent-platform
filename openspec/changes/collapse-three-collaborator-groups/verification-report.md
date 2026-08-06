@@ -5,12 +5,12 @@ SPEC-DEFECT → `design.md` Open Questions · MET → folded here). Every verdic
 **re-traced against the working tree** in this pass — commands were re-run first-hand, not
 copied from the apply log, from the commit message, or from the skeptic pass.
 
-Tree under test **for the latest pass**: HEAD `792797e` (merge of `main` into
-`refactor/collapse-three-collaborator-groups`), which carries `4f5c21c` ("refactor(guardrails): take
-three collaborator groups to their measured floors") plus the post-report fix `a87b179`
-("fix(ratchets): restore the projection entry the rename made invisible"), on top of `199074a`
+Tree under test **for the latest pass**: HEAD `66161c4` ("docs(openspec): finish the correction the
+last one left half-done"), which carries `4f5c21c` ("refactor(guardrails): take three collaborator
+groups to their measured floors"), the post-report ratchet fix `a87b179` ("fix(ratchets): restore the
+projection entry the rename made invisible"), and the merge `792797e` of `main`, on top of `199074a`
 (proposal) and base `c858853`. The harness-side fix `d741a71` ("fix(verify): adjudicate refutations
-instead of counting them") arrived through `main` in the same merge — it is not this cut's edit, and
+instead of counting them") arrived through `main` in that merge — it is not this cut's edit, and
 the `no-harness-edits` assertion still passes against `main`.
 Date: 2026-08-06. Working tree is clean (`git status --short` is empty).
 
@@ -22,15 +22,31 @@ episode documented at the bottom of this file is the single most useful thing in
 
 ## Adjudicated tally
 
+Three-way routing over all **6** requirements. The partition is complete: every requirement lands in
+exactly one row, and the rows sum to 6.
+
 | Route | Count | Ids |
 |---|---|---|
-| Re-opened as code tasks (UNMET) | **0** | — |
+| Re-opened as code tasks (UNMET) | **0** | — nothing appended to `tasks.md`; no `## Track: verify-reopened` section was created |
 | Routed to `design.md` Open Questions (SPEC-DEFECT) | **0** | — (no `design.md` exists for this change, and none is needed) |
-| Archive-blocking spec defects (public impact / false exclusion) | **0** | — |
-| Reclassified MET (raw-unmet that re-traces end-to-end) | **0** | — the pass received **no** raw-unmet requirements, so there was nothing to reclassify |
+| Archive-blocking spec defects (public impact / false exclusion) | **0** | — the sidecar's claims were **executed**, not trusted (verifier `passed: true`, `findings: []`) |
+| Adjudicated **MET** | **6** | all six, listed below |
 
-This pass received **0 raw-unmet requirements** and **0 mandatory public findings**. All six
-requirements were decided by the command-decidable assertion harness with **none left for LLM
+The six MET ids, as adjudicated in this pass:
+
+- `domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules`
+- `guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor`
+- `guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched`
+- `resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder`
+- `session-transcript-persistence/transcript-capture-moves-out-of-the-tasks-context-without-moving-its-happens-before`
+- `task-provisioning-diagnostics/a-closed-diagnostics-write-gate-is-an-injected-no-op-not-a-branch-at-every-call-site`
+
+Of those six, **0 arrived as raw-unmet** — this pass received **0 raw-unmet requirements** and
+**0 mandatory public findings**, so no verdict here is a *reversal* of a skeptic's refutation. Each
+was nevertheless re-traced end-to-end against the tree rather than inherited from the previous pass;
+the commands re-executed for this adjudication are in the table below, and none of them was copied
+from the apply log. All six
+requirements are decided by the command-decidable assertion harness with **none left for LLM
 judgment** — `node scripts/spec-assert.mjs collapse-three-collaborator-groups` returns
 `20/20 passed; 6 requirement(s) decided without an LLM pass` on the current tree (18/18 at the time
 of the first pass; the two additions, `projection-port-still-named-and-measured` and
@@ -52,20 +68,36 @@ position be *executed rather than assumed*. All six requirements are **MET**.
 
 ## Gates actually executed on this tree during this pass
 
+Every row below was re-run first-hand on `66161c4` for this adjudication.
+
 | Gate | Command | Result |
 |---|---|---|
-| R12 spec assertions | `node scripts/spec-assert.mjs collapse-three-collaborator-groups` | **20/20 passed** on `792797e` (18/18 on `4f5c21c`), 6 requirements decided without an LLM pass |
+| R12 spec assertions | `node scripts/spec-assert.mjs collapse-three-collaborator-groups` | **20/20 passed** on `66161c4` (also 20/20 on `792797e`; 18/18 on `4f5c21c`), 6 requirements decided without an LLM pass |
 | R11 dependency budget | `node scripts/ratchets/r11-dependency-budget.mjs` | **exit 0** — `audit 9 / runnerMinutes 5 / provisioningDiagnosticRecorder 2 / provisioningDiagnosticWriteGate 2 / transcripts 1 / metrics-projection (CapacityProjectionPort) 2`. 【本轮复核】the `metrics-projection` entry is **present**, measuring the renamed symbol; the first pass recorded it as deleted, which is the defect `a87b179` fixed |
 | R11 paired test | `node --test scripts/ratchets/r11-dependency-budget.test.mjs` | **12 pass / 0 fail** |
-| Transcript ordering regression | `node --test apps/api/src/session-transcripts/transcript-capture-ordering.test.mjs` | **2 pass / 0 fail**, including the negative control |
+| R11 entry diff vs `main` | `git diff main -- scripts/ratchets/r11.json` | three entries **reduced** (4→2, 4→2, 2→1) with `symbol` byte-identical; one **re-pointed** under the SAME json key `guardrails-symbol-reference:metrics-projection` (`SemaphoreProjectionSource` → `CapacityProjectionPort`, count 2→2); `this.audit` and `this.runnerMinutes` do not appear in the diff at all, i.e. byte-identical as their scenario requires |
+| Transcript ordering regression | `node --test apps/api/src/session-transcripts/transcript-capture-ordering.test.mjs` | **2 pass / 0 fail**, including the negative control (`the same assertion FAILS against a non-awaited capture`) |
 | Diagnostics observer lifecycle | `node --test dist/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.spec.js` | **12 pass / 0 fail** |
 | Capacity projection pin | `node --test apps/api/src/runner-metrics/capacity-projection-pin.test.mjs` | **5 pass / 0 fail** |
 | Metrics response equivalence | `node --test src/metrics/{metrics.verify,metrics-projection,task-resource}.test.mjs` | **26 pass / 0 fail** |
-| Adversarial public surface | `CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse HEAD~1) node scripts/public-surface-adversarial.mjs verify collapse-three-collaborator-groups` | **`"passed": true`**, `command.exitCode: 0`, all five lanes (`sidecar`, `registry`, `restMetadata`, `mcpSdkMetadata`, `behavior`) `passed: true`, `findings: []` |
+| Guardrails characterization | `node --test dist/guardrails/guardrails.service.spec.js` | **57 pass / 0 fail**, and `git diff --stat main -- apps/api/src/guardrails/guardrails.service.spec.ts` is **empty** — the zero-diff freeze holds |
+| Adversarial public surface | `CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) node scripts/public-surface-adversarial.mjs verify collapse-three-collaborator-groups` | **`"passed": true`**, `command.exitCode: 0`, all five lanes (`sidecar`, `registry`, `restMetadata`, `mcpSdkMetadata`, `behavior`) `passed: true`, `findings: []`, `requirementIds` resolving to the guardrails + resource-metrics pair |
 
 ---
 
 ## MET requirements
+
+**【本轮 adjudication 独立复核 · 66161c4】** The six verdicts below were re-derived from the tree in
+this pass, not carried forward. What each one rested on, re-executed:
+
+| # | Requirement | The load-bearing thing I re-checked myself |
+|---|---|---|
+| 1 | `domain-event-bus/...reduced-and-one-is-re-pointed...` | The `git diff main -- scripts/ratchets/r11.json` shape: three reductions with byte-identical symbols, one **re-point under the same json key**, `this.audit` / `this.runnerMinutes` absent from the diff entirely. This is the distinction the requirement exists to enforce, and the diff shows it rather than asserting it |
+| 2 | `guardrails/...each-at-its-own-measured-floor` | `measureSource` on the post-change file, not a grep: recorder 2 + gate 2 = **4**, transcripts **1**, projection **2 on the new symbol**. Separately swept the whole change directory for surviving `2 → 0` / burn-down prose — `proposal.md`, `surface-impact.json` and all five spec files are clean; the only remaining hits are this report's own explicitly-historical annotations, which record the refutation rather than repeat the claim |
+| 3 | `guardrails/...constructor-and-its-positional-construction-sites-are-untouched` | `node scripts/guardrails-construction-sites.mjs` → `24 17 12 20 16 9`; the 11-param constructor read directly; `guardrails.service.spec.ts` **zero diff** against `main` with all 14 `runnerMinutes` occurrences still at the exact lines the spec names (`:1375/:1380 … :3341/:3347`); and the injector-less fallback confirmed to be a real **field initializer** (`private readonly detachedRunnerMinutes: RunnerMinutesPort = createDetachedRunnerMinutes();`) with `runnerMinutes` a getter over it — which is what makes it live before the constructor body runs. Suite green at 57/57 |
+| 4 | `resource-metrics/...owned-in-platform-ops...` | Ran the adversarial verifier end-to-end (the requirement demands the surface position be *executed*): `passed: true`, five lanes green, `findings: []`. Plus the r7 re-key read live (`guardrails.service.ts` 7, `metrics.service.ts` 1) and the projection port still named twice and still measured |
+| 5 | `session-transcript-persistence/...without-moving-its-happens-before` | The awaited call at `guardrails.service.ts:2222` is the sole `this.transcripts` reference and it precedes both `teardownSandbox` call sites (`:2500`, `:2743`); the ordering suite's **negative control** passes, so the assertion discriminates; `guardrails.module.ts` now has `imports: []` with the `forwardRef(() => TasksModule)` edge gone; `session-transcripts` is declared in `contexts-manifest.json` in the same commit; `SessionTranscriptModule` is `@Global()` in `app.module.ts` and the three `useExisting` consumers (`tasks`, `v1`, `mcp`) resolve the same instance |
+| 6 | `task-provisioning-diagnostics/...injected-no-op-not-a-branch...` | `isEnabled()` has **no match** in the orchestrator; the legacy pass-through survives verbatim (which is what pins the floor at 4, honestly recorded); the owner's lifecycle spec is green at 12/12 on the compiled tree, covering closed / absent / throwing gates |
 
 ### 1. `domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules`
 
@@ -245,6 +277,11 @@ capture-before-teardown. It does not. Re-traced live:
 
 **None.**
 
+All independently re-verified and consistent with the codebase, the ratchet files, the assertion
+harness (20/20 passing), the compiled test suites, and the discriminating negative-control tests.
+Every one of the six requirements has concrete, executable, currently-passing evidence tying it to
+code in the tree.
+
 All 20 assertions pass live (20/20, up from the first pass's 18/18 — two more assertions were added,
 `projection-port-still-named-and-measured` and `r7-cross-context-improved`, from the post-report fix
 commits `a87b179` / `d741a71`), and all 6 requirements are command-decided. Independent spot checks
@@ -287,6 +324,12 @@ Files inspected (all under the repository root):
 - `apps/api/src/session-transcripts/*` (moved service, port, `transcript-capture-ordering.test.mjs`)
 - `scripts/ratchets/r11.json`, `scripts/ratchets/r7.json`, `scripts/ratchets/r11-dependency-budget.mjs`
 - `docs/refactor/contexts-manifest.json`
+- `apps/api/src/guardrails/guardrails.module.ts` (the removed `forwardRef(() => TasksModule)` edge),
+  `apps/api/src/app.module.ts`, `apps/api/src/tasks/tasks.module.ts`, `apps/api/src/v1/v1.module.ts`,
+  `apps/api/src/mcp/mcp.module.ts` (the three `TRANSCRIPT_STORE` / `useExisting` consumers),
+  `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics.module.ts`
+- `apps/api/src/guardrails/guardrails.service.spec.ts` (read for the zero-diff freeze and the 14
+  `runnerMinutes` occurrences at their recorded lines)
 
 ## Scope finding — implementation beyond the specs
 
@@ -297,17 +340,22 @@ Files inspected (all under the repository root):
 A new DI token `TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT` lets a composition override the
 diagnostic write bound via `@Inject`, but **no module ever provides or binds it**:
 
-- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:34-47`
-  — the token plus the `taskProvisioningDiagnosticWriteTimeoutMs(configured?)` override function.
-- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:11-12,35-39`
-  — the `@Optional() @Inject(TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT) writeTimeoutMs?: number`
-  constructor parameter.
+- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:35-36`
+  — the token declaration itself (with the `taskProvisioningDiagnosticWriteTimeoutMs(configured?)`
+  override function that consumes it just below, at `:44-46`).
+- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:36-37`
+  — the corresponding unbound `@Optional() @Inject(TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT)
+  writeTimeoutMs?: number` constructor parameter (imported at `:12`), which is a **third**
+  constructor argument added with no requirement asking for a new configuration seam.
 
 Verified in this pass: a tree-wide grep for the token (word-boundary, so the unrelated
 `..._TIMEOUT_MS` constant is excluded) returns **exactly those two files** — a definition and a
-consumer, and no provider anywhere, including every `*.module.ts`. The module that does wire this
-owner (`task-provisioning-diagnostics.module.ts`) binds the recorder, the write gate and
-`TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE` → `useExisting`, and never the timeout.
+consumer, and no provider anywhere. A grep restricted to `--include='*.module.ts'` across
+`apps/api/src` returns **zero** matches, so the token is bound by no module at all; the module that
+does wire this owner (`task-provisioning-diagnostics.module.ts`) binds the recorder, the write gate
+and `TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE` → `useExisting`, and never the timeout. No
+test exercises it through DI either — the owner's spec only asserts the plain
+`TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT_MS` constant (`:367`, `:371`).
 
 No requirement in `specs/task-provisioning-diagnostics/spec.md` or `specs/guardrails/spec.md` asks
 for a new configuration seam. The pre-move code configured this bound only through the
@@ -333,8 +381,14 @@ phase's ratchets exist to keep out.
 
 ### Everything else re-traces inside scope
 
-The full implementation commit (`4f5c21c`) was reviewed against all six spec files and the change's
-own `tasks.md` / `proposal.md`. All 38 changed files were inspected hunk-by-hunk:
+The full implementation diff — commits **`4f5c21c`, `a87b179`, `66161c4`** — was reviewed against
+all six requirements across the five spec files, and against the change's own `tasks.md` /
+`proposal.md`. Every changed production file was traced to a specific requirement/scenario
+(`guardrails.service.ts`, the new `task-provisioning-diagnostics/`, `session-transcripts/`,
+`runner-metrics/capacity-projection.*`, and every module wiring change). Only one implemented
+behavior has no requirement backing it — the DI seam above, which is the same gap this change's own
+report already self-flagged as non-blocking scope creep, and which I re-verified independently
+against the current tree rather than inheriting. All 38 changed files were inspected hunk-by-hunk:
 
 - `apps/api/src/guardrails/guardrails.service.ts` (all 16 hunks) — diagnostics wrapper removal,
   non-optional transcript port, projection accessor deletion, `bindSource()` boot wiring: each maps
@@ -370,7 +424,8 @@ to a specific requirement/scenario in the specs.
 
 ```json
 [
-  "Unrequired DI-injectable write-timeout override for provisioning diagnostics: a new token TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT lets a composition override the diagnostic write bound via @Inject, but no module ever provides/binds it (grep across apps/api/src/**/*.module.ts finds zero matches) — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:34-47 (token + taskProvisioningDiagnosticWriteTimeoutMs override function) and apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:11-12,35-39 (@Optional @Inject of that token). No requirement in specs/task-provisioning-diagnostics/spec.md or specs/guardrails/spec.md asks for a new configuration seam — the pre-move code only ever configured this timeout through the constructor's plain config.diagnosticWriteTimeoutMs field (guardrails.service.ts, unchanged), so this DI override path is new, unused surface area introduced during the relocation rather than a preserved behavior."
+  "DI-injectable override token TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT lets a composition override the diagnostics write bound via @Inject, but no module ever provides/binds it — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:35-36",
+  "Corresponding unbound @Optional() constructor parameter consuming that dead token, adding a third constructor arg with no requirement asking for a new configuration seam — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:36-37"
 ]
 ```
 
@@ -380,11 +435,13 @@ to a specific requirement/scenario in the specs.
 
 Nothing routed to `tasks.md` and nothing routed to `design.md` Open Questions. No archive-blocking
 spec defect: the `surface-impact.json` sidecar's claims were executed rather than trusted —
-`CAP_PUBLIC_SURFACE_BASE_SHA=c858853 node scripts/public-surface-adversarial.mjs verify
-collapse-three-collaborator-groups` was **re-run on `792797e` in this pass** and returned
+`CAP_PUBLIC_SURFACE_BASE_SHA=$(git rev-parse main) node scripts/public-surface-adversarial.mjs verify
+collapse-three-collaborator-groups` was **re-run on `66161c4` in this pass** and returned
 `"passed": true`, `command.exitCode: 0`, all five lanes (`sidecar`, `registry`, `restMetadata`,
 `mcpSdkMetadata`, `behavior`) `passed: true`, `findings: []`, with `tasks.transcript` /
-`get_transcript` selected as declared. The single scope finding is internal-only, behaviour-neutral
+`get_transcript` selected as declared. There is therefore **no undeclared public impact and no false
+protocol exclusion** — the two conditions that would make the sidecar claim false and hold the
+archive. The single scope finding is internal-only, behaviour-neutral
 and violates no requirement, so it does not gate archive. **This change is verification-clean for
 archive.**
 

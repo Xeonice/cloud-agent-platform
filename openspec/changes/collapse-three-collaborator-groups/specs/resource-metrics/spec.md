@@ -26,12 +26,16 @@ when its identifier changed.
 for the same observed state; the owner SHALL add no logging, persistence, timers, or error handling
 the projection did not already have.
 
-#### Scenario: The old accessor and its type are gone from the tree
+#### Scenario: The old accessor is gone from the tree, and its type is gone from the orchestrator
 
-- **WHEN** the tree is searched for the orchestrator's projection accessor and for the old projection
-  source type
-- **THEN** zero matches are found, in production code and in test doubles alike, and no replacement
-  accessor exists on any orchestrator
+- **WHEN** the tree is searched for the orchestrator's projection accessor, and the ORCHESTRATOR is
+  searched for the old projection source type
+- **THEN** the accessor has zero matches anywhere, in production code and in test doubles alike, with
+  no replacement accessor on any orchestrator; and the orchestrator names the old source type zero
+  times
+- **AND** that type still exists elsewhere by design — it is the owner's own source type, which the
+  owner is handed at boot — so a tree-wide search for it is NOT the check, and demanding zero there
+  would be demanding the deletion of something this change deliberately keeps
 
 #### Scenario: The renamed collaborator is still measured, at its true count
 
