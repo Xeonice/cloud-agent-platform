@@ -31,8 +31,8 @@
     },
     "internalOnly": {
       "status": "changed",
-      "scope": "阶段 4 第四刀：三组横切协作者一次摘完，各自停在实测地板——provisioning diagnostics 8→4（两个 wrapper 整体外迁 + 写闸门反转为注入式 no-op；构造参数被 legacy 透传钉住，故 4 而非 2）、transcripts 2→1（服务迁出 tasks 上下文、切断 guardrails→tasks 的 forwardRef 边，可选性守卫消失，但被 await 的 capture 调用必须保留以承担 capture-before-teardown 的 happens-before）、metrics-projection 2→0（投影所有权迁进 runner-metrics，条目按归零纪律删除）。同刀订正上一刀留下的陈旧构造点计数 22/15 → 23/16。不动构造签名。",
-      "reason": "上一刀 range B 的三条预测本树重测：diagnostics 8→4 与 projection 2→0 成立，transcript 2→0 被推翻（源码注释与 :2414/:2437 的调用序证明 happens-before 由那个被 await 的调用承担，删不得），故按 2→1 如实立基线。三组合并的实测依据是写集三重交集只有 3 个文件、且 r11 的配对测试是单块 deepEqual + COLLABORATORS 长度断言，拆三刀要对同一常量做三次顺序编辑。"
+      "scope": "阶段 4 第四刀：三组横切协作者一次摘完，各自停在实测地板——provisioning diagnostics 8→4（两个 wrapper 整体外迁 + 写闸门反转为注入式 no-op；构造参数被 legacy 透传钉住，故 4 而非 2）、transcripts 2→1（服务迁出 tasks 上下文、切断 guardrails→tasks 的 forwardRef 边，可选性守卫消失，但被 await 的 capture 调用必须保留以承担 capture-before-teardown 的 happens-before）、metrics-projection **2→2 未动**（投影所有权迁进 runner-metrics 只改变了形态：裸 module import 变成 port import，r7 因此 8→7 / 2→1；但容量状态 semaphore 仍在编排器里，所有者拥有不了它、要靠 boot 时被推过去，所以编排器仍点名它两次。旧符号的归零是**改名**造成的，条目据此改测新符号而非删除）。同刀订正上一刀留下的陈旧构造点计数 22/15 → 23/16。不动构造签名。",
+      "reason": "上一刀 range B 的三条预测本树重测：diagnostics 8→4 成立；projection「2→0 删条目」被对抗验证推翻——那是改名不是移除，删条目会让活耦合失measure，transcript 2→0 被推翻（源码注释与 :2414/:2437 的调用序证明 happens-before 由那个被 await 的调用承担，删不得），故按 2→1 如实立基线。三组合并的实测依据是写集三重交集只有 3 个文件、且 r11 的配对测试是单块 deepEqual + COLLABORATORS 长度断言，拆三刀要对同一常量做三次顺序编辑。"
     }
   },
   "protocolDifferences": [

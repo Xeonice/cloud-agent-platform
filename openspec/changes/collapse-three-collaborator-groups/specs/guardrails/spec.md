@@ -5,8 +5,16 @@
 This change SHALL remove references to three collaborators in one commit series, and SHALL record a
 SEPARATE floor for each rather than one headline number, because the three floors have three
 different causes. The floors are: provisioning diagnostics from 8 to **4**, transcripts from 2 to
-**1**, and metrics-projection from 2 to **0**. Every count SHALL be established by running the
-dependency-budget gate's own measurement over the post-change file, never by counting deleted lines.
+**1**, and metrics-projection from 2 to **2 — unmoved**. Every count SHALL be established by running
+the dependency-budget gate's own measurement over the post-change file, never by counting deleted
+lines, and never by grepping the identifier a collaborator used to have.
+
+The metrics-projection floor is **2, the same 2 it started at**, and saying so is the point. The port
+extraction renamed that collaborator's symbol; the orchestrator kept naming it exactly as often as
+before. A count that falls because an identifier was renamed is a forged burn-down, and an entry
+retired on that basis leaves a live coupling with nothing measuring it. What this change delivers for
+that group is a change of FORM — a bare module import became a port import, which is what moves the
+cross-context ratchet — not a removal.
 
 The transcript floor is **1, not 0**, and the reason SHALL be recorded rather than left as an
 unexplained shortfall: the orchestrator's transcript capture is awaited at both terminal chokepoints
@@ -25,8 +33,9 @@ out of this change's scope. The floor moves to 2 only after legacy retirement.
 - **WHEN** the dependency-budget gate's measurement function is run over the post-change
   `guardrails.service.ts`
 - **THEN** it reports provisioning-diagnostics recorder 2, write gate 2, transcripts 1, and
-  metrics-projection 0 — and each of those numbers appears in the change's records with the command
-  that produced it
+  metrics-projection 2 — the last measured against the collaborator's NEW symbol, since measuring the
+  old one would report a zero that only the rename produced — and each of those numbers appears in the
+  change's records with the command that produced it
 
 #### Scenario: The awaited transcript capture survives at its seam
 
@@ -44,8 +53,9 @@ out of this change's scope. The floor moves to 2 only after legacy retirement.
 #### Scenario: No group is reported as burned down
 
 - **WHEN** the change's records describing the three outcomes are read
-- **THEN** none of the three is described as burned down or as reaching zero except
-  metrics-projection, whose entry genuinely reaches zero and is deleted rather than recorded as 0
+- **THEN** none of the three is described as burned down or as reaching zero, and in particular
+  metrics-projection is described as unmoved at 2 with its entry retained, because its old symbol's
+  zero was a rename rather than a removal
 
 ## MODIFIED Requirements
 

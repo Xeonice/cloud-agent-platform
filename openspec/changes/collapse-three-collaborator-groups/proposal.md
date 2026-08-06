@@ -26,7 +26,7 @@
 | 组 | range B 预测 | 本树实测 | 判定 |
 |---|---|---|---|
 | N2 diagnostics | 8→4（legacy 存活） | **8→4** | ✅ 成立 |
-| N4 metrics-projection | 2→0，删条目 | **2→0** | ✅ 成立 |
+| N4 metrics-projection | 2→0，删条目 | **2→2 未动** | ❌ **推翻**（见下） |
 | N3 transcript | 2→0，删条目 | **2→1** | ❌ **推翻** |
 
 **N3 为什么到不了 0**（与 runner 组 6→0 同一失败模式）：`guardrails.service.ts:2414` 的
@@ -54,7 +54,7 @@ before the stop holds"）。guardrails 必须保留一个被 await 的同步调�
 - **N3 transcript（2→1）**：`SessionTranscriptService` 迁出 `apps/api/src/tasks/`，切断
   `guardrails.module.ts` → `TasksModule` 那条 forwardRef 边；guardrails 侧改为注入**非可选**的 port
   （关闭/未装配时是 no-op 实现而不是 `undefined`），`:2157` 的守卫随之消失，`:2159` 的被 await 调用**原样保留**。
-- **N4 metrics-projection（2→0，删条目）**：`semaphoreProjection()`（`:3908`）的投影所有权迁进 `runner-metrics`，
+- **N4 metrics-projection（2→2 未动，只改形态）**：`semaphoreProjection()`（`:3908`）的投影所有权迁进 `runner-metrics`，
   `:108` 的 `import type { SemaphoreProjectionSource }` 随之消失。这是上一刀的直接同位物——上一刀摘 `:109`，本刀摘 `:108`。
 - **顺带订正一处我上一刀留下的陈旧数字**：活 spec `guardrails/spec.md:1067`/`:1081` 写「22 positional sites across
   15 files」，实测已是 **23 / 16**（上一刀的集成测试 `:92` 新增了一个真实构造点）。同刀 MODIFY 订正。
@@ -65,7 +65,7 @@ before the stop holds"）。guardrails 必须保留一个被 await 的同步调�
 
 - `guardrails`：①三组引用的移除边界与各自地板（8→4 / 2→1 / 2→0）；②订正构造点计数 22/15 → 23/16。
 - `domain-event-bus`：R11 三个条目的结果——两个降数（recorder 4→2、writeGate 4→2、transcripts 2→1）、
-  一个归零删条目（metrics-projection）。归零删条目与降数改 count 的二分在本刀**同时出现**，是给后续刀的模板。
+  一个改名改测（metrics-projection）。**降数改 count / 归零删条目 / 改名改测符号**三种形态的区分是给后续刀的模板——第三种最危险：它看起来像归零。
 - `task-provisioning-diagnostics`：诊断写入的**开关反转**形态——关闭态是注入的 no-op，不是调用方的分支。
 - `session-transcript-persistence`：转录捕获的所有权迁移**不得**改变 happens-before；验收用顺序断言而非 sleep。
 - `resource-metrics`：容量投影的所有权归 platform-ops，消费方直连、编排器不留转发器。

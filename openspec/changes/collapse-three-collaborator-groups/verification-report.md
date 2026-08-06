@@ -5,10 +5,18 @@ SPEC-DEFECT → `design.md` Open Questions · MET → folded here). Every verdic
 **re-traced against the working tree** in this pass — commands were re-run first-hand, not
 copied from the apply log, from the commit message, or from the skeptic pass.
 
-Tree under test: branch `main`, HEAD `4f5c21c` ("refactor(guardrails): take three collaborator
-groups to their measured floors"), on top of `199074a` (proposal) and base `c858853`.
-Date: 2026-08-06. Working tree is clean for this change (the only untracked path,
-`openspec/changes/extract-runner-minutes-ledger/`, belongs to a different, already-archived cut).
+Tree under test **for the latest pass**: HEAD `792797e` (merge of `main` into
+`refactor/collapse-three-collaborator-groups`), which carries `4f5c21c` ("refactor(guardrails): take
+three collaborator groups to their measured floors") plus the post-report fix `a87b179`
+("fix(ratchets): restore the projection entry the rename made invisible"), on top of `199074a`
+(proposal) and base `c858853`. The harness-side fix `d741a71` ("fix(verify): adjudicate refutations
+instead of counting them") arrived through `main` in the same merge — it is not this cut's edit, and
+the `no-harness-edits` assertion still passes against `main`.
+Date: 2026-08-06. Working tree is clean (`git status --short` is empty).
+
+The first pass recorded below ran on `4f5c21c` at 18 assertions. Its text is preserved rather than
+rewritten — the stale numbers are marked inline with **【本轮复核】** notes — because the false-green
+episode documented at the bottom of this file is the single most useful thing in it.
 
 ---
 
@@ -24,7 +32,16 @@ Date: 2026-08-06. Working tree is clean for this change (the only untracked path
 This pass received **0 raw-unmet requirements** and **0 mandatory public findings**. All six
 requirements were decided by the command-decidable assertion harness with **none left for LLM
 judgment** — `node scripts/spec-assert.mjs collapse-three-collaborator-groups` returns
-`18/18 passed; 6 requirement(s) decided without an LLM pass`.
+`20/20 passed; 6 requirement(s) decided without an LLM pass` on the current tree (18/18 at the time
+of the first pass; the two additions, `projection-port-still-named-and-measured` and
+`r7-cross-context-improved`, came in with `a87b179` and are exactly the assertions that would have
+caught the false green — both were reverse-verified: renaming `CapacityProjectionPort` turns the
+assertion **and** the R11 gate red together).
+
+One **non-blocking scope finding** is recorded below (a DI-injectable diagnostics write-timeout
+override that no module binds). It violates no requirement, changes no behaviour and touches no
+public surface, so it is not routed to `tasks.md` and does not gate archive — it is recorded because
+this report previously claimed "no scope creep found", and that claim was too strong.
 
 The tally was not taken on trust. This pass independently re-executed the load-bearing gates and
 the two discriminating tests (below), and separately ran the adversarial public-surface verifier
@@ -37,8 +54,8 @@ position be *executed rather than assumed*. All six requirements are **MET**.
 
 | Gate | Command | Result |
 |---|---|---|
-| R12 spec assertions | `node scripts/spec-assert.mjs collapse-three-collaborator-groups` | **18/18 passed**, 6 requirements decided without an LLM pass |
-| R11 dependency budget | `node scripts/ratchets/r11-dependency-budget.mjs` | **exit 0** — `audit 9 / runnerMinutes 5 / provisioningDiagnosticRecorder 2 / provisioningDiagnosticWriteGate 2 / transcripts 1`, no `metrics-projection` entry |
+| R12 spec assertions | `node scripts/spec-assert.mjs collapse-three-collaborator-groups` | **20/20 passed** on `792797e` (18/18 on `4f5c21c`), 6 requirements decided without an LLM pass |
+| R11 dependency budget | `node scripts/ratchets/r11-dependency-budget.mjs` | **exit 0** — `audit 9 / runnerMinutes 5 / provisioningDiagnosticRecorder 2 / provisioningDiagnosticWriteGate 2 / transcripts 1 / metrics-projection (CapacityProjectionPort) 2`. 【本轮复核】the `metrics-projection` entry is **present**, measuring the renamed symbol; the first pass recorded it as deleted, which is the defect `a87b179` fixed |
 | R11 paired test | `node --test scripts/ratchets/r11-dependency-budget.test.mjs` | **12 pass / 0 fail** |
 | Transcript ordering regression | `node --test apps/api/src/session-transcripts/transcript-capture-ordering.test.mjs` | **2 pass / 0 fail**, including the negative control |
 | Diagnostics observer lifecycle | `node --test dist/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.spec.js` | **12 pass / 0 fail** |
@@ -55,15 +72,22 @@ position be *executed rather than assumed*. All six requirements are **MET**.
 **MET.** The requirement's discipline is that a *reduced* entry stays and reconciles to its own
 delta while a *zeroed* entry is deleted rather than written as `count: 0`. Re-traced live:
 
-- `node scripts/ratchets/r11-dependency-budget.mjs` exits 0 and prints exactly five collaborators —
-  `this.audit 9`, `this.runnerMinutes 5`, `provisioningDiagnosticRecorder 2`,
-  `provisioningDiagnosticWriteGate 2`, `this.transcripts 1`. The gate is bidirectionally
+- `node scripts/ratchets/r11-dependency-budget.mjs` exits 0. The gate is bidirectionally
   fail-closed ("every collaborator exactly at its baselined count"), so a recorded count that
   diverged from the live count in *either* direction would fail it.
-- `grep -c metrics-projection scripts/ratchets/r11.json` → **0**. The projection entry is deleted,
-  not zeroed — the rule the requirement distinguishes from reduction.
-- `COLLABORATORS.length` in `scripts/ratchets/r11-dependency-budget.mjs` → **5** (was 6), so the
-  gate's own declaration moved with the file rather than lagging it.
+- **【本轮复核 — 以下三条已被 `a87b179` 推翻并订正】** The first pass read the gate as printing exactly
+  *five* collaborators with the `metrics-projection` entry deleted (`grep -c metrics-projection
+  scripts/ratchets/r11.json` → 0, `COLLABORATORS.length` → 5) and treated that deletion as the
+  reduce-vs-delete discipline landing correctly. It was the opposite: the coupling had been
+  **renamed**, not removed, so deleting the entry stopped measuring a live edge. Live on `792797e`
+  the gate prints **six** — `this.audit 9`, `this.runnerMinutes 5`, `provisioningDiagnosticRecorder 2`,
+  `provisioningDiagnosticWriteGate 2`, `this.transcripts 1`, and
+  `metrics-projection (CapacityProjectionPort) 2` — `COLLABORATORS.length` is back to **6**, and
+  `scripts/ratchets/r11.json` carries all six keys (verified by reading the file's key list, not by
+  grep). The requirement still **re-traces as MET on the corrected artifacts**: `metrics-projection`
+  is the entry that is *re-pointed* (same count 2, new symbol) while the diagnostics and transcript
+  entries are the ones *reduced*, and the entry-deletion rule is now stated as "the collaborator
+  really left", not "its name changed".
 - The paired hard-coded-expectation test (`r11-dependency-budget.test.mjs`, a single-block
   `deepEqual` plus a `COLLABORATORS` length assertion) is green at 12/12, which is the point of
   merging the three cuts into one commit: three separate cuts would have had to edit the same
@@ -84,7 +108,10 @@ inferred**, and that no group is reported as burned down when it is not. Re-trac
   rather than dressed up as 2.
 - Transcripts floor is **1**, not 0: exactly one live reference remains, and it is not incidental —
   see requirement 5.
-- Metrics-projection reaches **0** and its entry is deleted — see requirement 4.
+- Metrics-projection: 【本轮复核】the *old symbol* `SemaphoreProjectionSource` reaches **0** in the
+  orchestrator (confirmed live, `grep -c` → 0), but the group's true floor is **2** on the renamed
+  symbol `CapacityProjectionPort`, and the R11 entry measuring it is retained rather than deleted —
+  see requirement 4 and the 更正 section at the end of this file.
 - No group is reported as burned down: `r11.json`'s prose records three different causes for three
   different floors rather than one headline number, and `surface-impact.json`'s `internalOnly`
   reason states `2 → 1` for transcripts explicitly noting the previous cut's `2 → 0` prediction was
@@ -120,16 +147,33 @@ inferred**, and that no group is reported as burned down when it is not. Re-trac
 
 ### 4. `resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder`
 
-**MET.** Re-traced live:
+**MET** — but only against the **restated** requirement. 【本轮复核】The verdict below was written
+against the requirement's *original* wording ("no orchestrator forwarder", read as "the orchestrator
+no longer names the projection"), and under that wording it was a **false green**: the orchestrator
+still names the collaborator, through `CapacityProjectionPort` instead of `SemaphoreProjectionSource`
+(`guardrails.service.ts` port import, and the boot-time
+`.get<CapacityProjectionPort>(CAPACITY_PROJECTION_PORT).bindSource(this.semaphore)`). The full
+account is in the 更正 section at the end of this file. What this cut actually delivers — and what
+the requirement now says — is a **shape** change: a bare cross-context module import becomes a
+legitimate port + token edge, `r7` `cross-context-import:.../guardrails.service.ts` 8 → **7** and
+`cross-context-import:.../metrics.service.ts` 2 → **1** (both re-read live from `scripts/ratchets/r7.json`
+in this pass). Under that restated wording it re-traces MET, and the two new assertions pin the
+renamed symbol so the same rename cannot go unmeasured again.
+
+Re-traced live:
 
 - Ownership landed where the spec says: `apps/api/src/runner-metrics/capacity-projection.port.ts`
   and `capacity-projection.service.ts` exist, with `capacity-projection-pin.test.mjs` green at 5/5.
 - The forwarding accessor is gone tree-wide: `grep -rn semaphoreProjection apps/api/src` → **no
   matches**, production code and test doubles alike.
-- The orchestrator no longer names the projection: `grep -c SemaphoreProjectionSource
+- ~~The orchestrator no longer names the projection~~: `grep -c SemaphoreProjectionSource
   apps/api/src/guardrails/guardrails.service.ts` → **0**, counted by the same rule the budget
   counter uses (type-only imports included), so a "removed at runtime but still named in a type
-  position" dodge would not pass.
+  position" dodge would not pass. 【本轮复核】The grep result is real and still reproduces, but the
+  **conclusion drawn from it was wrong**: the identifier hitting zero proved a rename, not a
+  removal. A grep for a symbol the change itself renamed can only ever return 0. The live coupling
+  is `CapacityProjectionPort` at count **2**, now measured by R11 and pinned by
+  `projection-port-still-named-and-measured`.
 - The metrics response is unchanged for the same state: the metrics suites
   (`metrics.verify`, `metrics-projection`, `task-resource`) are green at **26/26**, and
   `metrics.service.ts`'s diff is import rewiring only — `projectCapacity`/`buildSlotOccupancy` move
@@ -201,12 +245,34 @@ capture-before-teardown. It does not. Re-traced live:
 
 **None.**
 
-All 6 requirements in this change's specs have concrete, traceable implementation in the codebase
-(new directories `task-provisioning-diagnostics/`, `runner-metrics/capacity-projection.*`,
-`session-transcripts/`; the `guardrails.service.ts` constructor unchanged at 11 params;
-`r11.json` / `r7.json` ratchets re-measured; the ordering-regression test present), independently
-corroborated by `node scripts/spec-assert.mjs collapse-three-collaborator-groups` returning
-**18/18** passing assertions covering all 6 requirements with none left for LLM judgment.
+All 20 assertions pass live (20/20, up from the first pass's 18/18 — two more assertions were added,
+`projection-port-still-named-and-measured` and `r7-cross-context-improved`, from the post-report fix
+commits `a87b179` / `d741a71`), and all 6 requirements are command-decided. Independent spot checks
+run in this pass (`node scripts/ratchets/r11-dependency-budget.mjs`; greps for `isEnabled()`,
+`semaphoreProjection` and `SemaphoreProjectionSource`; `node scripts/guardrails-construction-sites.mjs`;
+`node scripts/context-layout-check-v2.mjs`; the ordering and capacity-projection-pin tests; the
+`contexts-manifest.json` entries; the `r7.json` re-keying) each corroborate a concrete, traceable
+implementation for every one of the 6 requirements:
+
+- `guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor`
+  — floors 4 / 1 / (2, re-pointed) confirmed live via `measureSource`.
+- `guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched`
+  — 11-param constructor unchanged; `24 17 12 20 16 9` matches the spec's recorded totals.
+- `task-provisioning-diagnostics/a-closed-diagnostics-write-gate-is-an-injected-no-op-not-a-branch-at-every-call-site`
+  — `isEnabled()` is gone from the orchestrator (grep count 0); delegation to
+  `this.provisioningDiagnostics` (5 sites) confirmed.
+- `session-transcript-persistence/transcript-capture-moves-out-of-the-tasks-context-without-moving-its-happens-before`
+  — `session-transcripts/` exists with its port; the ordering test passes 2/2 including the
+  discriminating negative control.
+- `resource-metrics/capacity-projection-is-owned-in-platform-ops-and-read-directly-with-no-orchestrator-forwarder`
+  — `runner-metrics/capacity-projection.{port,service}.ts` exist, `semaphoreProjection` /
+  `SemaphoreProjectionSource` are zero tree-wide, the pin test passes 5/5, and r7 records the real
+  gain (guardrails 8→7, metrics 2→1).
+- `domain-event-bus/three-budget-entries-are-reduced-and-one-is-re-pointed-in-the-same-commit-and-by-different-rules`
+  — `r11.json` holds exactly the 6 declared collaborators, with `metrics-projection` **re-pointed**
+  (not deleted) at count 2.
+
+No requirement lacks traceable implementation.
 
 ```json
 []
@@ -224,7 +290,48 @@ Files inspected (all under the repository root):
 
 ## Scope finding — implementation beyond the specs
 
-**No scope creep found.**
+**One finding, non-blocking.** 【本轮复核】The first pass's "no scope creep found" was too strong.
+
+### An unrequired DI-injectable write-timeout override for provisioning diagnostics
+
+A new DI token `TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT` lets a composition override the
+diagnostic write bound via `@Inject`, but **no module ever provides or binds it**:
+
+- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:34-47`
+  — the token plus the `taskProvisioningDiagnosticWriteTimeoutMs(configured?)` override function.
+- `apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:11-12,35-39`
+  — the `@Optional() @Inject(TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT) writeTimeoutMs?: number`
+  constructor parameter.
+
+Verified in this pass: a tree-wide grep for the token (word-boundary, so the unrelated
+`..._TIMEOUT_MS` constant is excluded) returns **exactly those two files** — a definition and a
+consumer, and no provider anywhere, including every `*.module.ts`. The module that does wire this
+owner (`task-provisioning-diagnostics.module.ts`) binds the recorder, the write gate and
+`TASK_PROVISIONING_DIAGNOSTICS_OBSERVER_LIFECYCLE` → `useExisting`, and never the timeout.
+
+No requirement in `specs/task-provisioning-diagnostics/spec.md` or `specs/guardrails/spec.md` asks
+for a new configuration seam. The pre-move code configured this bound only through the
+orchestrator's plain `config.diagnosticWriteTimeoutMs` field, and that path is **unchanged** and
+still live: `guardrails.service.ts:815-836` computes `this.diagnosticWriteTimeoutMs` exactly as
+`main` did and hands it to the owner positionally as `writeTimeoutMs`. The DI override is therefore
+new, unused surface introduced during the relocation rather than a preserved behaviour.
+
+**Why it is recorded and not routed:**
+
+- It violates no requirement. The spec's "consumers reach the owner only through its port" scenario
+  is satisfied — the token lives in the `*.port.ts` file, not the `*.service.ts`.
+- It changes no behaviour. `@Optional()` on an unbound token resolves to `undefined`, and
+  `taskProvisioningDiagnosticWriteTimeoutMs(undefined)` returns the same 2000 ms default the
+  pre-move code used; the spec-configured bound that the requirement actually cares about travels
+  the positional path, not this one.
+- It touches no public surface (`internalOnly` is already declared `changed`).
+
+So it is neither an UNMET code task nor an archive-blocking sidecar defect. Recommended follow-up
+(a separate, one-line cut): drop the token and the third constructor parameter unless a composition
+is about to bind it — a configuration seam with no binder is exactly the kind of dead surface this
+phase's ratchets exist to keep out.
+
+### Everything else re-traces inside scope
 
 The full implementation commit (`4f5c21c`) was reviewed against all six spec files and the change's
 own `tasks.md` / `proposal.md`. All 38 changed files were inspected hunk-by-hunk:
@@ -258,17 +365,28 @@ self-verification-config fix inside the change's own `assertions.json`, not a ha
 and `openspec/schemas` are all untouched against `main`), and it is tied to the `guardrails`
 requirement it verifies.
 
-No production behavior, file, or test was found that isn't traceable to a specific
-requirement/scenario in the specs.
+Apart from the DI seam above, no production behavior, file, or test was found that isn't traceable
+to a specific requirement/scenario in the specs.
+
+```json
+[
+  "Unrequired DI-injectable write-timeout override for provisioning diagnostics: a new token TASK_PROVISIONING_DIAGNOSTIC_WRITE_TIMEOUT lets a composition override the diagnostic write bound via @Inject, but no module ever provides/binds it (grep across apps/api/src/**/*.module.ts finds zero matches) — apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.port.ts:34-47 (token + taskProvisioningDiagnosticWriteTimeoutMs override function) and apps/api/src/task-provisioning-diagnostics/task-provisioning-diagnostics-observer-lifecycle.service.ts:11-12,35-39 (@Optional @Inject of that token). No requirement in specs/task-provisioning-diagnostics/spec.md or specs/guardrails/spec.md asks for a new configuration seam — the pre-move code only ever configured this timeout through the constructor's plain config.diagnosticWriteTimeoutMs field (guardrails.service.ts, unchanged), so this DI override path is new, unused surface area introduced during the relocation rather than a preserved behavior."
+]
+```
 
 ---
 
 ## Archive readiness
 
 Nothing routed to `tasks.md` and nothing routed to `design.md` Open Questions. No archive-blocking
-spec defect: the `surface-impact.json` sidecar's claims were executed rather than trusted, and the
-adversarial verifier returned `passed: true` with an empty findings list on this tree. **This
-change is verification-clean for archive.**
+spec defect: the `surface-impact.json` sidecar's claims were executed rather than trusted —
+`CAP_PUBLIC_SURFACE_BASE_SHA=c858853 node scripts/public-surface-adversarial.mjs verify
+collapse-three-collaborator-groups` was **re-run on `792797e` in this pass** and returned
+`"passed": true`, `command.exitCode: 0`, all five lanes (`sidecar`, `registry`, `restMetadata`,
+`mcpSdkMetadata`, `behavior`) `passed: true`, `findings: []`, with `tasks.transcript` /
+`get_transcript` selected as declared. The single scope finding is internal-only, behaviour-neutral
+and violates no requirement, so it does not gate archive. **This change is verification-clean for
+archive.**
 
 ---
 
