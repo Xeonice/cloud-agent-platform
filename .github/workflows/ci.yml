@@ -730,6 +730,8 @@ jobs:
       # dispatch into a 400. Satisfies `requirePinnedAioSandboxImage` only —
       # nothing pulls or runs this image here.
       AIO_SANDBOX_IMAGE: cap-aio-sandbox:pinned
+      # ⚠ TEMPORARY — REVERT WITH THE DIAGNOSTIC IT FEEDS ⚠
+      CAP_UNSAFE_ADMISSION_ERROR_ECHO: '1'
 
     steps:
       - name: Checkout

@@ -512,6 +512,7 @@ nohup env -i \
   CAP_WORKSPACE_GIT_FALLBACK_ENABLED=true \
   WORKSPACES_DIR="$ARTIFACT_DIR/workspaces" \
   AIO_SANDBOX_IMAGE="${AIO_SANDBOX_IMAGE:-cap-aio-sandbox:pinned}" \
+  CAP_UNSAFE_ADMISSION_ERROR_ECHO="${CAP_UNSAFE_ADMISSION_ERROR_ECHO:-}" \
   node test/scheduled-tasks-live-e2e-server.mjs \
   >"$API_LOG" 2>&1 </dev/null &
 API_PID=$!
