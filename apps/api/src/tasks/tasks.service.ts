@@ -1912,6 +1912,7 @@ export class TasksService
     }
 
     let transitioned = false;
+    let authorityOwnerUserId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       // All replicas serialize only the short capacity-count/CAS section. Task
       // terminal transitions do not need this lock: a concurrent release either
@@ -1937,11 +1938,16 @@ export class TasksService
           : request.fallbackMaxConcurrentTasks;
 
       const rows = await tx.$queryRaw<
-        Array<{ status: string; lifecycleVersion: number }>
+        Array<{
+          status: string;
+          lifecycleVersion: number;
+          ownerUserId: string | null;
+        }>
       >(Prisma.sql`
         SELECT
           t."status"::text AS "status",
-          t."lifecycle_version" AS "lifecycleVersion"
+          t."lifecycle_version" AS "lifecycleVersion",
+          t."owner_user_id" AS "ownerUserId"
         FROM "tasks" AS t
         INNER JOIN "task_admission_work" AS w ON w."task_id" = t."id"
         WHERE
@@ -2044,6 +2050,7 @@ export class TasksService
         return { outcome: 'superseded' } as const;
       }
       transitioned = true;
+      authorityOwnerUserId = authority.ownerUserId;
       return {
         outcome: next,
         status: next,
@@ -2057,7 +2064,15 @@ export class TasksService
         this.audit?.recordTransition(
           request.taskId,
           result.status,
-          request.userId,
+          // Attribute the owner when no caller supplied an acting user. A durable
+          // admission runs on a worker, with no request context, so `userId` is
+          // absent — but the transition still belongs to somebody, and
+          // `task.created` already attributes the owner the same way
+          // (`resolveTaskOwnerId`). Leaving it null made lifecycle audit rows
+          // ownerless for every automatically dispatched task; before this change
+          // that was invisible because only durable-enabled deployments took this
+          // path, and now every deployment does.
+          request.userId ?? authorityOwnerUserId ?? undefined,
         ),
       );
       // Durable `TaskAdmitted` (add-domain-event-bus 4.7), the one surviving

@@ -179,3 +179,35 @@ green against a method that no longer exists — the failure mode this change al
 - **THEN** the difference is accounted for name by name in the change's task ledger, classified (c)
   where the subject is the sweep itself and (a) where a surviving concern was re-expressed against a
   different seam
+
+### Requirement: A durable lifecycle transition is attributed to the task owner
+
+An audit event for a lifecycle transition SHALL carry an attributed user even when no request context
+supplied one. A durable admission runs on a worker, so `DurableAdmissionCapacityRequest.userId` is
+absent by construction — the field exists and is optional precisely for that case — and the
+transition SHALL fall back to the task's own `ownerUserId`, read in the same authority row the
+capacity reservation already locks (`FOR UPDATE OF t, w`), rather than being written ownerless.
+
+This mirrors the convention `task.created` already follows: the post-commit dispatch resolves the
+owner (`resolveTaskOwnerId`) and attributes the creation audit to them even on the fail-closed path.
+An audit trail where creation has an owner and the very next lifecycle row does not is not a design,
+it is an omission.
+
+The omission SHALL be recorded as PRE-EXISTING rather than as a regression of the retirement: `main`'s
+call site does not pass a user either. What the retirement changed is the BLAST RADIUS — before it,
+only a deployment with durable admission enabled took this path, so ownerless lifecycle rows were a
+property of an opt-in mode; after it, every deployment takes it, so the gap became universal. A latent
+gap that a change makes universal is that change's to close.
+
+#### Scenario: An automatically dispatched task keeps its owner on the running row
+
+- **WHEN** a scheduled task is dispatched with no acting user and the durable admission transitions it
+  to `running`
+- **THEN** the `task.running` audit event carries the task's owner as its user, the same owner the
+  `task.created` row carries
+
+#### Scenario: An explicit acting user still wins
+
+- **WHEN** a caller does supply `userId` on the capacity request
+- **THEN** that user is attributed and the owner fallback is not consulted, so an operator-initiated
+  transition is never misattributed to the owner

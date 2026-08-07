@@ -499,6 +499,21 @@
       "expect": {
         "stdoutEquals": "1"
       }
+    },
+    {
+      "id": "durable-transition-attributes-owner",
+      "requirements": [
+        "repo-and-task-management/a-durable-lifecycle-transition-is-attributed-to-the-task-owner"
+      ],
+      "describe": "durable 迁移审计在无 acting user 时回落到任务 owner（而非写成无主行）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'request.userId ?? authorityOwnerUserId ?? undefined' apps/api/src/tasks/tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
     }
   ]
 }

@@ -217,3 +217,10 @@
   - requirements: ["repo-and-task-management/the-pending-admission-sweep-is-retired-with-the-population-it-served"]
   - surfaces: ["developer-workflow"]
   - verify: "spec-assertions"
+
+## 10. Track: durable-transition-attribution (depends: none)
+
+- [x] 10.1 Attribute the task owner on durable lifecycle transitions. Found by the playwright e2e (`sub-day forms round-trip and owner dispatch remains attributed`), which asserts the `task.running` audit row carries the session user and got `null` — the event existed, its user did not. Traced, not guessed: `guardrails.service.ts:1006` never passes `userId`, and `git show main:` shows the same call site on `main` — so the omission is PRE-EXISTING, not a regression. What this change did was make it universal: the durable path used to be opt-in, and now it is the only path. Fix is two reads, not a new plumbing chain: the capacity reservation already locks the task row (`FOR UPDATE OF t, w`), so the raw SELECT gains `owner_user_id` and the audit falls back to it — `request.userId ?? authorityOwnerUserId ?? undefined`. An explicit acting user still wins, so an operator action is never misattributed. Convention check rather than invention: `task.created` already attributes the owner via `resolveTaskOwnerId`, including on the fail-closed path; an audit trail whose creation row has an owner and whose next lifecycle row does not is an omission, not a design. Full api suite after the fix: 1621 pass / 1 fail, unchanged — the one failure is the pre-existing real-tmux case.
+  - requirements: ["repo-and-task-management/a-durable-lifecycle-transition-is-attributed-to-the-task-owner"]
+  - surfaces: ["developer-workflow"]
+  - verify: "spec-assertions"
