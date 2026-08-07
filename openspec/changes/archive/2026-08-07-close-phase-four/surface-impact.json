@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "close-phase-four",
+  "intent": "internal",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "本刀不碰 packages/contracts，不碰任何 v1 handler/registry。改动面是一个 NestJS module 的 import 形态、一条新的仓内窄闸门脚本、以及一份规划文档。DI 组合方式的改变不经过任何请求/响应形态：GuardrailsModule 从 forwardRef 包装改为直接 import，容器解析出的 provider 集合逐个不变。apply 期实跑 node scripts/public-surface-adversarial.mjs verify 复核，声明不算证明。"
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "同 publicV1：工具集、名称、入参与输出投影都派生自 contracts，而 contracts 零改动。"
+    },
+    "openapi": {
+      "status": "unchanged",
+      "reason": "操作注册表零改动，schema 派生源零改动。"
+    },
+    "apiPlayground": {
+      "status": "unchanged",
+      "reason": "Playground 渲染操作清单，清单不增不减；本刀不碰 packages/contracts/src/**，故不触发 contracts→四公开面的展开。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段 4 收口：(1) 删 tasks.module.ts 的残迹 forwardRef 并订正其文档段落；(2) 新增窄闸门 scripts/module-composition-cycle-check.mjs + 自测 + package.json 注册，补 layout v2 对 *.module.ts 豁免按构造看不见的那条边；(3) 母文档三处订正——判据 c 的裁定值 7 及其理由、判据 b 推到阶段 6 的决定与依据、:146 两个已被实测推翻的数字。产品行为零改动：删掉的 forwardRef 所包裹的环早已不存在（guardrails.module.ts 是空 imports），三个兄弟 module 已在用直接 import。",
+      "reason": "判据 b 未在本刀达成，由用户 2026-08-07 拍板推到阶段 6，理由是注入会撤销「单一构造路径」这个写在代码里的刻意决定。这是**决定**不是遗漏，母文档必须写明。"
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}

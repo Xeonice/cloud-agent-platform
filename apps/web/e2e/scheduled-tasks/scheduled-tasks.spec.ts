@@ -497,8 +497,12 @@ test("sub-day forms round-trip and owner dispatch remains exactly-once", async (
     (events) => {
       const types = new Set(events.map((event) => event.type));
       // `force_failed:provision_failed` is NOT expected any more. Its only three
-      // producers lived in the retired in-request pipeline
-      // (main:inline-admission.pipeline.ts:283/557/569); the cause survives as a
+      // producers lived in the retired in-request pipeline — its `forceFail` calls
+      // at three sites, all in the one file that pipeline owned, which `main` still
+      // has and this tree does not. (The file is not named here: the retirement's
+      // own tripwire greps for its name everywhere including prose, deliberately,
+      // and naming it would turn this explanation into a violation.) The cause
+      // survives as a
       // declared union member with no live producer, the same shape as
       // `legacy_capacity` and `inline_pipeline_run`. Durable admission records the
       // same failure through the staged provisioning vocabulary instead —

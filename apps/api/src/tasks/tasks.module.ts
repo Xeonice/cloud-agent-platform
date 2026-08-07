@@ -1,4 +1,4 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 
 import { TASK_OPERATIONS } from '@/task-operations/task-operations.port';
 import { TasksController } from './tasks.controller';
@@ -40,10 +40,17 @@ import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
  * so there is no dial-back to authenticate. `TaskTokenService` and the gateway
  * dial-back handshake verifier were removed with the runner (migrate-aio 7.4).
  *
- * VR.1 / VR.4 / VR.5: `GuardrailsModule` is imported via `forwardRef` to break
- * the circular reference (GuardrailsModule -> TasksModule -> GuardrailsModule).
- * The `GuardrailsService` is re-provided under the `GUARDRAILS_SERVICE_TOKEN` so
- * `TasksService` can inject it with `@Optional()` without creating the cycle.
+ * VR.1 / VR.4 / VR.5: `GuardrailsModule` is imported PLAINLY. There is no
+ * circular reference to break — `guardrails.module.ts` declares `imports: []`,
+ * and no non-test file under `apps/api/src/guardrails/` imports `@/tasks`. Three
+ * sibling modules (metrics, settings, terminal) already import it this way; this
+ * one kept a `forwardRef` after the edge it wrapped was removed (see the N3
+ * paragraph below), which read as evidence of a cycle that no longer existed.
+ * `GuardrailsService` is still re-provided under `GUARDRAILS_SERVICE_TOKEN`, and
+ * that is worth keeping for its own reason: it decouples `TasksService` from the
+ * concrete class so it can inject with `@Optional()`. Decoupling from a class is
+ * not the same thing as breaking a cycle, and conflating them is what let the
+ * vestige survive.
  *
  * collapse-three-collaborator-groups N3: the durable
  * {@link SessionTranscriptService} is no longer REGISTERED here — it is owned by
@@ -55,7 +62,7 @@ import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
  */
 @Module({
   imports: [
-    forwardRef(() => GuardrailsModule),
+    GuardrailsModule,
     SandboxEnvironmentsModule,
     ForgeModule,
     TaskAdmissionModule,
@@ -75,8 +82,9 @@ import { TaskAdmissionModule } from '@/task-admission/task-admission.module';
       provide: TASK_ADMISSION_GATE_TOKEN,
       useExisting: EnvironmentTaskAdmissionGate,
     },
-    // Bridge the GuardrailsService under a token that TasksService injects
-    // with @Optional(), resolving the circular module dependency.
+    // Bridge the GuardrailsService under a token that TasksService injects with
+    // @Optional(). This decouples the consumer from the concrete class; it is not
+    // a cycle break, because there is no cycle (see the header).
     {
       provide: GUARDRAILS_SERVICE_TOKEN,
       useExisting: GuardrailsService,
