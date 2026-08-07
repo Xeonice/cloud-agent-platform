@@ -38,7 +38,8 @@
 本刀是**四重身份**，风险来源不同，工件里分开表述：
 
 1. **退役（代码删除）** —— 删 `apps/api/src/inline-admission/` 五个文件 **1,585 行**〔口径：`wc -l` 物理行，含 245 行测试；纯生产 1,340 行〕；删编排器侧正向耦合（2 处 import、1 个字段、`:748-803` 的 20 键适配器字面量、11 处调用点）；删反向回调端口（**20 成员 / 59 调用点**，全部在 pipeline.ts 内）；删随之成为死代码的两个私有方法与 legacy 准入链三跳（166 行）。
-2. **准入行为变更（D1）** —— mode 分支移除，`POST /tasks` 仍返 **201**（无拒绝路径，这是 D1 相对拒绝方案唯一让公开面变窄的地方）。
+2. **准入行为变更（D1）** —— mode 分支移除。**准入能力闸门**不引入拒绝：能力未证明时解析为 durable，不返 503，`AdmissionMode` 联合不加成员。
+   ⚠ **订正（CI 实测，verify 四轮均未覆盖）**：「`POST /tasks` 仍返 201」这句**无条件写法是错的**。移除 mode 分支的同时也移除了 `if (admissionMode === 'durable-v2')` 这个守卫（`tasks.service.ts` main :1253 → 现 :1179），于是 **durable 准备（含沙箱环境解析）在创建时变成无条件**。沙箱 provider 不可解析时，创建从「201 接受、延迟失败」变为 **400 `sandbox_environment_resource_unsupported`**——这是真实的可观察行为变更，由 `boot-smoke` 与 `scheduled tasks browser e2e` 两个 CI job 在 PR #207 上实证（`AIO_SANDBOX_IMAGE` 未设 → `available:false` → 解析抛错 → 包成 400）。语义上这与本刀的 fail-closed 取向一致（早失败、可见失败），但**它必须被声明而不是被说成「不变」**。见 repo-and-task-management 的「Acceptance resolves the sandbox environment before it writes」需求。
 3. **契约收窄（D2）** —— 删 `'legacy'` 枚举成员，同时收窄诊断响应与领域事件两处已发布枚举。**必碰 `packages/contracts/`** → surface-impact 至少 `derived` 并转录 protocolDifference。
 4. **不可逆数据迁移（D2）** —— migration 删除两张表上 `admission_mode='legacy'` 的行。该列是 `String` 而非 DB 枚举，所以这是**数据改写而非 schema 变更，跑完不可逆**。
 

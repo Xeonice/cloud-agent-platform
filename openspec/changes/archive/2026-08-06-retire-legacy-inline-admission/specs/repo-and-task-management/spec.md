@@ -89,3 +89,50 @@ it leaves the type.
 - **AND** no test double of that dispatch returns the retired member: `'legacy-admitted'` appears on
   no code line anywhere in `apps` / `packages` / `scripts` outside archived changes, so the arm cannot
   be kept alive under test while the compiler calls it unreachable
+
+### Requirement: Acceptance resolves the sandbox environment before it writes
+
+Task acceptance SHALL resolve the sandbox environment — provider candidate, capabilities, and the
+immutable resource snapshot — BEFORE the acceptance write, unconditionally. Removing the admission
+mode branch removed the guard that used to skip it (`tasks.service.ts`, `if (admissionMode ===
+'durable-v2')` at `main:1253`), so there is no longer a path that accepts a task and resolves later.
+The preparation type enforces it rather than a reviewer: `PreparedTaskCreate` is one shape requiring
+`resolvedBranch` and `resourceSnapshot`, so a fixture that omits them fails to compile instead of
+being silently accepted as a different kind of preparation.
+
+The CONSEQUENCE SHALL be stated rather than described as "unchanged", because it is observable on the
+public surface. A deployment whose sandbox provider cannot be resolved — no pinned image, an
+unavailable candidate, a capability shortfall — now fails task creation with **400**
+`sandbox_environment_resource_unsupported`. The retired in-request path returned **201** and failed
+later. This is fail-fast and matches the rest of this change's posture (an unadmittable task says so
+at the moment it happens rather than sitting pending), but it is a behaviour change and an artifact
+that writes "POST /tasks still returns 201" without qualification is WRONG. What is unqualified is
+narrower: the admission CAPABILITY gate introduces no refusal, no `503`, and no new `AdmissionMode`
+member. Sandbox resolution is a different failure, on a different code path, with a different status.
+
+This was found by CI, not by verification: four adversarial verify passes did not cover it, because
+the false claim lived in `proposal.md` and `surface-impact.json` — prose with no requirement behind
+it — and verify enumerates requirements. A claim about runtime behaviour SHALL be carried by a
+requirement, or it is unverifiable by construction.
+
+Any CI job that creates a task SHALL provide a pinned `AIO_SANDBOX_IMAGE`, for the same reason: with
+resolution unconditional, an unpinned runner turns every creation into a 400.
+
+#### Scenario: Resolution precedes the acceptance write
+
+- **WHEN** a task is accepted through any surface
+- **THEN** the sandbox environment is resolved first and its resource snapshot is part of the row that
+  is written, with no branch that reaches the write without one
+
+#### Scenario: An unresolvable provider fails creation instead of deferring
+
+- **WHEN** the selected sandbox provider candidate is unavailable at acceptance time
+- **THEN** creation responds **400** `sandbox_environment_resource_unsupported` carrying the
+  underlying reason, rather than responding 201 and failing during provisioning
+
+#### Scenario: A snapshot-less acceptance is unrepresentable
+
+- **WHEN** a fixture or caller constructs a task preparation without `resolvedBranch` or
+  `resourceSnapshot`
+- **THEN** it fails to compile, because the preparation type is a single shape rather than a union
+  with a snapshot-free member

@@ -689,3 +689,38 @@ observed through the executable adapter map, so this is measured, not declared.
 
 **Archive gate (pass 4): open.** Zero re-opened tasks, zero spec defects, zero archive-blocking spec
 defects.
+
+
+## Post-archive finding — CI, not verification (PR #207)
+
+Four verify passes returned zero findings on the public-surface claim, and CI refuted it on the first
+run that reached a task-creating job. Recorded here because the miss is structural, not incidental.
+
+**What broke.** `boot-smoke` and `scheduled tasks browser e2e` both failed, reproducibly across a
+re-run, with `POST /repos/:id/tasks` → **400** `sandbox_environment_resource_unsupported`
+("Selected sandbox provider candidate aio-local is unavailable"). The same jobs and the same steps
+passed on the previous cut's PR (#206, run 31079025045) and on `main` (run 31079527214), so it is
+this change's doing.
+
+**Mechanism, traced rather than inferred.** `PreparedTaskCreate` was a union on `main`: the legacy
+member required neither `resolvedBranch` nor `resourceSnapshot`. D1 narrowed it to the durable shape
+alone, and the same commit removed the guard `if (admissionMode === 'durable-v2')` that wrapped
+`resolveDurableTaskAdmission` (`main:1253` → `:1179`, visible as a two-space dedent). Sandbox
+resolution therefore became unconditional at acceptance. In CI `AIO_SANDBOX_IMAGE` is set nowhere
+under `.github/workflows/`, so `readAioLocalSandboxConfig` throws,
+`deployment-environment.ts:302` reports the candidate unavailable, and
+`sandbox-environments.service.ts:795` wraps it into a 400.
+
+**Why four passes missed it.** The false claim — "`POST /tasks` 仍返 201" — lived in `proposal.md`
+and `surface-impact.json`, prose with **no requirement behind it**. verify enumerates requirements.
+A claim carried only by prose is unverifiable by construction, which is a third blind spot alongside
+the two this change already recorded (verify sees only the change's own `specs/`; R12 short-circuits
+asserted requirements past the lenses).
+
+**Disposition** (user decision, 2026-08-07): accept the behaviour as intended — fail-fast matches
+this change's posture — fix CI, and correct the claim. Landed in this PR: `AIO_SANDBOX_IMAGE`
+pinned for both jobs; `proposal.md` and `surface-impact.json` corrected in place with the refutation
+recorded rather than overwritten; and a new requirement,
+`repo-and-task-management/Acceptance resolves the sandbox environment before it writes`, added to the
+live spec AND to this change's delta so the two do not diverge — it carries the 400-vs-201
+consequence as a scenario, which is what makes it verifiable next time.
