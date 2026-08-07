@@ -430,11 +430,11 @@
       "requirements": [
         "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
       ],
-      "describe": "两成员联合收窄后无残留分支——用 satisfies 让编译器守住，而非注释",
+      "describe": "两成员联合收窄后无残留分支——由编译器(satisfies never)守住而非注释；守卫随唯一消费者迁移",
       "run": [
         "bash",
         "-c",
-        "grep -c \"outcome satisfies .fail-closed.\" apps/api/src/scheduled-tasks/scheduled-tasks.service.ts"
+        "grep -c 'outcome satisfies never' apps/api/src/scheduled-tasks/scheduled-tasks.service.ts"
       ],
       "expect": {
         "stdoutEquals": "1"
@@ -468,6 +468,36 @@
       ],
       "expect": {
         "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "pending-admission-sweep-gone",
+      "requirements": [
+        "repo-and-task-management/the-pending-admission-sweep-is-retired-with-the-population-it-served"
+      ],
+      "describe": "非注释行里 recoverPendingAdmissions / runRecoverySafely 归零（声明、包装、两处调用全消失）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"recoverPendingAdmissions\\|runRecoverySafely\" apps/api/src --include=\"*.ts\" --include=\"*.mjs\" | grep -vE \":[[:space:]]*(\\*|//)\" | wc -l | tr -d \" \""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "poll-cycle-has-no-recovery-step",
+      "requirements": [
+        "repo-and-task-management/the-pending-admission-sweep-is-retired-with-the-population-it-served"
+      ],
+      "describe": "poll 循环直接 tick，不再有前置恢复步骤",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c \"await this.tick()\" apps/api/src/scheduled-tasks/scheduled-tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
       }
     }
   ]

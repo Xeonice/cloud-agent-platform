@@ -560,17 +560,18 @@ this change removed. The step existed for exactly one purpose: to hand rows with
 work to the synchronous in-request pipeline through `guardrails.admit()`. With that pipeline retired
 the re-offer has no sink, so keeping it would mean keeping a boot step that calls nothing.
 
-The removal SHALL be recorded together with the POPULATION it covered, because the surviving recovery
-does not cover the same rows and a reader who assumes continuity will be wrong about which tasks a
-restart picks up. The deleted re-offer selected `admissionWork: { is: null }` AND
-(`status: 'queued'` OR `status: 'pending'` with `scheduleRun: { is: null }`) — direct pending work and
-every queued row. The surviving claim query, `ScheduledTasksService.recoverPendingAdmissions`, selects
-`taskScheduleRun` rows at `status: 'created'` with a non-null `taskId` whose task is `pending` with
-`admissionWork: { is: null }` — SCHEDULED pending work. On the pending branch the two populations are
-disjoint BY CONSTRUCTION: the deleted query required `scheduleRun: { is: null }` and the surviving one
-reads through a schedule run that exists. No surviving query recovers a `queued` row at all. A change
-that describes this removal as "recovered by the claim query instead" SHALL be treated as wrong;
-what is true is narrower, and the startup coordinator's own docstring SHALL say the narrower thing.
+The removal SHALL be recorded together with the POPULATION it covered, because NO surviving query
+covers those rows and a reader who assumes continuity will be wrong about which tasks a restart picks
+up. The deleted re-offer selected `admissionWork: { is: null }` AND (`status: 'queued'` OR
+`status: 'pending'` with `scheduleRun: { is: null }`) — direct pending work and every queued row.
+
+⚠ An earlier statement of this requirement named `ScheduledTasksService.recoverPendingAdmissions` as
+"the surviving claim query" and built a disjointness argument on it. That was wrong in a way worth
+recording rather than editing away: **that sweep selected the same emptied population** — runs whose
+task has `admissionWork: { is: null }` — and durable acceptance writes an admission-work row inside
+the acceptance transaction, so nothing a normal acceptance produces can match it. It was retired in
+the same change, for the same reason and by the same test, and is the subject of the requirement
+below. There is no surviving pending-admission sweep of any kind.
 
 Tasks WITH durable admission work are unaffected and SHALL NOT be described as part of this gap: they
 are leased by the durable worker, which is the path the existing "API exits after commit" scenario
@@ -688,3 +689,45 @@ resolution unconditional, an unpinned runner turns every creation into a 400.
   `resourceSnapshot`
 - **THEN** it fails to compile, because the preparation type is a single shape rather than a union
   with a snapshot-free member
+
+### Requirement: The pending-admission sweep is retired with the population it served
+
+The pending-admission sweep SHALL be deleted whole: `ScheduledTasksService.recoverPendingAdmissions`,
+the wrapper `runRecoverySafely` that guarded it, and both call sites — bootstrap's disabled branch and
+the pre-tick step of every poll cycle. The sweep selected `taskScheduleRun` rows at `status: 'created'` whose task was `pending`
+with `admissionWork: { is: null }`. Durable acceptance writes an admission-work row INSIDE the
+acceptance transaction, so no row a normal acceptance produces can ever match that filter — the
+sweep's population is empty by construction, exactly as the boot re-offer's was.
+
+The one shape that can still reach `admissionWork: null` is the FAIL-CLOSED row, and the sweep is not
+a safety net for it: recovery would call post-commit dispatch again, find no work again, and return
+`fail-closed` again, forever. A retained sweep that cannot make progress is worse than no sweep,
+because it reads like a recovery path to whoever finds it next.
+
+This is the SECOND recovery path this retirement empties, and the pair SHALL be read together: the
+boot re-offer fed the retired in-request pipeline directly, while this one fed the population that
+pipeline used to leave behind. Retiring the producer without retiring the consumers leaves machinery
+whose only remaining behaviour is to look like it is doing something.
+
+The deletion SHALL take its tests with it under a (c) subject-retired ledger rather than leaving them
+green against a method that no longer exists — the failure mode this change already found twice, in
+`startup-recovery.test.mjs` and in the scheduled-tasks stub that returned a retired union member.
+
+#### Scenario: No pending-admission sweep survives
+
+- **WHEN** `apps/api/src` is searched for `recoverPendingAdmissions` or `runRecoverySafely` on lines
+  that are not comments
+- **THEN** zero remain — no declaration, no wrapper, and no call from the bootstrap or poll paths
+
+#### Scenario: The poll cycle ticks without a recovery step
+
+- **WHEN** the scheduled-task poll cycle runs
+- **THEN** it calls `tick` directly, one cycle at a time, and a throwing tick does not stop the
+  poller — the resilience the sweep's failure path used to demonstrate is unchanged, only its source
+
+#### Scenario: The retired tests are ledgered, not silently dropped
+
+- **WHEN** the api suite's test count is compared before and after
+- **THEN** the difference is accounted for name by name in the change's task ledger, classified (c)
+  where the subject is the sweep itself and (a) where a surviving concern was re-expressed against a
+  different seam
