@@ -496,10 +496,25 @@ test("sub-day forms round-trip and owner dispatch remains exactly-once", async (
       ),
     (events) => {
       const types = new Set(events.map((event) => event.type));
+      // `force_failed:provision_failed` is NOT expected any more. Its only three
+      // producers lived in the retired in-request pipeline
+      // (main:inline-admission.pipeline.ts:283/557/569); the cause survives as a
+      // declared union member with no live producer, the same shape as
+      // `legacy_capacity` and `inline_pipeline_run`. Durable admission records the
+      // same failure through the staged provisioning vocabulary instead —
+      // `task.provisioning:accepted` -> `:sandbox_creation` ->
+      // `task.provisioning.failed:<cause>` — which is strictly more informative,
+      // so this asserts the surviving kind rather than relaxing the check.
+      // Matched by prefix, not on `provisioning_unknown`: that code comes from the
+      // stub throwing an unclassified Error, and a classifier that later derives a
+      // sharper cause would be an improvement, not a regression to fail on.
+      const recordedProvisioningFailure = [...types].some((type) =>
+        type.startsWith("task.provisioning.failed:"),
+      );
       return (
         types.has("task.created") &&
         types.has("task.running") &&
-        types.has("force_failed:provision_failed") &&
+        recordedProvisioningFailure &&
         types.has("task.failed")
       );
     },

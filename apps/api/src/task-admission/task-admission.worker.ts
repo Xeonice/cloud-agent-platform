@@ -84,27 +84,6 @@ export class SafeTaskAdmissionWorkerErrorReporter
     this.logger.error(
       'task admission background coordination failed; the durable lease remains recoverable',
     );
-    // ⚠⚠⚠ TEMPORARY DIAGNOSTIC — REVERT BEFORE MERGE ⚠⚠⚠
-    // The suppression above is correct and stays. This branch-only escape hatch
-    // exists because the scheduled-tasks e2e fails inside this reporter and the
-    // failure cannot be reproduced locally (the runner requires docker). Gated on
-    // an env var that only that CI job sets, so no other environment can reach it.
-    // Delete this block and the ci.yml var in the same commit as the fix.
-    if (process.env.CAP_UNSAFE_ADMISSION_ERROR_ECHO === '1') {
-      const parts: string[] = [];
-      let cursor: unknown = _error;
-      for (let depth = 0; cursor && depth < 6; depth += 1) {
-        if (cursor instanceof Error) {
-          parts.push(`${cursor.name}: ${cursor.message}`);
-          if (depth === 0 && cursor.stack) parts.push(cursor.stack);
-          cursor = (cursor as { cause?: unknown }).cause;
-        } else {
-          parts.push(String(cursor));
-          break;
-        }
-      }
-      this.logger.error(`[TEMP-DIAG] ${parts.join('\n  caused by: ')}`);
-    }
   }
 }
 
