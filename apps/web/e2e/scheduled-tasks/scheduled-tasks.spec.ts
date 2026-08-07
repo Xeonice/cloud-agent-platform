@@ -978,6 +978,36 @@ async function expectExactlyOnceToRemainStable(
     .toBeGreaterThanOrEqual(4);
 }
 
+/**
+ * Summarise what was actually observed, so a timeout says WHICH expectation is
+ * unmet instead of only that one is. A bare "did not record ..." costs a full CI
+ * round to turn into a fact; audit-trail polls in particular fail on one missing
+ * event type and the message never named it.
+ */
+function describeObserved(value: unknown): string {
+  if (Array.isArray(value)) {
+    const types = value
+      .map((entry) =>
+        entry && typeof entry === "object" && "type" in entry
+          ? String((entry as { type: unknown }).type)
+          : null,
+      )
+      .filter((type): type is string => type !== null);
+    if (types.length > 0) {
+      return `${value.length} item(s), types=[${[...new Set(types)].sort().join(", ")}]`;
+    }
+    return `${value.length} item(s)`;
+  }
+  if (value && typeof value === "object") {
+    try {
+      return JSON.stringify(value).slice(0, 400);
+    } catch {
+      return "<unserialisable object>";
+    }
+  }
+  return String(value);
+}
+
 async function pollFor<T>(
   read: () => Promise<T>,
   accepted: (value: T) => boolean,
@@ -985,15 +1015,25 @@ async function pollFor<T>(
   timeout = 20_000,
 ): Promise<T> {
   let latest: T | undefined;
-  await expect
-    .poll(
-      async () => {
-        latest = await read();
-        return accepted(latest);
-      },
-      { message, timeout, intervals: [100, 200, 400, 800, 1_000] },
-    )
-    .toBe(true);
+  try {
+    await expect
+      .poll(
+        async () => {
+          latest = await read();
+          return accepted(latest);
+        },
+        { message, timeout, intervals: [100, 200, 400, 800, 1_000] },
+      )
+      .toBe(true);
+  } catch (error) {
+    // Re-thrown rather than passed as `message`: Playwright evaluates that option
+    // once, when the poll is constructed, so interpolating `latest` there would
+    // report `undefined` every time — which reads like evidence and is not.
+    throw new Error(
+      `${message} [last observed: ${describeObserved(latest)}]`,
+      { cause: error },
+    );
+  }
   if (latest === undefined) throw new Error(`${message}: no value observed`);
   return latest;
 }
