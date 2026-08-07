@@ -1695,7 +1695,10 @@ test('durable admission waits for launch authority and a launched outcome before
   ]);
   const semaphore = (
     service as unknown as {
-      semaphore: { offer(taskId: string): 'running' | 'queued' };
+      semaphore: {
+        offer(taskId: string): 'running' | 'queued';
+        readonly queuedCount: number;
+      };
     }
   ).semaphore;
   assert.equal(
@@ -1788,7 +1791,10 @@ test('a committed running reservation is mirrored before post-reservation author
   assert.equal(runtimeArmCalls, 0);
   const semaphore = (
     service as unknown as {
-      semaphore: { offer(taskId: string): 'running' | 'queued' };
+      semaphore: {
+        offer(taskId: string): 'running' | 'queued';
+        readonly queuedCount: number;
+      };
     }
   ).semaphore;
   assert.equal(
@@ -2452,9 +2458,6 @@ test('unfinished durable terminal work retains its slot until exact recovery cle
         return succeededGenerationCleanupAuthority('removed');
       },
     } as unknown as SandboxProvider,
-    onAdmit: async (taskId: string) => {
-      events.push(`promote:${taskId}`);
-    },
   });
   const semaphore = (
     service as unknown as {
@@ -2482,7 +2485,6 @@ test('unfinished durable terminal work retains its slot until exact recovery cle
     `capture:${TASK_ID}`,
     `claim:${TASK_ID}:lease-token`,
     `teardown:${TASK_ID}:superseded-remove`,
-    'promote:legacy-waiter',
   ]);
   assert.equal(semaphore.runningCount, 1);
   assert.equal(semaphore.queuedCount, 0);
@@ -2524,9 +2526,6 @@ test('exact durable terminal-retain cleanup releases only after provider confirm
         return retainedTerminalCleanupAuthority();
       },
     } as unknown as SandboxProvider,
-    onAdmit: async (taskId: string) => {
-      events.push(`promote:${taskId}`);
-    },
   });
   const semaphore = (
     service as unknown as {
@@ -2548,7 +2547,6 @@ test('exact durable terminal-retain cleanup releases only after provider confirm
   assert.deepEqual(events, [
     `claim:${TASK_ID}:lease-token`,
     `teardown:${TASK_ID}:terminal-retain`,
-    'promote:legacy-waiter',
   ]);
   assert.equal(semaphore.queuedCount, 0);
 });
@@ -2631,7 +2629,6 @@ test('configured terminal policy atomically fails an exhausted physical cleanup 
     ownership,
   };
   let policyCalls = 0;
-  const promoted: string[] = [];
   const service = buildService(
     gatewayWithDecision(Promise.resolve({ kind: 'attached' })),
   );
@@ -2669,11 +2666,13 @@ test('configured terminal policy atomically fails an exhausted physical cleanup 
         return failedGenerationCleanupAuthority();
       },
     } as unknown as SandboxProvider,
-    onAdmit: async (taskId: string) => promoted.push(taskId),
   });
   const semaphore = (
     service as unknown as {
-      semaphore: { offer(taskId: string): 'running' | 'queued' };
+      semaphore: {
+        offer(taskId: string): 'running' | 'queued';
+        readonly queuedCount: number;
+      };
     }
   ).semaphore;
   service.restoreDurableAdmissionSlot(TASK_ID);
@@ -2682,7 +2681,7 @@ test('configured terminal policy atomically fails an exhausted physical cleanup 
   await service.onDurableAdmissionTerminal(TASK_ID, 'lease-token');
 
   assert.equal(policyCalls, 1);
-  assert.deepEqual(promoted, ['legacy-waiter']);
+  assert.equal(semaphore.queuedCount, 0, 'the mirrored slot was released');
 });
 
 test('coordination uncertainty and pre-threshold physical pending never invoke terminal policy or release', async () => {
@@ -2932,7 +2931,6 @@ test('a stalled pending cleanup diagnostic is bounded without releasing its slot
 });
 
 test('a stalled cleanup diagnostic cannot permanently block an already-settled authority release', async () => {
-  const promoted: string[] = [];
   let teardownCalls = 0;
   let cleanupSettlementCalls = 0;
   const neverSettles = new Promise<void>(() => {});
@@ -2953,11 +2951,13 @@ test('a stalled cleanup diagnostic cannot permanently block an already-settled a
         teardownCalls += 1;
       },
     } as unknown as SandboxProvider,
-    onAdmit: async (taskId: string) => promoted.push(taskId),
   });
   const semaphore = (
     service as unknown as {
-      semaphore: { offer(taskId: string): 'running' | 'queued' };
+      semaphore: {
+        offer(taskId: string): 'running' | 'queued';
+        readonly queuedCount: number;
+      };
     }
   ).semaphore;
   service.restoreDurableAdmissionSlot(TASK_ID);
@@ -2983,7 +2983,7 @@ test('a stalled cleanup diagnostic cannot permanently block an already-settled a
 
   assert.equal(cleanupSettlementCalls, 1);
   assert.equal(teardownCalls, 0);
-  assert.deepEqual(promoted, ['legacy-waiter']);
+  assert.equal(semaphore.queuedCount, 0, 'the mirrored slot was released');
 });
 
 test('only ownerless or already-settled succeeded work uses ordinary terminal release', async () => {
@@ -2992,27 +2992,21 @@ test('only ownerless or already-settled succeeded work uses ordinary terminal re
       name: 'no durable work',
       work: null,
       authority: undefined,
-      expectedEvents: [
-        `teardown:${TASK_ID}:terminal-retain`,
-        'promote:legacy-waiter',
-      ],
+      expectedEvents: [`teardown:${TASK_ID}:terminal-retain`],
       expectedQueued: 0,
     },
     {
       name: 'succeeded work with removed generation owner',
       work: { state: 'succeeded' },
       authority: succeededGenerationCleanupAuthority('removed'),
-      expectedEvents: ['promote:legacy-waiter'],
+      expectedEvents: [],
       expectedQueued: 0,
     },
     {
       name: 'succeeded work with no remaining owner',
       work: { state: 'succeeded' },
       authority: absentCleanupAuthority(),
-      expectedEvents: [
-        `teardown:${TASK_ID}:terminal-retain`,
-        'promote:legacy-waiter',
-      ],
+      expectedEvents: [`teardown:${TASK_ID}:terminal-retain`],
       expectedQueued: 0,
     },
     {
@@ -3062,9 +3056,6 @@ test('only ownerless or already-settled succeeded work uses ordinary terminal re
               },
             }),
       } as unknown as SandboxProvider,
-      onAdmit: async (taskId: string) => {
-        events.push(`promote:${taskId}`);
-      },
     });
     const semaphore = (
       service as unknown as {

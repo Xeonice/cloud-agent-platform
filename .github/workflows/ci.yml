@@ -508,6 +508,14 @@ jobs:
     env:
       # Point Prisma at the service container (mapped to localhost on the runner).
       DATABASE_URL: postgresql://cap:cap@localhost:5432/cap?schema=public
+      # Task acceptance resolves the sandbox environment BEFORE the acceptance
+      # write (retire-legacy-inline-admission D1: the in-request pipeline that
+      # used to accept first and resolve later is gone), so a runner with no
+      # pinned AIO image now fails creation with 400 instead of 201. The image
+      # only has to satisfy `requirePinnedAioSandboxImage` — non-empty, tagged,
+      # not `:latest`; nothing here pulls or runs it, because provisioning is
+      # the durable worker's job and these jobs never reach it.
+      AIO_SANDBOX_IMAGE: cap-aio-sandbox:pinned
 
     steps:
       - name: Checkout
@@ -715,6 +723,13 @@ jobs:
     name: scheduled tasks browser e2e
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
+    env:
+      # Same reason as boot-smoke: acceptance now resolves the sandbox
+      # environment before the write, so an unpinned runner turns every schedule
+      # dispatch into a 400. Satisfies `requirePinnedAioSandboxImage` only —
+      # nothing pulls or runs this image here.
+      AIO_SANDBOX_IMAGE: cap-aio-sandbox:pinned
 
     steps:
       - name: Checkout

@@ -482,6 +482,13 @@ WEB_URL="http://127.0.0.1:${WEB_PORT}"
 
 log "starting the real AppModule with the test-only outer provider port"
 cd "$ROOT_DIR/apps/api"
+# AIO_SANDBOX_IMAGE joins the allowlist because acceptance now resolves the
+# sandbox environment BEFORE the acceptance write (the in-request pipeline that
+# accepted first and resolved later is retired), so an unpinned image turns every
+# POST /schedules into a 400. A job-level env in ci.yml cannot reach this process:
+# `env -i` wipes the environment and this allowlist is the only way in. Defaulted
+# rather than required so a local run keeps working; nothing pulls or runs the
+# image here, it only has to satisfy requirePinnedAioSandboxImage.
 nohup env -i \
   PATH="$PATH" \
   HOME="$ISOLATED_HOME" \
@@ -504,6 +511,7 @@ nohup env -i \
   METRICS_SAMPLING_ENABLED=false \
   CAP_WORKSPACE_GIT_FALLBACK_ENABLED=true \
   WORKSPACES_DIR="$ARTIFACT_DIR/workspaces" \
+  AIO_SANDBOX_IMAGE="${AIO_SANDBOX_IMAGE:-cap-aio-sandbox:pinned}" \
   node test/scheduled-tasks-live-e2e-server.mjs \
   >"$API_LOG" 2>&1 </dev/null &
 API_PID=$!

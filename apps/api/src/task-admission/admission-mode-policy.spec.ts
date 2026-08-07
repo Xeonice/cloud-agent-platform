@@ -1,10 +1,13 @@
 /**
  * Guards the admission-mode policy.
  *
- * The property that matters is not "closed means legacy" — that was already true
- * of the ternary this replaced. It is that the reason survives the decision, that
- * a missing gate provider is its own fact rather than a coerced `false`, and that
- * the mapping is total: a closed reason added to the gate cannot reach the
+ * There is one pipeline left, so "which pipeline" is no longer the interesting
+ * property — every outcome resolves to durable, and the checks below prove that
+ * for EVERY closed reason rather than for a sampled one, because a single
+ * surviving refusal or fallback would be an outage on an unproven capability.
+ * What still matters is that the reason survives the decision, that a missing
+ * gate provider is its own fact rather than a coerced `false`, and that the
+ * mapping is total: a closed reason added to the gate cannot reach the
  * acceptance path without someone having written down its consequence. The last
  * one is enforced by the compiler; the check here is the runtime mirror of it, so
  * a mapping that drifts from the schema is caught even if a cast hides it.
@@ -54,9 +57,9 @@ test('an open gate resolves to the durable pipeline', () => {
   assert.equal(isDegradedAdmission(decision), false);
 });
 
-test('a closed gate resolves to legacy and carries the reason that closed it', () => {
+test('a closed gate resolves to durable and carries the reason that closed it', () => {
   const decision = resolveAdmissionMode(closed('deployment_attestation_expired'));
-  assert.equal(decision.mode, 'legacy');
+  assert.equal(decision.mode, 'durable-v2');
   assert.equal(
     decision.outcome,
     'deployment_attestation_expired',
@@ -67,7 +70,7 @@ test('a closed gate resolves to legacy and carries the reason that closed it', (
 
 test('an absent gate provider is its own outcome, not a closed gate', () => {
   const decision = resolveAdmissionMode(undefined);
-  assert.equal(decision.mode, 'legacy');
+  assert.equal(decision.mode, 'durable-v2');
   assert.equal(decision.outcome, ADMISSION_GATE_ABSENT);
   assert.equal(
     TaskAdmissionV2GateClosedReasonSchema.options.includes(
@@ -78,12 +81,25 @@ test('an absent gate provider is its own outcome, not a closed gate', () => {
   );
 });
 
-test('every closed reason the gate can report resolves to legacy', () => {
+test('every closed reason the gate can report still admits, durably', () => {
   for (const reason of TaskAdmissionV2GateClosedReasonSchema.options) {
     const decision = resolveAdmissionMode(closed(reason));
-    assert.equal(decision.mode, 'legacy', `reason ${reason} must resolve`);
+    assert.equal(
+      decision.mode,
+      'durable-v2',
+      `reason ${reason} must admit durably — there is no pipeline to fall back to and no refusal path`,
+    );
     assert.equal(decision.outcome, reason);
   }
+});
+
+test('the admission-mode union has exactly one member, so no refusal is expressible', () => {
+  const modes = new Set(Object.values(ADMISSION_MODE_BY_OUTCOME));
+  assert.deepEqual(
+    [...modes],
+    ['durable-v2'],
+    'a second member would be a reintroduced branch: the retirement REMOVED the choice rather than widening it',
+  );
 });
 
 test('the mapping is total over the outcome union', () => {

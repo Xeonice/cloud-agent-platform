@@ -126,10 +126,6 @@ import { isValidMaxConcurrentTasks } from '@/settings/settings-logic';
  * The runtime instance satisfies this shape; NestJS injects it by token.
  */
 export interface IGuardrailsService {
-  admit(
-    taskId: string,
-    params?: { deadlineMs?: number; idleTimeoutMs?: number; userId?: string },
-  ): Promise<'running' | 'queued'>;
   /** Synchronous cancellation fence invoked immediately after a terminal write. */
   fenceTerminal?(taskId: string, status?: TaskStatus): void;
   onTerminal(taskId: string, status?: TaskStatus): Promise<void>;
@@ -166,7 +162,7 @@ export interface IGuardrailsService {
    * wired it yet; the bootstrap caller optional-chains the invocation.
    */
   loadPersistedCeiling?(): Promise<void>;
-  /** Account a DB-authorized durable running task in the legacy local ceiling. */
+  /** Account a DB-authorized durable running task in the local ceiling. */
   restoreDurableAdmissionSlot?(taskId: string): void;
 }
 
@@ -207,10 +203,7 @@ export interface DurableAdmissionFailureRequest {
   readonly causeCode: ProvisioningTaskFailureCode;
 }
 
-export type PostCommitAdmissionResult =
-  | 'durable-woken'
-  | 'legacy-admitted'
-  | 'fail-closed';
+export type PostCommitAdmissionResult = 'durable-woken' | 'fail-closed';
 
 /** Short transaction-bound surface for one canonical acceptance write. */
 export type TaskAcceptanceClient = Pick<
@@ -585,8 +578,18 @@ export class TasksService
    *    steal an accepted, retrying, or expired-lease task from the DB worker.
    * 2. Strictly re-adopt provider-attested legacy survivors, then fail only the
    *    definitely absent legacy running tasks.
-   * 3. Restore the persisted ceiling, reconcile only authoritatively deleted
-   *    physical orphans, and re-offer legacy pending/queued work in stable FIFO.
+   * 3. Restore the persisted ceiling and reconcile only authoritatively deleted
+   *    physical orphans. There is no boot re-offer step: re-offering pending
+   *    work into the process-local semaphore fed the retired in-request
+   *    pipeline, so the step had no sink left. Do NOT read that as "step 4
+   *    recovers those rows instead" — on the pending branch the populations are
+   *    disjoint by construction. The deleted re-offer took `admissionWork: null`
+   *    rows that were `queued`, or `pending` with `scheduleRun: null`; step 4's
+   *    claim query reads through a schedule run that EXISTS, and recovers no
+   *    `queued` row at all. Tasks that do hold durable admission work are
+   *    unaffected — the durable worker leases those. A row committed with no
+   *    admission work is unadmittable and says so at dispatch time
+   *    (`fail-closed`); nothing retries it.
    * 4. Start the polling worker last. Its claim query recovers both accepted
    *    work and expired leases without depending on an in-process wake signal.
    *
@@ -605,7 +608,7 @@ export class TasksService
    * Any provider/terminal/DB uncertainty in the destructive portions aborts
    * bootstrap closed. Loading the persisted ceiling remains the one deliberate
    * best-effort step: the environment seed is still a valid conservative
-   * fallback and avoids stranding legacy queued work.
+   * fallback and avoids stranding queued work.
    */
   async onApplicationBootstrap(): Promise<void> {
     // Durable work owns its task/sandbox until the leased worker settles it.
@@ -647,20 +650,15 @@ export class TasksService
       },
     });
 
-    // Refresh local slot accounting immediately before legacy FIFO re-offer.
-    // Match the durable capacity union: unfinished work occupies compatibility
-    // capacity when either its Task is running or an exact sandbox cleanup is
-    // still live. The latter includes terminal Tasks whose durable cleanup has
-    // not yet advanced the owner out of provisioning/running/deleting.
+    // Refresh local slot accounting. Match the durable capacity union:
+    // unfinished work occupies capacity when either its Task is running or an
+    // exact sandbox cleanup is still live. The latter includes terminal Tasks
+    // whose durable cleanup has not yet advanced the owner out of
+    // provisioning/running/deleting.
     await this.restoreRunningDurableAdmissionSlotsOnStartup();
 
-    // Re-offer only after old provider artifacts have been reconciled. Otherwise
-    // a newly admitted legacy task could create a sandbox between inventory and
-    // reap and have that fresh resource mistaken for a startup orphan.
-    await this.reofferQueuedOnStartup();
-
-    // Polling is the durable recovery floor. Start it only after every legacy
-    // recovery phase and provider reconciliation has reached a safe boundary.
+    // Polling is the durable recovery floor. Start it only after slot
+    // accounting and provider reconciliation have reached a safe boundary.
     this.taskAdmissionWake?.start?.();
   }
 
@@ -1014,79 +1012,6 @@ export class TasksService
     return reclaimed;
   }
 
-  /**
-   * Phase 2 of startup recovery (configurable-task-slots 6.1): re-offer every
-   * DB `pending` or `queued` task to the in-memory concurrency semaphore in `createdAt asc`
-   * (FIFO) order, restoring each task's persisted per-task guardrail parameters
-   * (`deadlineMs`, `idleTimeoutMs`) and durable owner from its task row. `admit()` arms the deadline
-   * / idle watchers for tasks within capacity exactly as at creation time, and
-   * holds the remainder `queued` in offer order, so a queued task is never
-   * stranded (never re-offered) after a restart. Returns the count re-offered.
-   * Best-effort per task: a failure is logged and skipped, never blocking boot.
-   * Prisma stores omitted params as `null`; they are coalesced back to
-   * `undefined` so a re-offered task arms (or skips) its watchers identically
-   * to a task admitted before the restart.
-   */
-  async reofferQueuedOnStartup(): Promise<number> {
-    if (!this.guardrails) {
-      return 0;
-    }
-    const queued = await this.prisma.task.findMany({
-      where: {
-        // Any task with durable admission work is owned exclusively by the
-        // leased worker, including accepted/queued rows during rollout.
-        admissionWork: { is: null },
-        OR: [
-          { status: 'queued' },
-          { status: 'pending', scheduleRun: { is: null } },
-        ],
-      },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: {
-        id: true,
-        status: true,
-        ownerUserId: true,
-        deadlineMs: true,
-        idleTimeoutMs: true,
-        auditEvents: {
-          where: { type: 'task.created', userId: { not: null } },
-          orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
-          take: 1,
-          select: { userId: true },
-        },
-      },
-    });
-    let reoffered = 0;
-    for (const task of queued) {
-      try {
-        const ownerUserId =
-          task.ownerUserId ?? task.auditEvents[0]?.userId ?? undefined;
-        if (task.status === 'pending') {
-          await this.recordAudit(() =>
-            this.audit?.recordTaskCreated(task.id, ownerUserId),
-          );
-        }
-        await this.guardrails.admit(task.id, {
-          deadlineMs: task.deadlineMs ?? undefined,
-          idleTimeoutMs: task.idleTimeoutMs ?? undefined,
-          userId: ownerUserId,
-        });
-        reoffered += 1;
-      } catch (err) {
-        this.logger.warn(
-          `startup re-offer: could not re-offer queued task ${task.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
-    }
-    if (reoffered > 0) {
-      this.logger.log(
-        `startup re-offer: re-offered ${reoffered} queued task(s) to the semaphore`,
-      );
-    }
-    return reoffered;
-  }
 
   async create(
     repoId: string,
@@ -1165,21 +1090,22 @@ export class TasksService
     acceptedExplicitModel: boolean,
   ): Promise<PreparedTaskCreate> {
     const normalizedBody = createTaskBodySchema.parse(body);
-    // Read the rollout gate exactly once for this acceptance. Every later
-    // decision, including the transaction write, consumes the frozen decision.
-    // The policy is total over the gate's outcomes, so a new closed reason
-    // cannot reach here without someone having stated its consequence.
+    // Read the capability gate exactly once for this acceptance. It no longer
+    // selects a pipeline — the retirement of the in-request one left exactly
+    // one — but the outcome is still resolved through the total policy so a degraded
+    // deployment is ATTRIBUTED rather than silently indistinguishable from a
+    // healthy one. A new closed reason still cannot reach here without someone
+    // having stated its consequence.
     const admissionDecision = resolveAdmissionMode(
       this.taskAdmissionGate?.evaluate(),
     );
-    const admissionMode = admissionDecision.mode;
     if (isDegradedAdmission(admissionDecision)) {
-      // Say which capability was unproven and why, at the point the consequence
-      // is taken. Attribution only — the deployment-capability endpoint stays
-      // the authority on the gate's current state, and no persisted schema
-      // gains a field for this.
+      // Say which capability was unproven and why, at the point acceptance
+      // proceeds anyway. Attribution only — the deployment-capability endpoint
+      // stays the authority on the gate's current state, and no persisted
+      // schema gains a field for this.
       this.logger.warn(
-        `admission degraded to ${admissionMode}: ${admissionDecision.capability} unproven (${admissionDecision.outcome})`,
+        `admission proceeding on an unproven capability: ${admissionDecision.capability} unproven (${admissionDecision.outcome}); every task is admitted durably`,
       );
     }
     if (normalizedBody.model !== undefined && !acceptedExplicitModel) {
@@ -1250,75 +1176,60 @@ export class TasksService
       );
       sandboxEnvironmentId =
         executionEnvironmentSnapshot.managedEnvironmentId;
-      if (admissionMode === 'durable-v2') {
-        const admission = await this.resolveDurableTaskAdmission(
-          { kind: 'deployment-default' },
-          runtime,
-          executionEnvironmentSnapshot.providerFamily,
+      const admission = await this.resolveDurableTaskAdmission(
+        { kind: 'deployment-default' },
+        runtime,
+        executionEnvironmentSnapshot.providerFamily,
+        resolvedResources ?? {},
+      );
+      if (
+        admission.providerId !== executionEnvironmentSnapshot.provider ||
+        admission.providerFamily !==
+          executionEnvironmentSnapshot.providerFamily ||
+        !sameSandboxResources(
+          admission.provisioningPolicy.resources,
           resolvedResources ?? {},
+        )
+      ) {
+        throw new Error(
+          'Durable task admission provider policy changed after model preflight',
         );
-        if (
-          admission.providerId !== executionEnvironmentSnapshot.provider ||
-          admission.providerFamily !==
-            executionEnvironmentSnapshot.providerFamily ||
-          !sameSandboxResources(
-            admission.provisioningPolicy.resources,
-            resolvedResources ?? {},
-          )
-        ) {
-          throw new Error(
-            'Durable task admission provider policy changed after model preflight',
-          );
-        }
-        workspaceMaterializationDeadlineMs =
-          admission.provisioningPolicy.workspaceMaterializationDeadlineMs;
       }
+      workspaceMaterializationDeadlineMs =
+        admission.provisioningPolicy.workspaceMaterializationDeadlineMs;
     } else {
       const selection = await this.selectTaskEnvironment(
         normalizedBody,
         userId,
         this.prisma,
       );
-      if (admissionMode === 'durable-v2') {
-        const admission = await this.resolveDurableTaskAdmission(
-          selection,
-          runtime,
-        );
-        sandboxEnvironmentId =
-          admission.environment?.environmentId ??
-          admission.environment?.id ??
-          null;
-        resolvedResources = admission.provisioningPolicy.resources;
-        workspaceMaterializationDeadlineMs =
-          admission.provisioningPolicy.workspaceMaterializationDeadlineMs;
-      } else {
-        const environment = await this.resolveTaskEnvironment({
-          selection,
-          runtime,
-        });
-        sandboxEnvironmentId =
-          environment?.environmentId ?? environment?.id ?? null;
-      }
+      const admission = await this.resolveDurableTaskAdmission(
+        selection,
+        runtime,
+      );
+      sandboxEnvironmentId =
+        admission.environment?.environmentId ??
+        admission.environment?.id ??
+        null;
+      resolvedResources = admission.provisioningPolicy.resources;
+      workspaceMaterializationDeadlineMs =
+        admission.provisioningPolicy.workspaceMaterializationDeadlineMs;
     }
 
-    let resolvedBranch: string | undefined;
-    let resourceSnapshot: SandboxResourceSnapshot | undefined;
-    if (admissionMode === 'durable-v2') {
-      if (!this.taskBranchResolver) {
-        throw new TaskBranchResolutionError('repository_unavailable');
-      }
-      const branch = await this.taskBranchResolver.prepareForCreate({
-        repoId,
-        ownerUserId: userId ?? null,
-        callerBranch: normalizedBody.branch ?? null,
-      });
-      resolvedBranch = branch.resolvedBranch;
-      // `{}` is an intentional provider-neutral snapshot: it means the resolved
-      // environment/deployment policy requested no portable resource override.
-      // Provider-native configuration is never copied into durable work.
-      resourceSnapshot =
-        snapshotSandboxResources(resolvedResources ?? {}) ?? Object.freeze({});
+    if (!this.taskBranchResolver) {
+      throw new TaskBranchResolutionError('repository_unavailable');
     }
+    const branch = await this.taskBranchResolver.prepareForCreate({
+      repoId,
+      ownerUserId: userId ?? null,
+      callerBranch: normalizedBody.branch ?? null,
+    });
+    const resolvedBranch = branch.resolvedBranch;
+    // `{}` is an intentional provider-neutral snapshot: it means the resolved
+    // environment/deployment policy requested no portable resource override.
+    // Provider-native configuration is never copied into durable work.
+    const resourceSnapshot =
+      snapshotSandboxResources(resolvedResources ?? {}) ?? Object.freeze({});
 
     const frozenBody = Object.freeze({
       ...normalizedBody,
@@ -1336,27 +1247,19 @@ export class TasksService
       model,
       executionEnvironmentSnapshot,
     } as const;
-    if (admissionMode === 'durable-v2') {
-      if (
-        resolvedBranch === undefined ||
-        resourceSnapshot === undefined ||
-        !isValidWorkspaceMaterializationDeadline(
-          workspaceMaterializationDeadlineMs,
-        )
-      ) {
-        throw new Error('Durable task acceptance preparation is incomplete');
-      }
-      return Object.freeze({
-        ...preparedBase,
-        admissionMode: 'durable-v2' as const,
-        resolvedBranch,
-        resourceSnapshot,
+    if (
+      !isValidWorkspaceMaterializationDeadline(
         workspaceMaterializationDeadlineMs,
-      });
+      )
+    ) {
+      throw new Error('Durable task acceptance preparation is incomplete');
     }
     return Object.freeze({
       ...preparedBase,
-      admissionMode: 'legacy' as const,
+      admissionMode: 'durable-v2' as const,
+      resolvedBranch,
+      resourceSnapshot,
+      workspaceMaterializationDeadlineMs,
     });
   }
 
@@ -1377,14 +1280,9 @@ export class TasksService
     if (client) {
       return this.writePreparedTaskAcceptance(prepared, client, options);
     }
-    if (prepared.admissionMode === 'durable-v2') {
-      return this.prisma.$transaction((tx) =>
-        this.writePreparedTaskAcceptance(prepared, tx, options),
-      );
-    }
-    // Gate closed: preserve the legacy contract exactly — only the Task row is
-    // written, then the caller performs post-commit legacy admission.
-    return this.createTaskRow(prepared, this.prisma, options);
+    return this.prisma.$transaction((tx) =>
+      this.writePreparedTaskAcceptance(prepared, tx, options),
+    );
   }
 
   private async writePreparedTaskAcceptance(
@@ -1393,9 +1291,8 @@ export class TasksService
     options: { readonly acceptedExplicitModel?: boolean },
   ): Promise<TaskResponse> {
     const task = await this.createTaskRow(prepared, client, options);
-    if (prepared.admissionMode !== 'durable-v2') return task;
 
-    // Defensive runtime checks complement the discriminated preparation type so
+    // Defensive runtime checks complement the preparation type so
     // JavaScript/test adapters cannot write a half-prepared durable work item.
     const branch = GitBranchNameSchema.safeParse(prepared.resolvedBranch);
     const callerBranch =
@@ -1569,11 +1466,12 @@ export class TasksService
   /**
    * Post-commit dispatch for a freshly-created task.
    *
-   * Presence of durable admission work is the authoritative mode fence. Such a
-   * task may only be consumed by the durable worker, so this path emits at most a
-   * local wake signal and never records another audit or calls guardrails/provider
-   * code. A legacy adapter that has no work row retains the old audit + admission
-   * behavior while the rollout gate is closed.
+   * Every accepted task now carries durable admission work, written in the same
+   * transaction as the Task row, so this path emits at most a local wake signal
+   * and never records another audit or calls provider code. A row that has NO
+   * work item can no longer be admitted at all — the synchronous in-request
+   * pipeline that used to pick such rows up has been retired whole — so it is
+   * reported as fail-closed rather than silently dropped.
    */
   async admitCreatedTask(
     taskId: string,
@@ -1599,8 +1497,7 @@ export class TasksService
         });
       } catch (err) {
         // An indeterminate read must not risk bypassing an existing work item.
-        // Durable polling will recover gate-on work; legacy admission can be
-        // retried after the database is readable again.
+        // Durable polling recovers the work once the database is readable.
         this.logger.warn(
           `task ${taskId} admission mode lookup failed closed: ${
             err instanceof Error ? err.message : String(err)
@@ -1622,40 +1519,19 @@ export class TasksService
       }
     }
 
+    // No work item: nothing can admit this task. The creation audit still has
+    // to exist — it is what attributes the task to its owner, and the
+    // owner-scoped Codex credential resolver reads it — so it is written here
+    // exactly as the acceptance transaction would have written it, and the
+    // caller is told the dispatch failed closed rather than succeeded.
     const resolvedUserId = await this.resolveTaskOwnerId(taskId, userId);
-    // 6.2 — record the creation audit event (201/info), attributed to the
-    // creating operator's ACCOUNT id when known (the `users.id` primary key,
-    // present for local + GitHub accounts — fix-local-account-task-attribution).
-    // Emitted BEFORE `admit()` so the `task.created` event precedes any
-    // `task.running`/`task.queued` event, AND so the owner-scoped Codex credential
-    // resolver (which reads this event's `userId`) can later attribute the task.
     await this.recordAudit(() =>
       this.audit?.recordTaskCreated(taskId, resolvedUserId),
     );
-
-    // VR.1 — offer the task to the guardrails concurrency semaphore so the FIFO
-    // semaphore actually bounds running tasks. When a slot is free it transitions
-    // the task to `running` and arms its deadline + idle timers; otherwise it
-    // holds the task in `queued` (no sandbox provisioned). VR.11 — plumb the
-    // optional guardrail params through so the deadline + idle watchers arm. Idle
-    // is OPT-IN: an omitted `idleTimeoutMs` leaves reclamation to the operator
-    // default (off when unset).
-    if (this.guardrails) {
-      await this.guardrails
-        .admit(taskId, {
-          deadlineMs: body.deadlineMs,
-          idleTimeoutMs: body.idleTimeoutMs,
-          userId: resolvedUserId,
-        })
-        .catch((err: unknown) => {
-          this.logger.warn(
-            `guardrails admit for task ${taskId} failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-    }
-    return 'legacy-admitted';
+    this.logger.warn(
+      `task ${taskId} was committed without durable admission work; it cannot be admitted (the synchronous in-request pipeline that used to pick such rows up is retired)`,
+    );
+    return 'fail-closed';
   }
 
   private async resolveTaskOwnerId(
@@ -2036,6 +1912,7 @@ export class TasksService
     }
 
     let transitioned = false;
+    let authorityOwnerUserId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       // All replicas serialize only the short capacity-count/CAS section. Task
       // terminal transitions do not need this lock: a concurrent release either
@@ -2061,11 +1938,16 @@ export class TasksService
           : request.fallbackMaxConcurrentTasks;
 
       const rows = await tx.$queryRaw<
-        Array<{ status: string; lifecycleVersion: number }>
+        Array<{
+          status: string;
+          lifecycleVersion: number;
+          ownerUserId: string | null;
+        }>
       >(Prisma.sql`
         SELECT
           t."status"::text AS "status",
-          t."lifecycle_version" AS "lifecycleVersion"
+          t."lifecycle_version" AS "lifecycleVersion",
+          t."owner_user_id" AS "ownerUserId"
         FROM "tasks" AS t
         INNER JOIN "task_admission_work" AS w ON w."task_id" = t."id"
         WHERE
@@ -2168,6 +2050,7 @@ export class TasksService
         return { outcome: 'superseded' } as const;
       }
       transitioned = true;
+      authorityOwnerUserId = authority.ownerUserId;
       return {
         outcome: next,
         status: next,
@@ -2181,11 +2064,19 @@ export class TasksService
         this.audit?.recordTransition(
           request.taskId,
           result.status,
-          request.userId,
+          // Attribute the owner when no caller supplied an acting user. A durable
+          // admission runs on a worker, with no request context, so `userId` is
+          // absent — but the transition still belongs to somebody, and
+          // `task.created` already attributes the owner the same way
+          // (`resolveTaskOwnerId`). Leaving it null made lifecycle audit rows
+          // ownerless for every automatically dispatched task; before this change
+          // that was invisible because only durable-enabled deployments took this
+          // path, and now every deployment does.
+          request.userId ?? authorityOwnerUserId ?? undefined,
         ),
       );
-      // Durable `TaskAdmitted` (add-domain-event-bus 4.7), 1 of the 2 admission
-      // paths. Gated on exactly the condition the audit above uses — a COMMITTED
+      // Durable `TaskAdmitted` (add-domain-event-bus 4.7), the one surviving
+      // admission path. Gated on exactly the condition the audit above uses — a COMMITTED
       // transition — so the event and the audit trail can never disagree about
       // whether this reservation admitted anything. A reservation that found the
       // task already at its target (`transitioned: false`) admitted nothing here
@@ -2193,8 +2084,8 @@ export class TasksService
       //
       // `fenceToken` is the transition token minted FOR THIS RESERVATION, never
       // `request.leaseToken`: the lease token belongs to the admission-work
-      // lease's lifetime, not to this transition, and substituting it would make
-      // this publisher silently mean something different from the legacy one.
+      // lease's lifetime, not to this transition, and substituting it would
+      // silently change what this publisher means.
       this.publishDomainEvent({
         ...this.domainEventEnvelope('task.admitted', request.taskId),
         admissionMode: 'durable',
@@ -2204,7 +2095,7 @@ export class TasksService
     }
     if (result.outcome === 'superseded') {
       // Durable `TaskSuperseded` (add-domain-event-bus 4.8), observation point 1
-      // of 3. Every route to this outcome — no authority row, a later lifecycle
+      // of 2. Every route to this outcome — no authority row, a later lifecycle
       // status, or a CAS that changed no rows — learned about the supersession
       // the same way: something else won and this reservation was not it. The
       // payload therefore carries only what the LOSER holds. There is no
@@ -2475,7 +2366,7 @@ export class TasksService
 
   /**
    * Record that THIS attempt observed itself superseded, and report it
-   * (add-domain-event-bus 4.8) — observation point 2 of 3.
+   * (add-domain-event-bus 4.8) — observation point 2 of 2.
    *
    * Written as one method with one return so that both routes to `superseded`
    * inside {@link performAdmissionTransition} publish identically and, because
@@ -2808,25 +2699,6 @@ export class TasksService
       runtimeId: runtime,
       ...(providerFamily ? { providerFamily } : {}),
       ...(resources ? { resources } : {}),
-    });
-  }
-
-  private async resolveTaskEnvironment(args: {
-    selection: SandboxEnvironmentSelection;
-    runtime: Runtime;
-  }) {
-    if (!this.sandboxEnvironments) {
-      if (args.selection.kind === 'managed') {
-        throw new BadRequestException({
-          error: 'sandbox_environment_unavailable',
-          message: 'Sandbox environment resolution is not available.',
-        });
-      }
-      return null;
-    }
-    return this.sandboxEnvironments.resolveForTask({
-      selection: args.selection,
-      runtimeId: args.runtime,
     });
   }
 

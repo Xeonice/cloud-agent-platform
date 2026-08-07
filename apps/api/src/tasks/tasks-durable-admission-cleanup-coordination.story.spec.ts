@@ -70,38 +70,6 @@ const GUARDRAILS_CONFIG: GuardrailsConfig = {
   cleanupTerminalPolicyMaxAttempts: 1,
 };
 
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
-async function within<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${label} did not complete within ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
 class StoryClock extends TaskAdmissionClock {
   private currentMs = 0;
 
@@ -129,12 +97,18 @@ class StoryLeaseTokens extends TaskAdmissionLeaseTokenFactory {
   }
 }
 
-/** Public Guardrails admission collaborator for the one queued legacy waiter. */
+/**
+ * Task-operations double for the one waiter this story parks behind the slot.
+ *
+ * It is bound so that any admission transition the orchestrator still attempts
+ * would be RECORDED — `transitions` staying empty is an assertion, not an
+ * absence of wiring. Nothing drives it any more: the queued -> running
+ * promotion that called it left with the retired in-request pipeline.
+ */
 class WaitingTaskLifecycle {
   private status: 'pending' | 'queued' | 'running' = 'pending';
   private transitionToken: string | null = null;
   readonly transitions: Array<'queued' | 'running'> = [];
-  readonly promoted = deferred<void>();
 
   async transitionForAdmission(
     taskId: string,
@@ -151,7 +125,6 @@ class WaitingTaskLifecycle {
     this.status = next;
     this.transitionToken = transitionToken;
     this.transitions.push(next);
-    if (next === 'running') this.promoted.resolve();
     return 'transitioned';
   }
 
@@ -476,7 +449,6 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   const cancellationAuditRows = new Set<string>();
   const physicalSandboxes = new Set<string>();
   const provisionedTaskIds: string[] = [];
-  const waiterProvisioned = deferred<void>();
   let physicalCleanupCalls = 0;
 
   const provider = {
@@ -494,7 +466,6 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
         kind: 'created',
         providerSandboxId: `physical:${ctx.taskId}`,
       });
-      if (ctx.taskId === WAITING_TASK_ID) waiterProvisioned.resolve();
       return {
         taskId: ctx.taskId,
         providerId: 'local',
@@ -606,7 +577,16 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   );
   guardrails.onModuleInit();
   guardrails.restoreDurableAdmissionSlot(TASK_ID);
-  assert.equal(await guardrails.admit(WAITING_TASK_ID), 'queued');
+  // The second task waits for the slot the durable owner is holding. Offered
+  // straight to the semaphore now that the in-request admission entry point
+  // that used to wrap this is retired — the capacity projection reads the same
+  // live instance either way.
+  const semaphore = (
+    guardrails as unknown as {
+      semaphore: { offer(taskId: string): 'running' | 'queued' };
+    }
+  ).semaphore;
+  assert.equal(semaphore.offer(WAITING_TASK_ID), 'queued');
   assert.deepEqual(capacityProjection.project().runningTaskIds, [TASK_ID]);
   assert.deepEqual(capacityProjection.project().occupancy.queuedTaskIds, [
     WAITING_TASK_ID,
@@ -654,7 +634,11 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   assert.equal(pendingAuthority.lastAttemptOutcome, 'indeterminate');
   assert.equal(guardrails.runningCount, 1);
   assert.equal(guardrails.queuedCount, 1);
-  assert.deepEqual(waitingTaskLifecycle.transitions, ['queued']);
+  // No lifecycle transition accompanies the wait. The queued -> running
+  // promotion that used to drive one belonged to the retired in-request
+  // pipeline; a durable acceptance that loses the capacity race is settled
+  // `queued` on its work ROW and re-claimed from the database instead.
+  assert.deepEqual(waitingTaskLifecycle.transitions, []);
   assert.deepEqual(destroyedSessions, []);
   assert.equal(
     diagnostics.cleanupRows.length,
@@ -696,15 +680,14 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
       resourceGeneration: RESOURCE_GENERATION,
     },
   ]);
-  await within(
-    waitingTaskLifecycle.promoted.promise,
-    1_000,
-    'queued waiter lifecycle promotion',
-  );
-  await within(waiterProvisioned.promise, 1_000, 'queued waiter provisioning');
-  assert.equal(guardrails.runningCount, 1, 'the promoted waiter owns the slot');
+  // The slot the uncertain cleanup was holding is released only now, and the
+  // backlog takes it. What no longer happens is the second half of the old
+  // in-process promotion: no lifecycle transition and no provisioning ride on
+  // a local slot release, because the code that did that went with the retired
+  // pipeline. A durable waiter is promoted by re-claiming its work row.
+  assert.equal(guardrails.runningCount, 1, 'the waiter takes the freed slot');
   assert.equal(guardrails.queuedCount, 0);
-  assert.deepEqual(waitingTaskLifecycle.transitions, ['queued', 'running']);
+  assert.deepEqual(waitingTaskLifecycle.transitions, []);
   assert.deepEqual(capacityProjection.project().runningTaskIds, [
     WAITING_TASK_ID,
   ]);
@@ -725,15 +708,18 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   );
   assert.equal(
     provisionedTaskIds.filter((taskId) => taskId === WAITING_TASK_ID).length,
-    1,
-    'slot release drives the real queued waiter provisioning path once',
+    0,
+    'a local slot release no longer provisions anything by itself',
   );
   assert.equal(physicalCleanupCalls, 2);
   assert.equal(ownerStore.completionCalls, 1);
-  assert.deepEqual(waitingTaskLifecycle.transitions, ['queued', 'running']);
+  assert.deepEqual(waitingTaskLifecycle.transitions, []);
   assert.deepEqual(destroyedSessions, [TASK_ID]);
+  // `beginCalls` is 0, not 1: the one begin this story used to record opened a
+  // diagnostic for the waiter that the in-process promotion provisioned. The
+  // cleanup story's own diagnostics are all resumes on the terminal task.
   assert.deepEqual(diagnostics.stats(), {
-    beginCalls: 1,
+    beginCalls: 0,
     resumeCalls: 3,
     appendCalls: 0,
     primaryCalls: 0,

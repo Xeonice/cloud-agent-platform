@@ -123,20 +123,11 @@ const BeginTaskProvisioningDiagnosticObserverInputSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (
-      value.admissionMode === 'legacy' &&
-      value.expectedAttempt !== undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['expectedAttempt'],
-        message: 'legacy attempts are recorder allocated',
-      });
-    }
+    // The mode itself no longer discriminates anything — durable admission is
+    // the only path — so what remains to check is the fencing evidence.
     if (
       value.retry !== undefined &&
-      (value.admissionMode !== 'durable' ||
-        value.expectedAttempt === undefined ||
+      (value.expectedAttempt === undefined ||
         value.activeDisposition !== 'interrupt' ||
         value.replayAttemptId !== undefined)
     ) {
@@ -229,17 +220,14 @@ interface TaskProvisioningDiagnosticObserverRetryEvidence {
   readonly cause: TaskProvisioningDiagnosticCause;
 }
 
-/** Legacy allocation is recorder-owned; durable admission may fence its number. */
+/**
+ * Durable admission may fence its attempt number; omitting `expectedAttempt`
+ * leaves allocation recorder-owned. Retry evidence is admitted only on the
+ * fenced interrupt shape.
+ */
 export type BeginTaskProvisioningDiagnosticObserverInput =
   BeginTaskProvisioningDiagnosticObserverBase &
     (
-      | {
-          readonly admissionMode: 'legacy';
-          readonly expectedAttempt?: never;
-          readonly replayAttemptId?: string;
-          readonly activeDisposition?: 'reject' | 'interrupt';
-          readonly retry?: never;
-        }
       | {
           readonly admissionMode: 'durable';
           readonly expectedAttempt?: number;

@@ -197,6 +197,48 @@ function durablePrepared(
   } as PreparedTaskCreate;
 }
 
+/**
+ * The two collaborators durable acceptance cannot proceed without.
+ *
+ * They used to be optional because a closed gate took an in-request pipeline
+ * that resolved neither. That pipeline is retired, so every acceptance resolves
+ * a provisioning policy and a branch — including the acceptances whose gate is
+ * closed, absent, or reporting an expired attestation.
+ */
+function durableCollaborators(): {
+  readonly environments: SandboxEnvironmentsService;
+  readonly branches: TaskBranchResolver;
+} {
+  return {
+    environments: {
+      async resolveForTask() {
+        return null;
+      },
+      async resolveTaskAdmission() {
+        return Object.freeze({
+          environment: null,
+          providerId: 'aio-local',
+          providerFamily: 'aio' as const,
+          provisioningPolicy: Object.freeze({
+            resources: Object.freeze({}),
+            workspaceMaterializationDeadlineMs: 900_000,
+          }),
+        });
+      },
+    } as unknown as SandboxEnvironmentsService,
+    branches: {
+      async prepareForCreate() {
+        return {
+          repositoryUrl: 'https://gitee.example/acme/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'master',
+          source: 'repo-default-branch' as const,
+        };
+      },
+    } as unknown as TaskBranchResolver,
+  };
+}
+
 function serviceWith(
   prisma: PrismaService,
   options: {
@@ -255,22 +297,66 @@ test('admission rollout flag alone never bypasses the required deployment attest
   }
 });
 
-test('missing admission-gate injection defaults to legacy Task-only acceptance', async () => {
-  const { prisma, state } = fakeAcceptancePrisma();
-  const service = serviceWith(prisma);
+test('an unproven capability admits durably: a closed gate, an absent gate, and an expired attestation all reach durable acceptance without a refusal', async () => {
+  // The three ways a deployment can fail to prove the capability. None of them
+  // selects another pipeline any more, and none of them refuses: there is no
+  // `503` and no third member of the admission-mode union to reach.
+  const cases: ReadonlyArray<{
+    readonly label: string;
+    readonly gate?: TaskAdmissionGatePort;
+  }> = [
+    { label: 'no gate provider wired' },
+    {
+      label: 'gate closed by operator switch',
+      gate: {
+        evaluate: () => ({
+          capability: 'task-admission-v2',
+          open: false,
+          reason: 'disabled',
+          missingRoles: [],
+        }),
+      },
+    },
+    {
+      label: 'gate closed by an expired deployment attestation',
+      gate: {
+        evaluate: () => ({
+          capability: 'task-admission-v2',
+          open: false,
+          reason: 'deployment_attestation_expired',
+          missingRoles: [],
+        }),
+      },
+    },
+  ];
 
-  const prepared = await service.prepareTaskCreate(
-    REPO_ID,
-    { prompt: 'legacy default', sandboxEnvironmentId: null },
-    'interactive-pty',
-    USER_ID,
-  );
-  assert.equal(prepared.admissionMode, 'legacy');
+  for (const { label, gate } of cases) {
+    const { prisma, state } = fakeAcceptancePrisma();
+    const { environments, branches } = durableCollaborators();
+    const service = serviceWith(prisma, {
+      environments,
+      branches,
+      ...(gate ? { gate } : {}),
+    });
 
-  await service.acceptPreparedTask(prepared);
-  assert.equal(state.tasks.length, 1);
-  assert.equal(state.works.length, 0);
-  assert.equal(state.audits.length, 0);
+    const prepared = await service.prepareTaskCreate(
+      REPO_ID,
+      { prompt: label, sandboxEnvironmentId: null },
+      'interactive-pty',
+      USER_ID,
+    );
+    assert.equal(prepared.admissionMode, 'durable-v2', label);
+
+    const task = await service.acceptPreparedTask(prepared);
+    assert.equal(task.provisioning?.state, 'accepted', label);
+    assert.equal(state.tasks.length, 1, label);
+    assert.equal(
+      state.works.length,
+      1,
+      `${label}: acceptance writes the durable work item`,
+    );
+    assert.equal(state.audits.length, 1, label);
+  }
 });
 
 test('durable writer atomically commits nullable caller branch, immutable snapshots, and task.created identity', async () => {
@@ -423,22 +509,42 @@ test('gate is read once during preparation and a later flip cannot change the wr
     900_000,
   );
 
-  const legacy = await service.prepareTaskCreate(
+  // Prepared while the gate reads CLOSED. The outcome is still read once and
+  // still carried on the decision, but it no longer selects anything: this
+  // acceptance is durable exactly like the one above.
+  const preparedWhileClosed = await service.prepareTaskCreate(
     REPO_ID,
-    { prompt: 'legacy', sandboxEnvironmentId: null },
+    { prompt: 'closed gate', sandboxEnvironmentId: null },
     'interactive-pty',
     USER_ID,
   );
-  assert.equal(legacy.admissionMode, 'legacy');
+  assert.equal(preparedWhileClosed.admissionMode, 'durable-v2');
+  assert.deepEqual(preparedWhileClosed.resourceSnapshot, { diskSizeGb: 99 });
   enabled = true;
-  await service.acceptPreparedTask(legacy);
+  await service.acceptPreparedTask(preparedWhileClosed);
 
   assert.equal(gateReads, 2, 'one read for each independently prepared create');
-  assert.equal(branchPreparations, 1, 'legacy mode performs no durable branch preparation');
+  assert.equal(
+    branchPreparations,
+    2,
+    'every acceptance prepares a durable branch, gate open or closed',
+  );
   assert.equal(state.tasks.length, 2);
-  assert.equal(state.works.length, 1, 'gate-off acceptance writes only its Task');
-  assert.equal(state.audits.length, 1, 'gate-off audit remains post-commit legacy work');
+  assert.equal(
+    state.works.length,
+    2,
+    'a closed gate no longer commits a Task without admission work',
+  );
+  assert.equal(state.audits.length, 2);
+  // The frozen first snapshot is unaffected by the resource mutation between
+  // the two preparations — that freeze is what this test exists for.
+  assert.deepEqual(state.works[0]?.resourceSnapshot, { diskSizeGb: 12 });
+  assert.deepEqual(state.works[1]?.resourceSnapshot, { diskSizeGb: 99 });
   assert.deepEqual(resourceResolutions, [
+    {
+      selection: { kind: 'deployment-default' },
+      runtimeId: 'codex',
+    },
     {
       selection: { kind: 'deployment-default' },
       runtimeId: 'codex',
@@ -616,11 +722,10 @@ test('existing admission work is a provider barrier: post-commit only wakes and 
   let auditCount = 0;
   const service = serviceWith(prisma, {
     guardrails: {
-      admit() {
+      async onTerminal() {
         providerEntered();
         return new Promise<never>(() => undefined);
       },
-      async onTerminal() {},
       recordFailure() {},
       recordSuccess() {},
     },
@@ -648,16 +753,15 @@ test('existing admission work is a provider barrier: post-commit only wakes and 
   assert.equal(auditCount, 0);
 });
 
-test('gate-off task without admission work retains post-commit legacy audit and guardrails admission', async () => {
+test('a task committed without admission work fails closed and is never admitted', async () => {
+  // The synchronous in-request pipeline that used to pick such a row up has
+  // been retired whole. The creation audit still has to exist —
+  // it carries the owner attribution the credential resolver reads — but the
+  // dispatch reports failure rather than pretending the task was admitted.
   const { prisma } = fakeAcceptancePrisma();
   let auditCount = 0;
-  let admitCount = 0;
   const service = serviceWith(prisma, {
     guardrails: {
-      async admit() {
-        admitCount += 1;
-        return 'running';
-      },
       async onTerminal() {},
       recordFailure() {},
       recordSuccess() {},
@@ -669,13 +773,13 @@ test('gate-off task without admission work retains post-commit legacy audit and 
     } as unknown as AuditRecorderPort,
   });
 
-  await service.admitCreatedTask(
+  const outcome = await service.admitCreatedTask(
     '66666666-6666-4666-8666-666666666666',
-    { prompt: 'legacy' },
+    { prompt: 'orphaned' },
     USER_ID,
   );
+  assert.equal(outcome, 'fail-closed');
   assert.equal(auditCount, 1);
-  assert.equal(admitCount, 1);
 });
 
 test('Console and MCP create delegates converge on TasksService.create', async () => {

@@ -254,13 +254,20 @@ test('SandboxProvisioned carries enough to record provisioning without a call ba
 });
 
 test('admission events carry the transition token and an explicit admission mode', () => {
-  for (const mode of ['durable', 'legacy']) {
-    const parsed = TaskAdmittedEventSchema.parse(
-      buildEvent['task.admitted']({ admissionMode: mode }),
-    );
-    assert.equal(parsed.admissionMode, mode);
-    assert.equal(parsed.fenceToken, 'transition-token-1');
-  }
+  const parsed = TaskAdmittedEventSchema.parse(
+    buildEvent['task.admitted']({ admissionMode: 'durable' }),
+  );
+  assert.equal(parsed.admissionMode, 'durable');
+  assert.equal(parsed.fenceToken, 'transition-token-1');
+  // The retired admission path is rejected, not silently accepted: this catalog
+  // derives from the narrowed diagnostics vocabulary, so a subscriber can never
+  // be handed a mode the read path would refuse.
+  assert.equal(
+    TaskAdmittedEventSchema.safeParse(
+      buildEvent['task.admitted']({ admissionMode: 'legacy' }),
+    ).success,
+    false,
+  );
   // The discriminant is required: a subscriber never infers the path from the
   // token's shape.
   const withoutMode = buildEvent['task.admitted']();

@@ -174,6 +174,10 @@ function preparedTask(
     sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
     model: body.model ?? null,
     executionEnvironmentSnapshot: null,
+    admissionMode: 'durable-v2' as const,
+    resolvedBranch: 'main',
+    resourceSnapshot: {},
+    workspaceMaterializationDeadlineMs: 60_000,
   };
 }
 
@@ -437,6 +441,10 @@ test('V1 explicit-model create pins the prepared digest outside the idempotency 
         sandboxEnvironmentId: null,
         model: body.model ?? null,
         executionEnvironmentSnapshot: MODEL_SNAPSHOT,
+        admissionMode: 'durable-v2' as const,
+        resolvedBranch: 'main',
+        resourceSnapshot: {},
+        workspaceMaterializationDeadlineMs: 60_000,
       };
     },
     async acceptPreparedTask(prepared: PreparedTaskCreate, tx: unknown) {

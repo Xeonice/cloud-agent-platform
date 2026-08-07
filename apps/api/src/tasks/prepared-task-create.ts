@@ -6,7 +6,7 @@ import type {
 import type { ExecutionMode } from '@/agent-runtime/agent-runtime.port';
 import type { SandboxResourceSnapshot } from '@cap-console/sandbox';
 
-export type PreparedTaskAdmissionMode = 'legacy' | 'durable-v2';
+export type PreparedTaskAdmissionMode = 'durable-v2';
 
 /**
  * Fully resolved, transaction-local input for one Task row.
@@ -27,21 +27,16 @@ interface PreparedTaskCreateBase {
 }
 
 /**
- * Legacy fixtures may omit the discriminator. Durable acceptance cannot exist
- * without both immutable snapshots, so the type makes that state unrepresentable.
+ * Acceptance cannot exist without both immutable snapshots, so the type makes
+ * that state unrepresentable. The discriminator is no longer a choice — the
+ * synchronous in-request pipeline it used to select is retired — but it is kept
+ * as a required, single-valued field so a fixture that omits it fails to compile
+ * rather than being silently accepted as some other kind of preparation.
  */
-export type PreparedTaskCreate = PreparedTaskCreateBase &
-  (
-    | {
-        readonly admissionMode?: 'legacy';
-        readonly resolvedBranch?: never;
-        readonly resourceSnapshot?: never;
-      }
-    | {
-        readonly admissionMode: 'durable-v2';
-        readonly resolvedBranch: string;
-        readonly resourceSnapshot: SandboxResourceSnapshot;
-        /** Immutable provider policy selected before the acceptance write. */
-        readonly workspaceMaterializationDeadlineMs: number;
-      }
-  );
+export type PreparedTaskCreate = PreparedTaskCreateBase & {
+  readonly admissionMode: 'durable-v2';
+  readonly resolvedBranch: string;
+  readonly resourceSnapshot: SandboxResourceSnapshot;
+  /** Immutable provider policy selected before the acceptance write. */
+  readonly workspaceMaterializationDeadlineMs: number;
+};

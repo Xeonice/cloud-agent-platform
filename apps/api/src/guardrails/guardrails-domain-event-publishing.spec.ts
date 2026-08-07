@@ -25,12 +25,8 @@ import {
 import type { ModuleRef } from '@nestjs/core';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
 import type { AdmissionTransitionResult } from '@/tasks/tasks.service';
-import type {
-  SandboxConnection,
-  SandboxProvider,
-} from '@/sandbox/sandbox-provider.port';
+import type { SandboxProvider } from '@/sandbox/sandbox-provider.port';
 import type { ProvisionLookup } from '@/provision-lookup/provision-lookup.port';
-import type { SandboxProvisionContext } from '@cap-console/sandbox';
 import {
   DOMAIN_EVENT_BUS,
   type DomainEventBusPort,
@@ -158,115 +154,6 @@ function buildService(
   return service;
 }
 
-function provisioningSandbox(
-  connection: Partial<SandboxConnection> = {},
-): SandboxProvider {
-  return {
-    getSandboxMode: () => 'danger-full-access',
-    getProviderCapabilities: () => ['terminal.websocket'],
-    async provision(context: SandboxProvisionContext) {
-      return {
-        taskId: context.taskId,
-        baseUrl: 'http://127.0.0.1:8080',
-        wsUrl: 'ws://127.0.0.1:8080/ws',
-        ...connection,
-      };
-    },
-    async teardownSandbox() {},
-  } as unknown as SandboxProvider;
-}
-
-test('a legacy admission publishes one TaskAdmitted, one TaskRunStarted, and one SandboxProvisioned', async () => {
-  const recorder = recordingBus();
-  const service = buildService(async () => 'transitioned', {
-    bus: recorder.bus,
-    sandbox: provisioningSandbox(),
-    isCurrent: async () => true,
-  });
-
-  assert.equal(await service.admit(TASK_ID, { userId: USER_ID }), 'running');
-
-  assertAllParse(recorder.published);
-
-  const admitted = recorder.of('task.admitted');
-  assert.equal(admitted.length, 1);
-  assert.equal(admitted[0]?.admissionMode, 'legacy');
-  assert.equal(admitted[0]?.outcome, 'running');
-  // The token is the one that fenced the transition, not a second one minted for
-  // the event: a non-empty token here plus the schema's `min(1)` is what stops a
-  // publish site from quietly shipping `undefined`.
-  assert.equal(typeof admitted[0]?.fenceToken, 'string');
-  assert.equal(admitted[0]?.taskId, TASK_ID);
-
-  const started = recorder.of('task.run_started');
-  assert.equal(started.length, 1);
-  assert.equal(started[0]?.startPoint, 'legacy_capacity');
-  assert.equal(started[0]?.admissionMode, 'legacy');
-
-  const provisioned = recorder.of('sandbox.provisioned');
-  assert.equal(provisioned.length, 1);
-  assert.equal(provisioned[0]?.admissionMode, 'legacy');
-  assert.equal(provisioned[0]?.sandbox.baseUrl, 'http://127.0.0.1:8080');
-  assert.equal(provisioned[0]?.sandbox.wsUrl, 'ws://127.0.0.1:8080/ws');
-  // Enough for a subscriber to record the provisioning WITHOUT calling back into
-  // guardrails — which is the dependency these events exist to cut.
-  assert.equal(provisioned[0]?.environment.runtimeId, 'codex');
-  assert.equal(provisioned[0]?.environment.executionMode, 'interactive-pty');
-  assert.equal(provisioned[0]?.providerFamily, 'unknown');
-
-  // Every eventId is distinct, which is what lets a later change de-duplicate
-  // during the window where a subscriber and the direct call both run.
-  const ids = new Set(recorder.published.map((event) => event.eventId));
-  assert.equal(ids.size, recorder.published.length);
-});
-
-test('concurrent admit calls that join one in-flight admission publish TaskAdmitted once', async () => {
-  const recorder = recordingBus();
-  const service = buildService(async () => 'transitioned', {
-    bus: recorder.bus,
-    sandbox: provisioningSandbox(),
-    isCurrent: async () => true,
-  });
-
-  const [first, second] = await Promise.all([
-    service.admit(TASK_ID, { userId: USER_ID }),
-    service.admit(TASK_ID, { userId: USER_ID }),
-  ]);
-
-  assert.equal(first, 'running');
-  assert.equal(second, 'running');
-  assert.equal(recorder.of('task.admitted').length, 1);
-  assert.equal(recorder.of('task.run_started').length, 1);
-});
-
-test('a queued admission publishes TaskAdmitted with the queued outcome and no run start', async () => {
-  const recorder = recordingBus();
-  const service = buildService(async () => 'transitioned', {
-    bus: recorder.bus,
-    sandbox: provisioningSandbox(),
-    isCurrent: async () => true,
-  });
-
-  // Ceiling is 1: the first task takes the slot, the second is held queued.
-  assert.equal(await service.admit(TASK_ID), 'running');
-  const queuedTaskId = '44444444-4444-4444-8444-444444444444';
-  assert.equal(await service.admit(queuedTaskId), 'queued');
-
-  assertAllParse(recorder.published);
-  const queuedAdmission = recorder
-    .of('task.admitted')
-    .filter((event) => event.taskId === queuedTaskId);
-  assert.equal(queuedAdmission.length, 1);
-  assert.equal(queuedAdmission[0]?.outcome, 'queued');
-  assert.equal(queuedAdmission[0]?.admissionMode, 'legacy');
-  // A queued task has not started running, so it must not have a run start.
-  assert.equal(
-    recorder
-      .of('task.run_started')
-      .filter((event) => event.taskId === queuedTaskId).length,
-    0,
-  );
-});
 
 test('the terminal fence publishes exactly one TaskSettled carrying the terminal status', async () => {
   for (const status of ['completed', 'failed', 'cancelled'] as const) {
@@ -296,62 +183,6 @@ test('a fence with no status settles nothing and publishes nothing', () => {
   service.fenceTerminal(TASK_ID);
 
   assert.equal(recorder.of('task.settled').length, 0);
-});
-
-test('a superseded legacy provisioning tears its runtime down without publishing TaskSettled', async () => {
-  const recorder = recordingBus();
-  // The admission transition commits and stays current long enough for the run to
-  // reach the inline pipeline, which then loses its fence. The pipeline discards
-  // the attempt and calls `clearAdmissionRuntime`, whose `recordEnd` is NOT a
-  // settlement — the task itself never reached a terminal status here.
-  //
-  // The counter matters: guardrails re-checks the fence twice before handing off,
-  // and a check that fails earlier supersedes inside `startRunning`, which is NOT
-  // one of the three declared observation points and correctly publishes nothing.
-  let fenceChecks = 0;
-  const service = buildService(async () => 'transitioned', {
-    bus: recorder.bus,
-    sandbox: provisioningSandbox(),
-    isCurrent: async () => {
-      fenceChecks += 1;
-      return fenceChecks <= 2;
-    },
-  });
-
-  await service.admit(TASK_ID).catch(() => undefined);
-
-  assertAllParse(recorder.published);
-  assert.equal(recorder.of('task.settled').length, 0);
-  // A discarded attempt provisioned nothing anybody may observe.
-  assert.equal(recorder.of('sandbox.provisioned').length, 0);
-  // And the whole run reports its supersession exactly once, however many
-  // internal fence checks it passed on the way out.
-  assert.equal(recorder.of('task.superseded').length, 1);
-  assert.equal(
-    recorder.of('task.superseded')[0]?.observationPoint,
-    'inline_pipeline_run',
-  );
-});
-
-test('a failing provision publishes no SandboxProvisioned', async () => {
-  const recorder = recordingBus();
-  const sandbox = {
-    getSandboxMode: () => 'danger-full-access',
-    getProviderCapabilities: () => ['terminal.websocket'],
-    async provision() {
-      throw new Error('provider exploded');
-    },
-    async teardownSandbox() {},
-  } as unknown as SandboxProvider;
-  const service = buildService(async () => 'transitioned', {
-    bus: recorder.bus,
-    sandbox,
-    isCurrent: async () => true,
-  });
-
-  await service.admit(TASK_ID).catch(() => undefined);
-
-  assert.equal(recorder.of('sandbox.provisioned').length, 0);
 });
 
 test('readoption publishes one TaskRunStarted with no fabricated admission mode', async () => {
@@ -406,41 +237,23 @@ test('arming the durable runtime publishes one TaskRunStarted and re-arming publ
   assert.equal(started[0]?.admissionMode, 'durable');
 });
 
-test('a throwing bus does not disturb the terminal fence', () => {
-  const service = buildService(async () => 'transitioned', {
-    bus: {
-      publish() {
-        throw new Error('subscriber storm');
-      },
-      subscribe() {},
-    } as DomainEventBusPort,
-  });
+test('with no bus injected the same lifecycle runs without a null reference', () => {
+  const service = buildService(async () => 'transitioned');
 
-  // The fence must complete normally: no throw reaches this caller, and the
-  // lifecycle bookkeeping it performs is unaffected by the failed publish.
-  service.fenceTerminal(TASK_ID, 'completed');
-  assert.equal(service.runningCount, 0);
-});
-
-test('with no bus injected the same lifecycle runs without a null reference', async () => {
-  const service = buildService(async () => 'transitioned', {
-    sandbox: provisioningSandbox(),
-    isCurrent: async () => true,
-  });
-
-  assert.equal(await service.admit(TASK_ID, { userId: USER_ID }), 'running');
+  // No `bus` option, so the publisher resolves `undefined` — the path the
+  // untouched specs in this directory take on every run.
   service.fenceTerminal(TASK_ID, 'completed');
 });
 
-test('the escape hatch runs a full lifecycle with zero publishes', async () => {
+test('the escape hatch runs a full lifecycle with zero publishes', () => {
   // The whole chain, end to end, rather than an assertion about the toggle in
   // isolation: escape-hatch value → closed decision → composition root omits the
   // bus provider → the publisher resolves NO bus → zero publish calls.
   //
   // That last step is the reason the escape hatch is built this way. It is not a
   // "publishing off" branch that only executes during a rollback; it is the same
-  // `this.bus === undefined` path the 120 untouched specs in this directory
-  // already exercise on every run.
+  // `this.bus === undefined` path the untouched specs in this directory already
+  // exercise on every run.
   const decision = evaluateDomainEventPublishing({
     CAP_DOMAIN_EVENT_PUBLISHING_ENABLED: '0',
   });
@@ -466,14 +279,27 @@ test('the escape hatch runs a full lifecycle with zero publishes', async () => {
 
   const service = buildService(async () => 'transitioned', {
     bus: boundBus,
-    sandbox: provisioningSandbox(),
-    isCurrent: async () => true,
   });
 
-  assert.equal(await service.admit(TASK_ID, { userId: USER_ID }), 'running');
   service.fenceTerminal(TASK_ID, 'completed');
 
   assert.equal(recorder.published.length, 0);
+});
+
+test('a throwing bus does not disturb the terminal fence', () => {
+  const service = buildService(async () => 'transitioned', {
+    bus: {
+      publish() {
+        throw new Error('subscriber storm');
+      },
+      subscribe() {},
+    } as DomainEventBusPort,
+  });
+
+  // The fence must complete normally: no throw reaches this caller, and the
+  // lifecycle bookkeeping it performs is unaffected by the failed publish.
+  service.fenceTerminal(TASK_ID, 'completed');
+  assert.equal(service.runningCount, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -495,25 +321,22 @@ const publisherSources = {
     'utf8',
   ),
   tasks: readFileSync(join(apiSrc, 'tasks', 'tasks.service.ts'), 'utf8'),
-  pipeline: readFileSync(
-    join(apiSrc, 'inline-admission', 'inline-admission.pipeline.ts'),
-    'utf8',
-  ),
 };
 
 const countOf = (source: string, eventType: string) =>
   (source.match(new RegExp(`'${eventType}'`, 'g')) ?? []).length;
 
-test('TaskRunStarted is published at exactly three points, all in guardrails', () => {
-  assert.equal(countOf(publisherSources.guardrails, 'task\\.run_started'), 3);
+test('TaskRunStarted is published at exactly two points, all in guardrails', () => {
+  // Two, not three: the `legacy_capacity` seam was deleted along with the
+  // in-request pipeline it started. Counted here rather than derived by
+  // subtracting one, so a re-added third point turns this red.
+  assert.equal(countOf(publisherSources.guardrails, 'task\\.run_started'), 2);
   assert.equal(countOf(publisherSources.tasks, 'task\\.run_started'), 0);
-  assert.equal(countOf(publisherSources.pipeline, 'task\\.run_started'), 0);
 });
 
 test('TaskSettled is published at exactly one point, inside the terminal fence', () => {
   assert.equal(countOf(publisherSources.guardrails, 'task\\.settled'), 1);
   assert.equal(countOf(publisherSources.tasks, 'task\\.settled'), 0);
-  assert.equal(countOf(publisherSources.pipeline, 'task\\.settled'), 0);
 
   // …and that one sits in `fenceTerminal`, not in the admission-runtime teardown
   // whose `recordEnd` looks deceptively like the same moment.

@@ -70,19 +70,25 @@ test('the committed baseline equals a live re-count of the real tree', () => {
   assert.equal(result.exitCode, 0);
   assert.deepEqual(result.measured, {
     [entryKey('this.audit')]: 9,
-    // extract-runner-minutes-ledger: a FIRST DECREASE 6 → 5. The read face
-    // (`runnerMinuteIntervals()`) was deleted; the five write references on the
-    // admission/terminal seam are retained by design, so 0 is not available.
-    [entryKey('this.runnerMinutes')]: 5,
+    // Two decreases, each of them a real deletion. extract-runner-minutes-ledger
+    // took 6 → 5 by deleting the read face (`runnerMinuteIntervals()`); the
+    // legacy-admission retirement took 5 → 4 by deleting the `recordStart` that
+    // lived inside the retired running continuation. The four surviving write
+    // references sit on the durable-admission, terminal and re-adoption seams and
+    // are retained by design, so 0 is not available.
+    [entryKey('this.runnerMinutes')]: 4,
     // collapse-three-collaborator-groups: three floors, three causes. The two
     // diagnostics entries stop at 2 apiece because the constructor parameter and
-    // the legacy inline-admission pass-through both survive this change;
-    // transcripts stops at 1 because the surviving reference is the AWAITED
-    // capture that carries a happens-before, not a call anyone may delete. Only
-    // metrics-projection did NOT reach zero: the port extraction renamed its
-    // symbol (`SemaphoreProjectionSource` -> `CapacityProjectionPort`) while the
-    // orchestrator kept naming it twice, so the entry follows the collaborator
-    // rather than the string and stays at 2.
+    // the orchestrator's SINGLE read of the pair both survive. That read once fed
+    // two consumers; the retirement removed one of them and the read stayed with
+    // the durable diagnostics owner, so this floor is UNMOVED at 2 apiece rather
+    // than falling — the prediction that it would fall was wrong and is corrected
+    // by this measurement. Transcripts stops at 1 because the surviving reference
+    // is the AWAITED capture that carries a happens-before, not a call anyone may
+    // delete. Only metrics-projection did NOT reach zero: the port extraction
+    // renamed its symbol (`SemaphoreProjectionSource` -> `CapacityProjectionPort`)
+    // while the orchestrator kept naming it twice, so the entry follows the
+    // collaborator rather than the string and stays at 2.
     [entryKey('provisioningDiagnosticRecorder')]: 2,
     [entryKey('provisioningDiagnosticWriteGate')]: 2,
     [entryKey('this.transcripts')]: 1,

@@ -268,9 +268,6 @@ function makeService(args: {
 
 function noOpGuardrails(overrides: Partial<IGuardrailsService> = {}): IGuardrailsService {
   return {
-    async admit() {
-      return 'running';
-    },
     async onTerminal() {},
     recordFailure() {},
     recordSuccess() {},
@@ -546,7 +543,9 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
     'durable-running-slots',
     `durable-slot:${DURABLE_TASK_ID}`,
     `durable-slot:${TERMINAL_CLEANUP_TASK_ID}`,
-    'legacy-reoffer',
+    // No boot re-offer step: re-offering pending tasks into the process-local
+    // semaphore fed the retired in-request pipeline. Pending durable work is
+    // recovered by the claim query the worker starts on the next line.
     'worker-start',
   ]);
   assert.equal(
@@ -661,7 +660,6 @@ test('bootstrap releases durable polling only after reconciliation and recovers 
     'durable-snapshot',
     'reconcile-enter',
     'reconcile-exit',
-    'legacy-reoffer',
   ]);
 
   scheduler.runDue();

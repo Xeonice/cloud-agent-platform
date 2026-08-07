@@ -101,13 +101,13 @@ assert.match(
   'PrismaProvisionLookup must expose getTaskWorkspaceSource when a resolver is injected',
 );
 
-// The two provisioning paths no longer share a file: the durable one is still
-// in the guardrails orchestrator, the inline one lives in `inline-admission`.
-// The count stays 2 on purpose — one per path — so dropping the wiring from
-// either path still fails here, exactly as it did when both were in one file.
+// There is ONE provisioning path left, in the guardrails orchestrator: the
+// synchronous in-request path was retired with the pipeline directory that
+// held it. The count below is 1 for that reason and is COUNTED from the live
+// source rather than decremented, so a second path reappearing without this
+// wiring still fails here.
 const provisioningPathSources = [
   join(apiRoot, 'src', 'guardrails', 'guardrails.service.ts'),
-  join(apiRoot, 'src', 'inline-admission', 'inline-admission.pipeline.ts'),
 ].map((path) => readFileSync(path, 'utf8'));
 
 const countAcrossProvisioningPaths = (pattern) =>
@@ -116,23 +116,19 @@ const countAcrossProvisioningPaths = (pattern) =>
     0,
   );
 
-// Asserted per file rather than as a total: the guardrails source also names
-// `resolveWorkspaceSource` once more in the port adapter that hands the method
-// to the inline pipeline, and that wiring line is not a provisioning path. The
-// exact-count check below still pins the number of provision contexts at 2.
-for (const [index, source] of provisioningPathSources.entries()) {
+for (const source of provisioningPathSources) {
   assert.match(
     source,
     /resolveWorkspaceSource\(\s*taskId/,
-    `provisioning path ${index === 0 ? 'durable' : 'inline'} must resolve a workspace source`,
+    'the durable provisioning path must resolve a workspace source',
   );
 }
 assert.equal(
   countAcrossProvisioningPaths(
     /workspaceSource === undefined \? \{\} : \{ workspaceSource \}/g,
   ),
-  2,
-  'both provision contexts must carry the resolved workspace source to the provider',
+  1,
+  'the provision context must carry the resolved workspace source to the provider',
 );
 
 console.log('ok - SandboxModule exposes only the neutral sandbox host harness');

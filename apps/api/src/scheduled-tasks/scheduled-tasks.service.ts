@@ -187,7 +187,10 @@ export class ScheduledTasksService
 
   async onApplicationBootstrap(): Promise<void> {
     if (process.env.SCHEDULED_TASKS_DISABLED === '1') {
-      await this.runRecoverySafely();
+      // Nothing to recover on the way out any more: the pending-admission sweep
+      // this used to run targeted runs whose task had NO durable admission work,
+      // and acceptance now always writes one. See the retirement requirement in
+      // repo-and-task-management.
       return;
     }
     const pollMs = positiveIntFromEnv(
@@ -531,7 +534,6 @@ export class ScheduledTasksService
     if (this.pollInFlight) return;
     this.pollInFlight = true;
     try {
-      await this.runRecoverySafely();
       try {
         await this.tick();
       } catch (err) {
@@ -539,14 +541,6 @@ export class ScheduledTasksService
       }
     } finally {
       this.pollInFlight = false;
-    }
-  }
-
-  private async runRecoverySafely(): Promise<void> {
-    try {
-      await this.recoverPendingAdmissions();
-    } catch (err) {
-      this.logger.warn(`scheduled task recovery failed: ${errorMessage(err)}`);
     }
   }
 
@@ -1168,91 +1162,6 @@ export class ScheduledTasksService
     }
   }
 
-  async recoverPendingAdmissions(limit = 100): Promise<number> {
-    const requestedBatchSize = Number.isFinite(limit) ? Math.floor(limit) : 100;
-    const batchSize = Math.max(1, Math.min(requestedBatchSize, 1_000));
-    let recovered = 0;
-    while (true) {
-      const claimedAt = new Date();
-      const rows = await this.prisma.taskScheduleRun.findMany({
-        where: {
-          status: 'created',
-          taskId: { not: null },
-          task: {
-            status: 'pending',
-            admissionWork: { is: null },
-          },
-          OR: [
-            { admissionClaimUntil: null },
-            { admissionClaimUntil: { lt: claimedAt } },
-          ],
-        },
-        take: batchSize,
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        include: {
-          schedule: { select: { ownerUserId: true } },
-          task: true,
-        },
-      });
-      if (rows.length === 0) break;
-
-      for (const row of rows) {
-        if (!row.task) continue;
-        const token = randomUUID();
-        const claimed = await this.claimPendingAdmission({
-          runId: row.id,
-          taskId: row.task.id,
-          claimedAt: new Date(),
-          token,
-        });
-        if (!claimed) continue;
-
-        let release = false;
-        try {
-          const outcome = await this.tasks.admitCreatedTask(
-            row.task.id,
-            taskBodyFromRow(row.task),
-            row.schedule.ownerUserId,
-          );
-          if (outcome === 'durable-woken') {
-            release = true;
-            recovered += 1;
-            continue;
-          }
-          if (outcome === 'fail-closed') continue;
-          const current = await this.prisma.task.findUnique({
-            where: { id: row.task.id },
-            select: { status: true },
-          });
-          release = current === null || current.status !== 'pending';
-          if (release && current !== null) {
-            recovered += 1;
-          } else if (current !== null) {
-            this.logger.warn(
-              `scheduled task recovery left ${row.task.id} pending; retry is deferred until the claim lease expires`,
-            );
-          }
-        } catch (err) {
-          this.logger.warn(
-            `scheduled task recovery admission failed for ${row.task.id}: ${errorMessage(err)}`,
-          );
-        } finally {
-          if (release) {
-            await this.releaseAdmissionClaim(row.id, token);
-          }
-        }
-      }
-
-      if (rows.length < batchSize) break;
-    }
-    if (recovered > 0) {
-      this.logger.log(
-        `scheduled task recovery: admitted ${recovered} pending scheduled task(s)`,
-      );
-    }
-    return recovered;
-  }
-
   private async claimPendingAdmission(args: {
     readonly runId: string;
     readonly taskId: string;
@@ -1402,10 +1311,18 @@ export class ScheduledTasksService
         return;
       }
       if (outcome === 'fail-closed') return;
+      // Compiler-enforced exhaustiveness, not a comment: adding a third member to
+      // the result union breaks the build here instead of silently falling
+      // through. The guard used to live in the pending-admission sweep; it moved
+      // when that was retired, because this is now the only consumer.
+      outcome satisfies never;
     } catch (err) {
       // The task row and run ledger are already committed. Leave the task
-      // pending and retain the bounded admission lease so startup recovery can
-      // retry without admitting or provisioning it twice.
+      // pending and retain the bounded admission lease. NOTE: nothing sweeps
+      // these rows up any more — the pending-admission recovery that used to is
+      // retired, because durable acceptance always writes an admission-work row
+      // and the sweep only ever selected rows without one. The lease simply
+      // expires.
       this.logger.warn(
         `scheduled task admission failed for ${committed.taskId}: ${errorMessage(err)}`,
       );
@@ -2082,32 +1999,6 @@ function scheduleMutationConflict(scheduleId: string): ConflictException {
     message: 'Schedule changed while the update was being applied.',
     scheduleId,
   });
-}
-
-function taskBodyFromRow(task: {
-  prompt: string;
-  branch: string | null;
-  strategy: string | null;
-  skills: string[];
-  idleTimeoutMs: number | null;
-  deadlineMs: number | null;
-  runtime: string | null;
-  model: string | null;
-  sandboxEnvironmentId: string | null;
-  deliver: string | null;
-}): CreateTaskBody {
-  return {
-    prompt: task.prompt,
-    ...(task.branch ? { branch: task.branch } : {}),
-    ...(task.strategy ? { strategy: task.strategy } : {}),
-    ...(task.skills.length > 0 ? { skills: task.skills } : {}),
-    ...(task.idleTimeoutMs ? { idleTimeoutMs: task.idleTimeoutMs } : {}),
-    ...(task.deadlineMs ? { deadlineMs: task.deadlineMs } : {}),
-    ...(task.runtime ? { runtime: task.runtime as never } : {}),
-    ...(task.model ? { model: task.model } : {}),
-    sandboxEnvironmentId: task.sandboxEnvironmentId,
-    ...(task.deliver ? { deliver: task.deliver as never } : {}),
-  };
 }
 
 function mutableTaskBody(body: Readonly<CreateTaskBody>): CreateTaskBody {

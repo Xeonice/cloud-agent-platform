@@ -83,20 +83,11 @@ const BeginAttemptSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (
-      value.admissionMode === 'legacy' &&
-      value.expectedAttempt !== undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['expectedAttempt'],
-        message: 'legacy attempts are recorder allocated',
-      });
-    }
+    // The mode itself no longer discriminates anything — durable admission is
+    // the only path — so what remains to check is the fencing evidence.
     if (
       value.retry !== undefined &&
-      (value.admissionMode !== 'durable' ||
-        value.expectedAttempt === undefined ||
+      (value.expectedAttempt === undefined ||
         value.activeDisposition !== 'interrupt' ||
         value.replayAttemptId !== undefined)
     ) {

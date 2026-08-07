@@ -720,6 +720,10 @@ function buildHarness(
       sandboxEnvironmentId: body.sandboxEnvironmentId ?? ENV_ID,
       model: body.model ?? null,
       executionEnvironmentSnapshot: null,
+      admissionMode: 'durable-v2' as const,
+      resolvedBranch: 'main',
+      resourceSnapshot: {},
+      workspaceMaterializationDeadlineMs: 60_000,
     };
   }
   const tasks = {
@@ -817,7 +821,7 @@ function buildHarness(
         const task = prisma.tasks.find((row) => row.id === taskId);
         if (task) task.admissionWork = { taskId };
       }
-      return options.admissionOutcome ?? 'legacy-admitted';
+      return options.admissionOutcome ?? 'durable-woken';
     },
   } as unknown as TasksService;
   return {
@@ -1961,7 +1965,7 @@ test('application bootstrap keeps polling when the immediate tick fails', async 
   }
 });
 
-test('application bootstrap keeps polling when recovery fails', async () => {
+test('application bootstrap keeps polling when a tick fails', async () => {
   const previousDisabled = process.env.SCHEDULED_TASKS_DISABLED;
   const previousPollMs = process.env.SCHEDULED_TASKS_POLL_MS;
   delete process.env.SCHEDULED_TASKS_DISABLED;
@@ -1973,11 +1977,13 @@ test('application bootstrap keeps polling when recovery fails', async () => {
     resolvePolled = resolve;
   });
   let retryTimeout: NodeJS.Timeout | undefined;
-  service.recoverPendingAdmissions = async () => {
-    throw new Error('temporary recovery failure');
-  };
+  // The failure source used to be the pending-admission recovery sweep that ran
+  // before every tick. That sweep is retired, so the tick itself now carries the
+  // failure — the invariant under test is unchanged: one throw must not stop the
+  // poller.
   service.tick = async () => {
     tickCalls += 1;
+    if (tickCalls === 1) throw new Error('temporary tick failure');
     if (tickCalls >= 2) resolvePolled?.();
     return 0;
   };
@@ -1988,7 +1994,7 @@ test('application bootstrap keeps polling when recovery fails', async () => {
       polled,
       new Promise<never>((_resolve, reject) => {
         retryTimeout = setTimeout(
-          () => reject(new Error('scheduled poller stopped after recovery failure')),
+          () => reject(new Error('scheduled poller stopped after a tick failure')),
           500,
         );
       }),
@@ -2016,35 +2022,33 @@ test('application bootstrap does not overlap poll cycles in one process', async 
   delete process.env.SCHEDULED_TASKS_DISABLED;
   process.env.SCHEDULED_TASKS_POLL_MS = '5';
   const { service } = buildHarness();
-  let recoveryCalls = 0;
   let tickCalls = 0;
-  let releaseFirstRecovery: (() => void) | undefined;
-  const firstRecoveryBlocked = new Promise<void>((resolve) => {
-    releaseFirstRecovery = resolve;
+  let releaseFirstTick: (() => void) | undefined;
+  const firstTickBlocked = new Promise<void>((resolve) => {
+    releaseFirstTick = resolve;
   });
-  service.recoverPendingAdmissions = async () => {
-    recoveryCalls += 1;
-    if (recoveryCalls === 1) await firstRecoveryBlocked;
-    return 0;
-  };
+  // The blocking hook used to be the recovery sweep that preceded each tick.
+  // With that retired the tick itself blocks, which tests the same invariant:
+  // `pollInFlight` must keep a second cycle out while the first is unfinished.
   service.tick = async () => {
     tickCalls += 1;
+    if (tickCalls === 1) await firstTickBlocked;
     return 0;
   };
 
   try {
     const bootstrap = service.onApplicationBootstrap();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(recoveryCalls, 1);
-    assert.equal(tickCalls, 0);
+    // Many poll intervals have elapsed at 5ms each, yet exactly one cycle is in
+    // flight — that is the whole point of the guard.
+    assert.equal(tickCalls, 1);
 
-    releaseFirstRecovery?.();
+    releaseFirstTick?.();
     await bootstrap;
     await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.ok(recoveryCalls >= 2);
     assert.ok(tickCalls >= 2);
   } finally {
-    releaseFirstRecovery?.();
+    releaseFirstTick?.();
     service.onModuleDestroy();
     if (previousDisabled === undefined) {
       delete process.env.SCHEDULED_TASKS_DISABLED;
@@ -2653,30 +2657,8 @@ test('skip ledger failure cannot commit a schedule advance without an outcome', 
   assert.equal(prisma.schedules[0].claimUntil, null);
 });
 
-test('post-commit admission failure leaves one pending task for startup recovery', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitFailures: 1 });
-  addDueSchedule(prisma);
-
-  assert.equal(await service.tick(new Date('2026-07-09T00:05:00.000Z')), 1);
-  assert.equal(prisma.runs.length, 1);
-  assert.equal(prisma.runs[0].status, 'created');
-  assert.equal(prisma.tasks.length, 1);
-  assert.equal(prisma.tasks[0].status, 'pending');
-  assert.equal(prisma.schedules[0].claimToken, null);
-  assert.ok(prisma.runs[0].admissionClaimToken);
-
-  prisma.runs[0].admissionClaimUntil = new Date(0);
-  assert.equal(await service.recoverPendingAdmissions(), 1);
-  assert.deepEqual(admitCalls, [prisma.tasks[0].id, prisma.tasks[0].id]);
-  assert.equal(prisma.runs.length, 1);
-  assert.equal(prisma.tasks.length, 1);
-  assert.equal(prisma.tasks[0].status, 'queued');
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.equal(admitCalls.length, 2);
-});
-
 test('dispatch retains only the run admission lease when admission leaves the task pending', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true });
+  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true, admissionOutcome: 'fail-closed' });
   const now = new Date();
   addDueSchedule(prisma, {
     nextRunAt: new Date(now.getTime() - 1_000),
@@ -2688,11 +2670,13 @@ test('dispatch retains only the run admission lease when admission leaves the ta
   assert.equal(prisma.schedules[0].claimUntil, null);
   assert.ok(prisma.runs[0].admissionClaimToken);
   assert.ok(prisma.runs[0].admissionClaimUntil);
-  assert.equal(await service.recoverPendingAdmissions(), 0);
+  // The trailing `recoverPendingAdmissions() === 0` left with the sweep itself.
+  // What it proved — nothing re-admits this row — is structural now: no sweep
+  // exists to try.
   assert.equal(admitCalls.length, 1);
 });
 
-test('durable dispatch wakes once, releases the schedule lease, and is excluded from legacy recovery', async () => {
+test('durable dispatch wakes once and releases the schedule lease', async () => {
   const { prisma, service, admitCalls } = buildHarness({
     admitKeepsPending: true,
     admissionOutcome: 'durable-woken',
@@ -2709,118 +2693,7 @@ test('durable dispatch wakes once, releases the schedule lease, and is excluded 
   assert.equal(prisma.runs[0].admissionClaimToken, null);
   assert.equal(prisma.runs[0].admissionClaimUntil, null);
   assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
-
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
-});
-
-test('startup recovery admits created pending scheduled tasks once', async () => {
-  const { prisma, service, admitCalls } = buildHarness();
-  addRecoverableRun(prisma);
-  const recovered = await service.recoverPendingAdmissions();
-  assert.equal(recovered, 1);
-  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
-  assert.equal(prisma.tasks[0].status, 'queued');
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.equal(admitCalls.length, 1);
-});
-
-test('competing recovery workers admit one pending scheduled task once', async () => {
-  const { prisma, service, tasks, admitCalls } = buildHarness();
-  addRecoverableRun(prisma);
-  const competingService = new ScheduledTasksService(
-    prisma as unknown as PrismaService,
-    tasks as unknown as TasksService,
-  );
-
-  const recovered = await Promise.all([
-    service.recoverPendingAdmissions(),
-    competingService.recoverPendingAdmissions(),
-  ]);
-
-  assert.equal(recovered[0] + recovered[1], 1);
-  assert.equal(admitCalls.length, 1);
-  assert.equal(prisma.tasks[0].status, 'queued');
-  assert.equal(prisma.schedules[0].claimToken, null);
-  assert.equal(prisma.runs[0].admissionClaimToken, null);
-});
-
-test('recovery drains more than one batch of pending scheduled tasks', async () => {
-  const { prisma, service, admitCalls } = buildHarness();
-  for (let index = 0; index < 101; index += 1) {
-    addRecoverableRun(prisma, index);
-  }
-
-  assert.equal(await service.recoverPendingAdmissions(10), 101);
-  assert.equal(admitCalls.length, 101);
-  assert.ok(prisma.tasks.every((task) => task.status === 'queued'));
-  assert.ok(prisma.schedules.every((schedule) => schedule.claimToken === null));
-});
-
-test('recovery retains its lease when admission resolves but leaves the task pending', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true });
-  addRecoverableRun(prisma);
-
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.equal(prisma.tasks[0].status, 'pending');
-  assert.equal(prisma.schedules[0].claimToken, null);
-  assert.equal(prisma.schedules[0].claimUntil, null);
-  assert.ok(prisma.runs[0].admissionClaimToken);
-  assert.ok(prisma.runs[0].admissionClaimUntil);
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.equal(admitCalls.length, 1);
-});
-
-test('recovery outcome fence releases a raced durable work item without spinning or waking twice', async () => {
-  const { prisma, service, admitCalls } = buildHarness({
-    admitKeepsPending: true,
-    admissionOutcome: 'durable-woken',
-  });
-  const run = addRecoverableRun(prisma);
-  assert.equal(prisma.tasks[0].admissionWork, undefined);
-
-  assert.equal(await service.recoverPendingAdmissions(), 1);
-  assert.ok(prisma.tasks[0].admissionWork);
-  assert.equal(run.admissionClaimToken, null);
-  assert.equal(run.admissionClaimUntil, null);
-  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
-
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
-});
-
-test('run-level admission leases do not block sibling recovery or the next cadence', async () => {
-  const { prisma, service, admitCalls } = buildHarness({ admitKeepsPending: true });
-  const firstRun = addRecoverableRun(prisma);
-  const schedule = prisma.schedules[0];
-  schedule.overlapPolicy = 'enqueue';
-  const nextTask: TaskRow = {
-    ...prisma.tasks[0],
-    id: '55555555-5555-4555-8555-000000000002',
-    prompt: 'second pending',
-    createdAt: new Date('2026-07-09T00:00:01.000Z'),
-  };
-  prisma.tasks.push(nextTask);
-  prisma.runs.push({
-    ...firstRun,
-    id: '66666666-6666-4666-8666-000000000002',
-    taskId: nextTask.id,
-    scheduledFor: new Date('2026-07-09T00:00:01.000Z'),
-    createdAt: new Date('2026-07-09T00:00:01.000Z'),
-    updatedAt: new Date('2026-07-09T00:00:01.000Z'),
-    admissionClaimToken: null,
-    admissionClaimUntil: null,
-  });
-
-  assert.equal(await service.recoverPendingAdmissions(), 0);
-  assert.deepEqual(admitCalls, [prisma.tasks[0].id, nextTask.id]);
-  assert.ok(prisma.runs[0].admissionClaimToken);
-  assert.ok(prisma.runs[1].admissionClaimToken);
-  assert.equal(schedule.claimToken, null);
-
-  const dueAt = new Date('2026-07-11T00:00:00.000Z');
-  schedule.nextRunAt = new Date(dueAt.getTime() - 1_000);
-  assert.equal(await service.tick(dueAt), 1);
-  assert.equal(prisma.runs.length, 3);
-  assert.equal(schedule.claimToken, null);
+  // The "excluded from legacy recovery" half went with the sweep. Exclusion is
+  // no longer a property to check: acceptance always writes durable admission
+  // work, which is exactly the row the sweep used to skip.
 });

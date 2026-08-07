@@ -1,0 +1,519 @@
+{
+  "version": 1,
+  "change": "retire-legacy-inline-admission",
+  "assertions": [
+    {
+      "id": "pipeline-directory-gone",
+      "requirements": [
+        "guardrails/the-legacy-inline-admission-pipeline-is-retired-whole-and-nothing-survives-to-re-enter-the-orchestrator"
+      ],
+      "describe": "退役目录整体消失（不是改名搬走）",
+      "run": [
+        "bash",
+        "-c",
+        "test -d apps/api/src/inline-admission && echo PRESENT || echo GONE"
+      ],
+      "expect": {
+        "stdoutEquals": "GONE"
+      }
+    },
+    {
+      "id": "no-symbol-reaches-pipeline",
+      "requirements": [
+        "guardrails/the-legacy-inline-admission-pipeline-is-retired-whole-and-nothing-survives-to-re-enter-the-orchestrator"
+      ],
+      "describe": "全树无任何标识符指向退役管线（生产与测试一并；排除归档目录）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn 'inline-admission\\|InlineAdmission\\|inlineAdmission' apps packages scripts --include='*.ts' --include='*.mjs' 2>/dev/null | grep -v node_modules | grep -v '/dist/' | grep -v 'openspec/changes/archive' || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "InlineAdmission|inline-admission"
+      }
+    },
+    {
+      "id": "reverse-callback-surface-gone",
+      "requirements": [
+        "guardrails/the-legacy-inline-admission-pipeline-is-retired-whole-and-nothing-survives-to-re-enter-the-orchestrator"
+      ],
+      "describe": "反向回调面消失而非改名重声明（59 个调用点归零）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn 'this\\.orchestrator\\.' apps/api/src --include='*.ts' 2>/dev/null || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "this\\.orchestrator\\."
+      }
+    },
+    {
+      "id": "orphaned-methods-gone-namesake-kept",
+      "requirements": [
+        "guardrails/the-legacy-inline-admission-pipeline-is-retired-whole-and-nothing-survives-to-re-enter-the-orchestrator"
+      ],
+      "describe": "两个孤儿私有方法随适配器消失，而 durable 路径用的近名方法保留",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'resolveSelectedRunStrict' apps/api/src/guardrails/guardrails.service.ts"
+      ],
+      "expect": {
+        "stdoutMatches": "^[1-9]"
+      }
+    },
+    {
+      "id": "no-legacy-admission-mode-literal",
+      "requirements": [
+        "guardrails/admission-mode-is-chosen-by-an-explicit-total-policy-over-the-capability-gate"
+      ],
+      "describe": "编排器不再把任何任务标成 legacy 准入（mode 分支已移除而非加宽）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"admissionMode: 'legacy'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "admissionMode"
+      }
+    },
+    {
+      "id": "admission-mode-union-not-widened",
+      "requirements": [
+        "guardrails/admission-mode-is-chosen-by-an-explicit-total-policy-over-the-capability-gate"
+      ],
+      "describe": "准入模式联合恰好一个成员——没有加 refused/unavailable 之类的第三态",
+      "run": [
+        "bash",
+        "-c",
+        "node -e \"import('./packages/contracts/dist/task-provisioning-diagnostics.js').then(m=>console.log(String(m.TaskProvisioningDiagnosticAdmissionModeSchema.options.length))).catch(()=>console.log('BUILD_FIRST'))\""
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "enum-narrowed-to-durable",
+      "requirements": [
+        "task-provisioning-diagnostics/narrowing-the-admission-mode-enum-is-a-data-change-not-only-a-contract-change"
+      ],
+      "describe": "已发布枚举只剩 durable 成员（源码口径，不依赖构建产物）",
+      "run": [
+        "bash",
+        "-c",
+        "sed -n '/TaskProvisioningDiagnosticAdmissionModeSchema = z.enum/,/\\]/p' packages/contracts/src/task-provisioning-diagnostics.ts | grep -c \"'legacy'\""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "migration-deletes-not-rewrites",
+      "requirements": [
+        "task-provisioning-diagnostics/narrowing-the-admission-mode-enum-is-a-data-change-not-only-a-contract-change"
+      ],
+      "describe": "迁移是 DELETE 不是 UPDATE——改写会把 legacy 任务谎称成 durable",
+      "run": [
+        "bash",
+        "-c",
+        "if grep -rqiE \"set[^;]*admission_mode[[:space:]]*=|update[[:space:]]+\\\"?task_provisioning_diagnostic_(attempts|events)\\\"?\" apps/api/prisma/migrations 2>/dev/null; then echo REWRITES; else echo DELETES_ONLY; fi"
+      ],
+      "expect": {
+        "stdoutEquals": "DELETES_ONLY"
+      }
+    },
+    {
+      "id": "migration-states-irreversibility",
+      "requirements": [
+        "task-provisioning-diagnostics/narrowing-the-admission-mode-enum-is-a-data-change-not-only-a-contract-change"
+      ],
+      "describe": "迁移文件自己写明不可逆（操作者会读到的地方）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -ril \"irreversible\\|cannot be undone\\|不可逆\" apps/api/prisma/migrations 2>/dev/null | head -1"
+      ],
+      "expect": {
+        "stdoutMatches": "migrations"
+      }
+    },
+    {
+      "id": "runner-minutes-lowered-not-deleted",
+      "requirements": [
+        "guardrails/the-three-ratchet-movements-this-retirement-causes-are-told-apart-by-name"
+      ],
+      "describe": "runnerMinutes 条目降数但保留、符号未改（真删除而非改名）",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c \"import json;d=json.load(open('scripts/ratchets/r11.json'));e=d['guardrails-symbol-reference:this.runnerMinutes'];print(e['symbol'],e['count'])\""
+      ],
+      "expect": {
+        "stdoutEquals": "this.runnerMinutes 4"
+      }
+    },
+    {
+      "id": "diagnostics-entries-unmoved",
+      "requirements": [
+        "guardrails/the-three-ratchet-movements-this-retirement-causes-are-told-apart-by-name",
+        "guardrails/three-collaborator-groups-leave-the-orchestrator-together-each-at-its-own-measured-floor"
+      ],
+      "describe": "诊断两条一动不动（退役后仍是 2+2=4）——这是被实测推翻的那条假声称的防线",
+      "run": [
+        "bash",
+        "-c",
+        "node -e \"import('./scripts/ratchets/r11-dependency-budget.mjs').then(async m=>{const fs=await import('node:fs');const r=m.measureSource(fs.readFileSync('apps/api/src/guardrails/guardrails.service.ts','utf8')).measured;console.log(String(r['guardrails-symbol-reference:provisioningDiagnosticRecorder']+r['guardrails-symbol-reference:provisioningDiagnosticWriteGate']))})\""
+      ],
+      "expect": {
+        "stdoutEquals": "4"
+      }
+    },
+    {
+      "id": "diagnostics-entries-still-present",
+      "requirements": [
+        "guardrails/the-three-ratchet-movements-this-retirement-causes-are-told-apart-by-name"
+      ],
+      "describe": "诊断两条仍在基线里（协作者没走，不许按归零删）",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c \"import json;d=json.load(open('scripts/ratchets/r11.json'));print(sum(1 for k in d if 'provisioningDiagnostic' in k))\""
+      ],
+      "expect": {
+        "stdoutEquals": "2"
+      }
+    },
+    {
+      "id": "r7-deletions-are-path-keyed-only",
+      "requirements": [
+        "guardrails/the-three-ratchet-movements-this-retirement-causes-are-told-apart-by-name"
+      ],
+      "describe": "r7 里不再有任何键指向已删目录（文件消失才是删条目的合法理由）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'inline-admission' scripts/ratchets/r7.json"
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "r11-gate-green",
+      "requirements": [
+        "guardrails/the-three-ratchet-movements-this-retirement-causes-are-told-apart-by-name"
+      ],
+      "describe": "R11 闸门绿：每条记录值等于活计数（双向 fail-closed）",
+      "run": [
+        "node",
+        "scripts/ratchets/r11-dependency-budget.mjs"
+      ],
+      "expect": {
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "layout-gate-green",
+      "requirements": [
+        "guardrails/the-legacy-inline-admission-pipeline-is-retired-whole-and-nothing-survives-to-re-enter-the-orchestrator"
+      ],
+      "describe": "layout v2 / r7 绿：删目录后基线已同 commit 收缩",
+      "run": [
+        "node",
+        "scripts/context-layout-check-v2.mjs"
+      ],
+      "expect": {
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "no-harness-edits",
+      "requirements": [
+        "guardrails/the-legacy-inline-admission-pipeline-is-retired-whole-and-nothing-survives-to-re-enter-the-orchestrator"
+      ],
+      "describe": "领域刀未改 harness/工具链（对比工作区，不是仅已提交）",
+      "run": [
+        "bash",
+        "-c",
+        "git diff --name-only main -- .claude/workflows scripts/openspec-metadata.mjs scripts/public-surface-adversarial.mjs scripts/spec-assert.mjs openspec/schemas"
+      ],
+      "expect": {
+        "stdoutAbsent": "."
+      }
+    },
+    {
+      "id": "task-run-started-two-live-publish-points",
+      "requirements": [
+        "guardrails/taskrunstarted-is-published-at-exactly-two-declared-points",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "TaskRunStarted 活发布点恰好 2 个（readoption + durable_arm），数出来的",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"domainEventEnvelope('task.run_started'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "2"
+      }
+    },
+    {
+      "id": "sandbox-provisioned-one-live-publisher",
+      "requirements": [
+        "guardrails/sandboxprovisioned-is-published-on-the-one-surviving-provisioning-path-after-the-provider-boundary-succeeds",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "SandboxProvisioned 载荷构造器只剩 1 个活调用点（第二条 in-request 路径随管线消失）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"this.publishSandboxProvisioned(\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "task-admitted-one-live-publish-point",
+      "requirements": [
+        "guardrails/taskadmitted-is-published-on-the-one-surviving-admission-path",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "TaskAdmitted 活发布点恰好 1 个（durable 预留提交处）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"domainEventEnvelope('task.admitted'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "task-superseded-two-live-publish-points",
+      "requirements": [
+        "guardrails/tasksuperseded-is-published-once-per-observation-at-two-declared-producer-boundaries",
+        "domain-event-bus/publish-point-counts-that-name-a-retired-path-are-re-pinned-by-measurement"
+      ],
+      "describe": "TaskSuperseded 活生产边界恰好 2 个（预留 + 准入迁移）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"domainEventEnvelope('task.superseded'\" apps/api/src --include='*.ts' 2>/dev/null | grep -v '\\.spec\\.ts' | wc -l | tr -d '[:space:]'"
+      ],
+      "expect": {
+        "stdoutEquals": "2"
+      }
+    },
+    {
+      "id": "retired-discriminants-unproduced-but-still-declared",
+      "requirements": [
+        "guardrails/taskrunstarted-is-published-at-exactly-two-declared-points",
+        "guardrails/tasksuperseded-is-published-once-per-observation-at-two-declared-producer-boundaries"
+      ],
+      "describe": "legacy_capacity / inline_pipeline_run 无活生产者，但仍留在已发布契约里（本改动不窄化该联合）",
+      "run": [
+        "bash",
+        "-c",
+        "if grep -rn \"legacy_capacity\\|inline_pipeline_run\" apps/api/src --include='*.ts' 2>/dev/null | grep -qv '\\.spec\\.ts'; then echo LIVE_PRODUCER; elif grep -q \"'legacy_capacity'\" packages/contracts/src/domain-event.ts && grep -q \"'inline_pipeline_run'\" packages/contracts/src/domain-event.ts; then echo UNPRODUCED_STILL_DECLARED; else echo CONTRACT_NARROWED; fi"
+      ],
+      "expect": {
+        "stdoutEquals": "UNPRODUCED_STILL_DECLARED"
+      }
+    },
+    {
+      "id": "construction-site-figures-live",
+      "requirements": [
+        "guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched"
+      ],
+      "describe": "六个构造点数字与活树一致（后三个曾被尾逗号抬高，本刀修仪器后重钉）",
+      "run": [
+        "node",
+        "scripts/guardrails-construction-sites.mjs"
+      ],
+      "expect": {
+        "stdoutEquals": "20 16 11 10 6 5"
+      }
+    },
+    {
+      "id": "construction-counter-agrees-with-typescript-ast",
+      "requirements": [
+        "guardrails/the-orchestrator-constructor-and-its-positional-construction-sites-are-untouched"
+      ],
+      "describe": "扫逗号的计数器与 TypeScript AST 独立计数逐位一致——否则上一条是拿工具自证",
+      "run": [
+        "node",
+        "scripts/guardrails-construction-sites.mjs",
+        "--cross-check"
+      ],
+      "expect": {
+        "stdoutEquals": "AGREE"
+      }
+    },
+    {
+      "id": "characterization-baseline-live",
+      "requirements": [
+        "guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization"
+      ],
+      "describe": "基线三数（test 声明总数 / spec 文件数 / .test.mjs 数）与活树一致",
+      "run": [
+        "bash",
+        "-c",
+        "printf \"%s %s %s\\n\" \"$(grep -hcE \"^[[:space:]]*test\\(\" apps/api/src/guardrails/*.spec.ts | paste -sd+ - | bc)\" \"$(ls apps/api/src/guardrails/*.spec.ts | wc -l | tr -d \" \")\" \"$(ls apps/api/src/guardrails/*.test.mjs | wc -l | tr -d \" \")\""
+      ],
+      "expect": {
+        "stdoutEquals": "91 6 8"
+      }
+    },
+    {
+      "id": "characterization-per-file-distribution",
+      "requirements": [
+        "guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization"
+      ],
+      "describe": "per-file 分布未被聚合成一个总数——降序逐文件仍是 54+18+10+3+3+3",
+      "run": [
+        "bash",
+        "-c",
+        "for f in apps/api/src/guardrails/*.spec.ts; do grep -cE \"^[[:space:]]*test\\(\" \"$f\"; done | sort -rn | paste -sd+ -"
+      ],
+      "expect": {
+        "stdoutEquals": "54+18+10+3+3+3"
+      }
+    },
+    {
+      "id": "audit-hotspot-lines-unmoved-except-retired",
+      "requirements": [
+        "guardrails/existing-guardrails-behavior-is-proven-unchanged-by-characterization"
+      ],
+      "describe": "三热点 audit 行数 46/61/5（口径已在 main 复现 46/61/14）——两个未动，只有随退役测试走的 9 行离开",
+      "run": [
+        "bash",
+        "-c",
+        "o=\"\"; for f in guardrails-durable-launch-decision.spec.ts delivery-results-surfaced-and-audited.test.mjs guardrails.service.spec.ts; do o=\"$o $(grep -ci audit \"apps/api/src/guardrails/$f\")\"; done; echo \"${o# }\""
+      ],
+      "expect": {
+        "stdoutEquals": "46 61 5"
+      }
+    },
+    {
+      "id": "boot-reoffer-gone-from-code",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "非注释行里 reofferQueuedOnStartup 归零（注释里点名退役是刻意保留的记录）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"reofferQueuedOnStartup\" apps/api/src --include=\"*.ts\" --include=\"*.mjs\" | grep -vE \":[[:space:]]*(\\*|//)\" | wc -l | tr -d \" \""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "startup-model-moved-with-its-subject",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "手写启动模型不再声明镜像方法、其 fake guardrails 不再声明 admit（production 接口已无该成员）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -cE \"^  async (admit|reofferQueuedOnStartup)\\(\" apps/api/src/tasks/startup-recovery.test.mjs || true"
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "no-residual-arm-after-union-narrowing",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "两成员联合收窄后无残留分支——由编译器(satisfies never)守住而非注释；守卫随唯一消费者迁移",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'outcome satisfies never' apps/api/src/scheduled-tasks/scheduled-tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "fail-closed-says-why",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "无 durable admission work 的已提交行返回具名 fail-closed 并说明退役原因，而非静默或伪装成功",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c \"the synchronous in-request pipeline that used to pick such rows up is retired\" apps/api/src/tasks/tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "retired-outcome-absent-from-doubles",
+      "requirements": [
+        "repo-and-task-management/boot-recovery-re-offers-nothing-into-the-retired-pipeline-and-the-rows-it-used-to-pick-up-fail-closed"
+      ],
+      "describe": "退役成员 'legacy-admitted' 在任何代码行上归零（含未受类型约束的测试替身）——注释里的说明刻意保留",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"legacy-admitted\" apps packages scripts --include=\"*.ts\" --include=\"*.mjs\" 2>/dev/null | grep -v node_modules | grep -v \"/dist/\" | grep -v archive | grep -vE \":[[:space:]]*(\\*|//)\" | wc -l | tr -d \" \""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "pending-admission-sweep-gone",
+      "requirements": [
+        "repo-and-task-management/the-pending-admission-sweep-is-retired-with-the-population-it-served"
+      ],
+      "describe": "非注释行里 recoverPendingAdmissions / runRecoverySafely 归零（声明、包装、两处调用全消失）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"recoverPendingAdmissions\\|runRecoverySafely\" apps/api/src --include=\"*.ts\" --include=\"*.mjs\" | grep -vE \":[[:space:]]*(\\*|//)\" | wc -l | tr -d \" \""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "poll-cycle-has-no-recovery-step",
+      "requirements": [
+        "repo-and-task-management/the-pending-admission-sweep-is-retired-with-the-population-it-served"
+      ],
+      "describe": "poll 循环直接 tick，不再有前置恢复步骤",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c \"await this.tick()\" apps/api/src/scheduled-tasks/scheduled-tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "durable-transition-attributes-owner",
+      "requirements": [
+        "repo-and-task-management/a-durable-lifecycle-transition-is-attributed-to-the-task-owner"
+      ],
+      "describe": "durable 迁移审计在无 acting user 时回落到任务 owner（而非写成无主行）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'request.userId ?? authorityOwnerUserId ?? undefined' apps/api/src/tasks/tasks.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    }
+  ]
+}

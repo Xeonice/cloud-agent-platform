@@ -496,10 +496,25 @@ test("sub-day forms round-trip and owner dispatch remains exactly-once", async (
       ),
     (events) => {
       const types = new Set(events.map((event) => event.type));
+      // `force_failed:provision_failed` is NOT expected any more. Its only three
+      // producers lived in the retired in-request pipeline
+      // (main:inline-admission.pipeline.ts:283/557/569); the cause survives as a
+      // declared union member with no live producer, the same shape as
+      // `legacy_capacity` and `inline_pipeline_run`. Durable admission records the
+      // same failure through the staged provisioning vocabulary instead —
+      // `task.provisioning:accepted` -> `:sandbox_creation` ->
+      // `task.provisioning.failed:<cause>` — which is strictly more informative,
+      // so this asserts the surviving kind rather than relaxing the check.
+      // Matched by prefix, not on `provisioning_unknown`: that code comes from the
+      // stub throwing an unclassified Error, and a classifier that later derives a
+      // sharper cause would be an improvement, not a regression to fail on.
+      const recordedProvisioningFailure = [...types].some((type) =>
+        type.startsWith("task.provisioning.failed:"),
+      );
       return (
         types.has("task.created") &&
         types.has("task.running") &&
-        types.has("force_failed:provision_failed") &&
+        recordedProvisioningFailure &&
         types.has("task.failed")
       );
     },
@@ -978,6 +993,36 @@ async function expectExactlyOnceToRemainStable(
     .toBeGreaterThanOrEqual(4);
 }
 
+/**
+ * Summarise what was actually observed, so a timeout says WHICH expectation is
+ * unmet instead of only that one is. A bare "did not record ..." costs a full CI
+ * round to turn into a fact; audit-trail polls in particular fail on one missing
+ * event type and the message never named it.
+ */
+function describeObserved(value: unknown): string {
+  if (Array.isArray(value)) {
+    const types = value
+      .map((entry) =>
+        entry && typeof entry === "object" && "type" in entry
+          ? String((entry as { type: unknown }).type)
+          : null,
+      )
+      .filter((type): type is string => type !== null);
+    if (types.length > 0) {
+      return `${value.length} item(s), types=[${[...new Set(types)].sort().join(", ")}]`;
+    }
+    return `${value.length} item(s)`;
+  }
+  if (value && typeof value === "object") {
+    try {
+      return JSON.stringify(value).slice(0, 400);
+    } catch {
+      return "<unserialisable object>";
+    }
+  }
+  return String(value);
+}
+
 async function pollFor<T>(
   read: () => Promise<T>,
   accepted: (value: T) => boolean,
@@ -985,15 +1030,25 @@ async function pollFor<T>(
   timeout = 20_000,
 ): Promise<T> {
   let latest: T | undefined;
-  await expect
-    .poll(
-      async () => {
-        latest = await read();
-        return accepted(latest);
-      },
-      { message, timeout, intervals: [100, 200, 400, 800, 1_000] },
-    )
-    .toBe(true);
+  try {
+    await expect
+      .poll(
+        async () => {
+          latest = await read();
+          return accepted(latest);
+        },
+        { message, timeout, intervals: [100, 200, 400, 800, 1_000] },
+      )
+      .toBe(true);
+  } catch (error) {
+    // Re-thrown rather than passed as `message`: Playwright evaluates that option
+    // once, when the poll is constructed, so interpolating `latest` there would
+    // report `undefined` every time — which reads like evidence and is not.
+    throw new Error(
+      `${message} [last observed: ${describeObserved(latest)}]`,
+      { cause: error },
+    );
+  }
   if (latest === undefined) throw new Error(`${message}: no value observed`);
   return latest;
 }

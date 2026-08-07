@@ -3,7 +3,7 @@
  *
  * Boots the real AppModule against a migrated disposable Postgres database and
  * keeps every product-owned write/read path real: Console REST, Public V1, the
- * MCP server factory/tool callbacks, TasksService, ScheduledTasksService and
+ * MCP server factory/tool callbacks, TasksService and
  * Prisma. Only external deployment boundaries are replaced:
  *   - runtime-model discovery returns one deterministic, immutable snapshot;
  *   - the deployment cutover capability is open;
@@ -40,12 +40,12 @@ import { PrismaProvisionLookup } from '../dist/sandbox/prisma-provision-lookup.j
 import {
   GUARDRAILS_SERVICE_TOKEN,
 } from '../dist/tasks/tasks.service.js';
+import { TASK_ADMISSION_WAKE_TOKEN } from '../dist/task-admission/task-admission-gate.js';
 import { RuntimeModelPreflightService } from '../dist/runtime-models/runtime-model-preflight.service.js';
 import { RuntimeModelCatalogService } from '../dist/runtime-models/runtime-model-catalog.service.js';
 import { buildRuntimeExecutionEnvironmentSnapshot } from '../dist/runtime-models/runtime-model-snapshot.js';
 import { TaskModelCapabilityService } from '../dist/runtime-models/task-model-capability.service.js';
 import { McpServerFactory } from '../dist/mcp/mcp.server.js';
-import { ScheduledTasksService } from '../dist/scheduled-tasks/scheduled-tasks.service.js';
 import { hashSessionToken } from '../dist/auth/session-token.js';
 
 const MODEL = 'fixture/codex-cross-surface';
@@ -277,23 +277,28 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
 
   let prisma;
   const admission = {
-    mode: 'queue',
     calls: [],
-    async admit(taskId) {
-      this.calls.push({ taskId, mode: this.mode });
-      if (this.mode === 'hold') {
-        throw new Error('simulated interrupted post-commit admission');
-      }
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { status: 'queued' },
-      });
-      return 'queued';
-    },
     async onTerminal() {},
     recordFailure() {},
     recordSuccess() {},
     async loadPersistedCeiling() {},
+  };
+  // Neutralises the durable admission worker AND observes acceptance.
+  // `FencedTaskAdmissionProcessor` resolves GuardrailsService BY CLASS
+  // (fenced-task-admission.processor.ts:44), so overriding
+  // GUARDRAILS_SERVICE_TOKEN never reaches it; `TaskAdmissionWorker` starts only
+  // through this token (tasks.service.ts:662). Overriding it is what makes the
+  // status assertions below deterministic rather than a race against the worker.
+  // Recording the wake preserves exactly what `admission.calls` always meant —
+  // one entry per acceptance that produced durable admission work. The
+  // synchronous `admit()` it used to count was retired with the in-request
+  // pipeline; `wake` (tasks.service.ts:1510) is the seam that survived it.
+  const admissionWake = {
+    wake(taskId) {
+      admission.calls.push(taskId);
+    },
+    start() {},
+    stop() {},
   };
 
   let app;
@@ -303,6 +308,8 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(GUARDRAILS_SERVICE_TOKEN)
       .useValue(admission)
+      .overrideProvider(TASK_ADMISSION_WAKE_TOKEN)
+      .useValue(admissionWake)
       .overrideProvider(RuntimeModelPreflightService)
       .useValue(preflight)
       .overrideProvider(TaskModelCapabilityService)
@@ -327,6 +334,11 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
       data: {
         name: `task-model-cross-surface-${randomUUID()}`,
         gitSource: 'https://example.invalid/task-model-cross-surface.git',
+        // Present for the same reason as the closed-gate fixture below. This one
+        // survives without it only because every task body here carries an explicit
+        // `branch`, so the resolver takes the explicit arm — a dependency that would
+        // break silently the day a body stopped naming one.
+        defaultBranch: 'main',
         copyStatus: 'ready',
         copyUpdatedAt: new Date(),
       },
@@ -418,7 +430,12 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
       assert.equal(row.ownerUserId, user.id);
       assert.equal(row.model, MODEL);
       assert.deepEqual(row.executionEnvironmentSnapshot, SNAPSHOT);
-      assert.equal(row.status, 'queued');
+      // `pending`, not `queued`: acceptance is durable now. The synchronous
+      // in-request pipeline that transitioned a task on the create call is
+      // retired, so a committed task waits for the durable worker — which this
+      // fixture deliberately holds still. The wake recorded in
+      // `admission.calls` is what proves the acceptance produced admission work.
+      assert.equal(row.status, 'pending');
       assert.deepEqual(
         stableTaskFields({
           ...row,
@@ -487,6 +504,12 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
         executionMode: 'interactive-pty',
         workspaceMaterializationDeadlineMs:
           DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
+        // Durable acceptance always persists a resource snapshot, empty when the
+        // model is runtime-default: `snapshotSandboxResources(resolved ?? {}) ??
+        // Object.freeze({})` (tasks.service.ts:1232, byte-identical to main:1320).
+        // The expectation omitted it only because this fixture used to take the
+        // retired in-request path, which wrote no admission work at all.
+        resources: {},
       },
     );
     await prisma.task.update({
@@ -567,7 +590,6 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
     );
     assert.equal(updatedSchedule.taskTemplate.model, MODEL);
 
-    admission.mode = 'hold';
     const dispatchResult = await mcp.client.callTool({
       name: 'dispatch_schedule',
       arguments: { id: createdSchedule.id },
@@ -586,7 +608,12 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
     });
     assert.equal(runBeforeRecovery.status, 'created');
     assert.equal(runBeforeRecovery.task?.status, 'pending');
-    assert.ok(runBeforeRecovery.admissionClaimUntil);
+    // A durable dispatch RELEASES the run's admission lease — the durable worker
+    // owns the task from here. It used to be retained because the synchronous
+    // admit() this fixture simulated threw, which is what the retired
+    // pending-admission sweep then picked up.
+    assert.equal(runBeforeRecovery.admissionClaimToken, null);
+    assert.equal(runBeforeRecovery.admissionClaimUntil, null);
     assert.equal(runBeforeRecovery.task?.model, MODEL);
     assert.deepEqual(
       runBeforeRecovery.task?.executionEnvironmentSnapshot,
@@ -603,34 +630,23 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
       }),
     );
 
-    const preflightCountBeforeRecovery = preflightCalls.length;
-    await prisma.taskScheduleRun.update({
-      where: { id: runBeforeRecovery.id },
-      data: { admissionClaimUntil: new Date(0) },
-    });
-    admission.mode = 'queue';
-    const recovered = await moduleRef
-      .get(ScheduledTasksService)
-      .recoverPendingAdmissions();
-    assert.equal(recovered, 1);
-    assert.equal(
-      preflightCalls.length,
-      preflightCountBeforeRecovery,
-      'post-commit admission recovery must not re-run model discovery',
-    );
-
-    const runAfterRecovery = await prisma.taskScheduleRun.findUniqueOrThrow({
+    // The pending-admission sweep this sub-scenario exercised is RETIRED with the
+    // population it served: it selected runs whose task had no durable admission
+    // work, and acceptance now always writes one. Re-reading the row is what
+    // survives — the accepted identity must be stable after dispatch, which is
+    // this test's actual subject.
+    const dispatchedRun = await prisma.taskScheduleRun.findUniqueOrThrow({
       where: { id: runBeforeRecovery.id },
       include: { task: true },
     });
-    assert.equal(runAfterRecovery.task?.status, 'queued');
-    assert.equal(runAfterRecovery.admissionClaimToken, null);
-    assert.equal(runAfterRecovery.admissionClaimUntil, null);
-    assert.equal(runAfterRecovery.task?.model, MODEL);
+    assert.equal(dispatchedRun.task?.status, 'pending');
+    assert.equal(dispatchedRun.admissionClaimToken, null);
+    assert.equal(dispatchedRun.admissionClaimUntil, null);
+    assert.equal(dispatchedRun.task?.model, MODEL);
     assert.deepEqual(
-      runAfterRecovery.task?.executionEnvironmentSnapshot,
+      dispatchedRun.task?.executionEnvironmentSnapshot,
       SNAPSHOT,
-      'recovery must preserve the accepted immutable execution identity',
+      'dispatch must preserve the accepted immutable execution identity',
     );
 
     const consoleScheduleGet = await request(`/schedules/${createdSchedule.id}`);
@@ -654,12 +670,12 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
     const structuredRuns = V1ListScheduleRunsResponseSchema.parse(
       runsResult.structuredContent,
     );
-    assert.equal(structuredRuns.items[0]?.taskId, runAfterRecovery.taskId);
-    assert.equal(structuredRuns.items[0]?.taskStatus, 'queued');
+    assert.equal(structuredRuns.items[0]?.taskId, dispatchedRun.taskId);
+    assert.equal(structuredRuns.items[0]?.taskStatus, 'pending');
 
     // The recovered scheduled Task is also readable identically through every
     // task transport, with model intent intact and the internal snapshot hidden.
-    const scheduledTaskId = runAfterRecovery.taskId;
+    const scheduledTaskId = dispatchedRun.taskId;
     assert.ok(scheduledTaskId);
     const scheduledConsoleTask = await request(`/tasks/${scheduledTaskId}`);
     const scheduledV1Task = await request(`/v1/tasks/${scheduledTaskId}`);
@@ -785,18 +801,27 @@ test('default-closed N gate fences every production write/catalog seam before da
   let prisma;
   const admission = {
     calls: [],
-    async admit(taskId) {
-      this.calls.push(taskId);
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { status: 'queued' },
-      });
-      return 'queued';
-    },
     async onTerminal() {},
     recordFailure() {},
     recordSuccess() {},
     async loadPersistedCeiling() {},
+  };
+  // Neutralises the durable admission worker AND observes acceptance.
+  // `FencedTaskAdmissionProcessor` resolves GuardrailsService BY CLASS
+  // (fenced-task-admission.processor.ts:44), so overriding
+  // GUARDRAILS_SERVICE_TOKEN never reaches it; `TaskAdmissionWorker` starts only
+  // through this token (tasks.service.ts:662). Overriding it is what makes the
+  // status assertions below deterministic rather than a race against the worker.
+  // Recording the wake preserves exactly what `admission.calls` always meant —
+  // one entry per acceptance that produced durable admission work. The
+  // synchronous `admit()` it used to count was retired with the in-request
+  // pipeline; `wake` (tasks.service.ts:1510) is the seam that survived it.
+  const admissionWake = {
+    wake(taskId) {
+      admission.calls.push(taskId);
+    },
+    start() {},
+    stop() {},
   };
 
   let app;
@@ -806,6 +831,8 @@ test('default-closed N gate fences every production write/catalog seam before da
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(GUARDRAILS_SERVICE_TOKEN)
       .useValue(admission)
+      .overrideProvider(TASK_ADMISSION_WAKE_TOKEN)
+      .useValue(admissionWake)
       .overrideProvider(RuntimeModelPreflightService)
       .useValue({
         async preflight() {
@@ -842,6 +869,13 @@ test('default-closed N gate fences every production write/catalog seam before da
       data: {
         name: `task-model-closed-gate-${randomUUID()}`,
         gitSource: 'https://example.invalid/task-model-closed-gate.git',
+        // Acceptance now resolves the branch before it writes, unconditionally.
+        // Without a recorded default the resolver falls through to a credentialed
+        // `git ls-remote` against this deliberately unroutable host, which fails
+        // as `repository_unavailable`. Recording the default keeps this fixture on
+        // the local-DB arm — the arm production takes for an imported repo — instead
+        // of turning an identity test into a network test.
+        defaultBranch: 'main',
         copyStatus: 'ready',
         copyUpdatedAt: new Date(),
       },

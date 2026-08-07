@@ -34,8 +34,21 @@ export type TaskProvisioningDiagnosticCoverage = z.infer<
   typeof TaskProvisioningDiagnosticCoverageSchema
 >;
 
+/**
+ * Which admission path carried the task into provisioning.
+ *
+ * Durable admission is now the only one, so the union has a single member. It
+ * stays an enum rather than collapsing to a bare literal because it is the
+ * READ-PATH validator for a persisted column on two tables —
+ * `TaskProvisioningDiagnosticAttempt` and `TaskProvisioningDiagnosticEvent`
+ * both store this string — and a later widening must still land in exactly one
+ * declaration.
+ *
+ * The retired member was removed together with the rows that recorded it. The
+ * narrowing is only sound BECAUSE of that migration — a narrowed validator over
+ * un-migrated rows would fail to parse evidence this service wrote itself.
+ */
 export const TaskProvisioningDiagnosticAdmissionModeSchema = z.enum([
-  'legacy',
   'durable',
 ]);
 export type TaskProvisioningDiagnosticAdmissionMode = z.infer<
