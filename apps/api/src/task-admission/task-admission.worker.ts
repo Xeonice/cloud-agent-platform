@@ -91,11 +91,19 @@ export class SafeTaskAdmissionWorkerErrorReporter
     // an env var that only that CI job sets, so no other environment can reach it.
     // Delete this block and the ci.yml var in the same commit as the fix.
     if (process.env.CAP_UNSAFE_ADMISSION_ERROR_ECHO === '1') {
-      const detail =
-        _error instanceof Error
-          ? `${_error.name}: ${_error.message}\n${_error.stack ?? ''}`
-          : String(_error);
-      this.logger.error(`[TEMP-DIAG] ${detail}`);
+      const parts: string[] = [];
+      let cursor: unknown = _error;
+      for (let depth = 0; cursor && depth < 6; depth += 1) {
+        if (cursor instanceof Error) {
+          parts.push(`${cursor.name}: ${cursor.message}`);
+          if (depth === 0 && cursor.stack) parts.push(cursor.stack);
+          cursor = (cursor as { cause?: unknown }).cause;
+        } else {
+          parts.push(String(cursor));
+          break;
+        }
+      }
+      this.logger.error(`[TEMP-DIAG] ${parts.join('\n  caused by: ')}`);
     }
   }
 }
