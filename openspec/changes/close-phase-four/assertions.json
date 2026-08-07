@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "change": "close-phase-four",
+  "assertions": [
+    {
+      "id": "no-forwardref-on-the-edge",
+      "requirements": [
+        "monorepo-foundation/the-tasks-guardrails-composition-edge-carries-no-forwardref-and-a-gate-says-so"
+      ],
+      "describe": "两个 module 文件的代码行上无互指 forwardRef（注释里点名已退役的那处是刻意保留的记录）",
+      "run": [
+        "node",
+        "scripts/module-composition-cycle-check.mjs"
+      ],
+      "expect": {
+        "stdoutMatches": "neither of the 2 adjudicated module files wraps the other"
+      }
+    },
+    {
+      "id": "tasks-module-imports-guardrails-plainly",
+      "requirements": [
+        "monorepo-foundation/the-tasks-guardrails-composition-edge-carries-no-forwardref-and-a-gate-says-so"
+      ],
+      "describe": "tasks.module.ts 直接 import GuardrailsModule，且不再从 @nestjs/common 引入 forwardRef",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c \"^import { Module } from '@nestjs/common';\" apps/api/src/tasks/tasks.module.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "gate-self-test-covers-both-directions",
+      "requirements": [
+        "monorepo-foundation/the-tasks-guardrails-composition-edge-carries-no-forwardref-and-a-gate-says-so"
+      ],
+      "describe": "闸门自测覆盖两个失败方向（植入 forwardRef / 丢失读取对象）——未被测过的 fail-closed 只是声称",
+      "run": [
+        "bash",
+        "-c",
+        "node --test --test-force-exit scripts/module-composition-cycle-check.test.mjs 2>&1 | grep -c '^# fail 0'"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "gate-registered-like-its-siblings",
+      "requirements": [
+        "monorepo-foundation/the-tasks-guardrails-composition-edge-carries-no-forwardref-and-a-gate-says-so"
+      ],
+      "describe": "闸门按惯例注册：一条 package.json 脚本先跑检查再跑自测",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'module-composition-cycle-check.mjs && node --test' package.json"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "criterion-c-states-the-measured-floor",
+      "requirements": [
+        "guardrails/phase-4-s-acceptance-record-states-measured-values-and-names-what-it-defers"
+      ],
+      "describe": "判据 c 写出裁定值 7，且活树实测仍是 7（数字与树同步，不是写死的散文）",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c \"import json,io,re;d=json.load(io.open('scripts/ratchets/r7.json',encoding='utf8'));k='cross-context-import:apps/api/src/guardrails/guardrails.service.ts';n=d[k]['count'];p=io.open('docs/refactor-master-plan.md',encoding='utf8').read();print('ok' if (f'= **{n}**（裁定值' in p) else f'drift n={n}')\""
+      ],
+      "expect": {
+        "stdoutEquals": "ok"
+      }
+    },
+    {
+      "id": "criterion-b-recorded-as-deferred",
+      "requirements": [
+        "guardrails/phase-4-s-acceptance-record-states-measured-values-and-names-what-it-defers"
+      ],
+      "describe": "判据 b 记为「推到阶段 6」并附依据，而不是留空——延期是决定，不是遗漏",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c '推到阶段 6（用户 2026-08-07 拍板）' docs/refactor-master-plan.md"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "refuted-numbers-corrected-at-the-statement",
+      "requirements": [
+        "guardrails/phase-4-s-acceptance-record-states-measured-values-and-names-what-it-defers"
+      ],
+      "describe": "母文档 :146 两个被实测推翻的数字已就地订正（runner 5→4、diagnostics 退役后 2→4），且保留了被推翻的记录",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c '退役后仍是 4' docs/refactor-master-plan.md"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    }
+  ]
+}

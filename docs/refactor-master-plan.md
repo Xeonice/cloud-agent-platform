@@ -143,7 +143,12 @@ typecheck 演练自证。
 - 依赖预算 ratchet（R11）：guardrails 对五者的符号引用数**双向 fail-closed**（高于基线与
   低于基线同等判红），基线收缩必须与移除同 commit。**每个协作者降到它被裁定的地板即止，
   不是降到 0**——编排器合法地继续点名它仍在调用的协作者：`this.audit` 已裁定 9 处全保留
-  （CALL×9），runner 计费实测地板 5，diagnostics 组 legacy 存活时 4、退役后 2。
+  （CALL×9）；runner 计费实测地板 **4**（本文档曾记 5——legacy 退役随 `startRunningAfterCapacity`
+  又带走一处 `recordStart`）；diagnostics 组 legacy 存活时 4、**退役后仍是 4**（recorder 2 + writeGate 2）。
+  ⚠ 「退役后 2」是本文档写下的**预言**，已被 `retire-legacy-inline-admission` 用闸门自己的 measureSource
+  实测推翻并在活 spec 与 `scripts/ratchets/r11.json` 两处订正，当时**漏了这里**——机理是编排器对这一对的
+  那次读有两个消费者，退役只带走 legacy 适配器一个，读本身随 durable 诊断属主留下。两处订正、一处遗漏，
+  正是本 epic 反复付代价的那类缺陷；预言保留在此不是留错，是留下它被推翻的记录。
   条目归零（transcript / metrics-projection 两组）才按归零纪律删条目。
 - **路线校准（第二刀产出）**：剩余三组（runner 计费 / diagnostics / transcript）的三判据初判见
   `openspec/changes/adjudicate-audit-event-migration/adjudication.md` §5「阶段 4 剩余三组预扫」，
@@ -156,11 +161,34 @@ typecheck 演练自证。
 | # | 判据 | 判定命令 / 闸门 | 状态 |
 |---|---|---|---|
 | a | 每个 R11 协作者条目停在它被裁定的**地板**（非 0） | `pnpm test:dependency-budget` | 今天即可测，零改动 |
-| b | 编排器不再自己 `new` 出横切子系统（现测自建 6 个） | 同一闸门，往 `COLLABORATORS` 加类名符号 | 需一次**数据**改动，计数逻辑不变 |
-| c | `guardrails.service.ts` 的 r7 `cross-context-import` 降到裁定值（现 9） | `pnpm test:context-layout-v2` | 今天即可测，零改动 |
-| d | `guardrails.module.ts` 与 `tasks.module.ts` 之间不再有 `forwardRef` | **今天无闸门**：须新增一条只读这两个文件、断言互指 `forwardRef(` 为 0 的窄检查 | 需自带闸门 |
+| b | 编排器不再自己 `new` 出横切子系统（实测自建 6 个） | 同一闸门，往 `COLLABORATORS` 加类名符号 | **推到阶段 6（用户 2026-08-07 拍板）** — 见下方注 b |
+| c | `guardrails.service.ts` 的 r7 `cross-context-import` = **7**（裁定值，2026-08-07 实测） | `pnpm test:context-layout-v2` | **已达成** — 见下方注 c |
+| d | `guardrails.module.ts` 与 `tasks.module.ts` 之间不再有 `forwardRef` | `pnpm test:module-composition`（`close-phase-four` 新建的窄检查） | **已达成** — 见下方注 d |
 
 外加：boot re-adoption stateful smoke 全程绿。
+
+**注 b（推到阶段 6，非未达成）**：六处自建实测为 `guardrails.service.ts` 的 Logger `:470`、
+ConcurrencySemaphore `:724`、TaskProvisioningDiagnosticsObserverLifecycle `:748`、DeadlineWatcher `:762`、
+IdleTracker `:767`、CircuitBreaker `:770`。其中**五处不是横切子系统**——按本仓任何一个仪器判都不是：同目录、
+同上下文、唯一生产消费者就是编排器自身、不在 `COLLABORATORS`、不在 r7。第六处
+`TaskProvisioningDiagnosticsObserverLifecycle` **确是**横切且 DI 接缝现成，但 `guardrails.service.ts:740-746`
+写明它本地构造是**刻意的**：被冻结的目录外 spec 与接线应用必须共用同一条构造路径，注入会把它劈成 DI 路径与
+测试路径两条。阶段 6（目录归拢 + layout v2 转正）是构造路径与目录归属同时动的地方，故此判据整体后移。
+⚠ 这意味着**阶段 4 是带着一条明确延期的判据收口，不是四条全达成**。写在这里是为了让后来者能反对这个决定，
+而不是把它误认成漏掉的一项。
+
+**注 c（7 就是阶段 4 的地板）**：七条残余 import 为 forge×3（`:92 :93 :94`）、sandbox×1（`:99`）、
+agent-runtime×1（`:126`）、task-provisioning-diagnostics×2（`:139 :147`）。它们**全部是有返回值的调用或类型**，
+按本文档 §4 阶段 4 自己的非事件判据（「订阅者需要向发布者返回确认的，是调用不是事件」）**结构上转不成事件**——
+阶段 4 的机制对它们无效。真正能摘掉它们的是 r7 条目 `change` 里点名的另一套机制：由拥有方显式导出 `*.port.ts`，
+那属于阶段 5–6。原表述「降到裁定值（现 9）」既没给数字、9 也已是两刀前的旧值。
+
+**注 d（前提在收口时已过期）**：本判据原写作「解 tasks↔guardrails forwardRef **环**」，但环早已不存在——
+`guardrails.module.ts` 声明空 `imports`，且非测试文件中无一处从 guardrails 反向 import `@/tasks`
+（该边由 `collapse-three-collaborator-groups` N3 移除）。`tasks.module.ts` 里那处 `forwardRef` 是比它包裹的环
+多活了两刀的**残迹**，且与同一段注释里的 N3 段落自相矛盾。`close-phase-four` 删除它并补上本判据点名的窄闸门；
+闸门**双向 fail-closed**（出现 forwardRef 判红，丢失读取对象同样判红），且刻意只读这两个具名文件——
+layout v2 对 `*.module.ts` 的豁免是对的、保留不动，新闸门补的是那条豁免**按构造**看不见的边。
 
 **两个被否的候选判据**（已论证为坏，不得再提）：①「协作者符号引用归零」不可达——
 编排器还活着就会继续点名它仍在调用的协作者；②裸写「forwardRef 环归零」**没有闸门测它**——

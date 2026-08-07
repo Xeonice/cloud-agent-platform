@@ -19,6 +19,7 @@
     "test:vocabulary-parity": "node scripts/sandbox-core-vocabulary-parity.mjs && node --test --test-force-exit scripts/sandbox-core-vocabulary-parity.test.mjs",
     "test:contracts-shared": "node scripts/contracts-shared-export-check.mjs && node --test --test-force-exit scripts/contracts-shared-export-check.test.mjs",
     "test:contracts-executed": "node scripts/contracts-executed-schema-check.mjs && node --test --test-force-exit scripts/contracts-executed-schema-check.test.mjs",
+    "test:module-composition": "node scripts/module-composition-cycle-check.mjs && node --test --test-force-exit scripts/module-composition-cycle-check.test.mjs",
     "test:module-layout": "node scripts/api-module-layout-check.mjs && node --test --test-force-exit scripts/api-module-layout-check.test.mjs",
     "test:cors-headers": "node scripts/console-request-header-cors-check.mjs && node --test --test-force-exit scripts/console-request-header-cors-check.test.mjs",
     "test:boundaries": "node scripts/boundaries-manifest-check.mjs && node --test --test-force-exit scripts/boundaries-manifest-check.test.mjs",
