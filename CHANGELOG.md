@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.48.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.47.0...v0.48.0) (2026-08-07)
+
+
+### Features
+
+* **events:** add the in-process domain event bus, publishing only (add-domain-event-bus) ([4c91b54](https://github.com/Xeonice/cloud-agent-platform/commit/4c91b549b5907c07b9418af91a22d6531f5f2a43))
+* **events:** add the in-process domain event bus, publishing only (phase 4, cut 1) ([eeac7d0](https://github.com/Xeonice/cloud-agent-platform/commit/eeac7d0792a72c5a8226adff32b63c694f7335d3))
+* **gates:** derive boundary enforcement from one manifest, and move the feedback into the IDE (enforce-boundaries-from-manifest) ([4e5c58e](https://github.com/Xeonice/cloud-agent-platform/commit/4e5c58e8721a8fc5e45dcb8638ac1b7c03e4e789))
+* **gates:** derive boundary enforcement from one manifest, feedback in the IDE (phase 3) ([0a71e80](https://github.com/Xeonice/cloud-agent-platform/commit/0a71e80255cfbca2cf6de20f79c92ba221a356ff))
+* **openspec:** close phase 4 — the acyclic edge, its gate, and an honest acceptance record ([e4c1d6d](https://github.com/Xeonice/cloud-agent-platform/commit/e4c1d6dd65f57169f2d7a13b294a30f38c6057d2))
+* **openspec:** close phase 4 — the acyclic edge, its gate, and an honest acceptance record ([78d94de](https://github.com/Xeonice/cloud-agent-platform/commit/78d94de38ada314951ab4092f3039ddb848f825d))
+* **openspec:** state the boot-recovery removal, and move the models that outlived it ([ad8d32f](https://github.com/Xeonice/cloud-agent-platform/commit/ad8d32f81f3c9606c9848db752a6f7a1cfec5a0b))
+* **runtime:** unlock the three extension axes — one declaration, one registration, table data (unlock-extension-axes) ([c478605](https://github.com/Xeonice/cloud-agent-platform/commit/c47860517a5b53d4cfc5de1eeb134eeaabd04b00))
+* **runtime:** unlock the three extension axes (phase 2) ([26be09f](https://github.com/Xeonice/cloud-agent-platform/commit/26be09fd05bbd425a46c709b4a2e6f9518fd9608))
+
+
+### Bug Fixes
+
+* **ci:** pin the AIO image, and correct the "still returns 201" claim CI refuted ([f20c0d4](https://github.com/Xeonice/cloud-agent-platform/commit/f20c0d4912e638d5e5b8ea35032b6ad9b8574599))
+* **gates:** skip deleted change directories in openspec metadata validation ([367e320](https://github.com/Xeonice/cloud-agent-platform/commit/367e320166a81c2c4ddcab839222b929db499113))
+* **guardrails:** name the surviving path in the last two retired denominators ([07f178b](https://github.com/Xeonice/cloud-agent-platform/commit/07f178bd45ccebbd3c583f802733cabe48f549c0))
+* **guardrails:** recount the construction-site figures with a fixed instrument ([28b9d1d](https://github.com/Xeonice/cloud-agent-platform/commit/28b9d1d27217268f85ba33a5e577dfd6d05ea19a))
+* **ratchets:** restore the projection entry the rename made invisible ([a87b179](https://github.com/Xeonice/cloud-agent-platform/commit/a87b1793517857314a380377cf4967533ac6b6d0))
+* **release:** attest from the nearest verified ancestor, and pin the bytes ([fb43e5a](https://github.com/Xeonice/cloud-agent-platform/commit/fb43e5a40ec54d5af5a4e2b953382e6900922099))
+* **release:** attest from the nearest verified ancestor, and pin the bytes ([198d90a](https://github.com/Xeonice/cloud-agent-platform/commit/198d90aa7f90000a10277cb1889aa5d9fc775cda))
+* **scripts:** teach the verify fixture the probe-hygiene agent labels ([b0b622f](https://github.com/Xeonice/cloud-agent-platform/commit/b0b622f90438d2302a3daf7bac4cbb3cd356fcfb))
+* **tasks:** attribute the task owner on durable lifecycle transitions ([1ab1d72](https://github.com/Xeonice/cloud-agent-platform/commit/1ab1d726c5ce30a7957006c4e314a5cfc3f622aa))
+* **test:** drive the boxlite poll-budget clock instead of racing it (F.3's missed siblings) ([77a2d02](https://github.com/Xeonice/cloud-agent-platform/commit/77a2d025193715eead51d551b1f2db99d3f4dde4))
+* **test:** drive the boxlite poll-budget clock instead of racing it (F.3's missed siblings) ([e491c18](https://github.com/Xeonice/cloud-agent-platform/commit/e491c18771985eed809366c0b5c2bb49b907e849))
+* **verify:** adjudicate refutations instead of counting them ([eea25ee](https://github.com/Xeonice/cloud-agent-platform/commit/eea25ee2b5571506245639477171c949bd222ecd))
+* **verify:** adjudicate refutations instead of counting them ([d741a71](https://github.com/Xeonice/cloud-agent-platform/commit/d741a715e533f213c580bca893abbf2167b8708a))
+* **workflows:** stop opsx-verify from failing a change with its own probes ([ee0dc70](https://github.com/Xeonice/cloud-agent-platform/commit/ee0dc7078a2b48561a2e9566f3ef744d0ad3de6b))
+
+
+### Performance Improvements
+
+* **verify:** decide command-decidable requirements without an LLM pass ([c858853](https://github.com/Xeonice/cloud-agent-platform/commit/c8588534ef1c8e44ed23b2e5873c83150c8fabaa))
+* **verify:** decide command-decidable requirements without an LLM pass ([9c5661f](https://github.com/Xeonice/cloud-agent-platform/commit/9c5661f0fcc71d5222807655be430967f41f34cb))
+
 ## [0.47.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.46.1...v0.47.0) (2026-07-31)
 
 
