@@ -81,6 +81,26 @@
   启动自动执行、无 down migration）；每个含 migration 的 change 必须登记进
   migration 兼容测试的逐条断言。执行器：既有两个 CI 兼容 job + 阶段 5 起的
   change 模板条款。
+
+  **additive-only 的定义**（lifecycle-vocabulary-single-declaration 补写；此前
+  这条规则只有名字没有定义，于是每个作者按自己的读法执行）：
+
+  - **DDL 必须 additive**：不得 `DROP COLUMN`、不得 `DROP TABLE`、不得对已存在
+    的列 `SET NOT NULL`。判据是 N-1 的旧代码在新 schema 上仍能启动并读写它认识
+    的列——加列、加表、加索引、加可空列都满足，删和收紧都不满足。
+  - **DML 允许，但必须在 migration 文件自身里自陈不可逆**。改写或删除历史行没有
+    down migration 可退，所以承担后果的人（在生产上跑它的运维）必须能在他实际
+    会读的那个文件里读到这件事，而不是在某个 change 目录里。
+
+  **为什么取宽读法而不是「一律不许改数据」**：严格读法的第一个动作就是判既有实践
+  有罪——阶段 4 retire-legacy-inline-admission 那条 DELETE 迁移不但存在，而且
+  **自己主动在文件头写了不可逆声明**。一条上来就否定它本要描述的做法的规则，没人
+  会遵守，只会变成又一条写在册子里没人执行的字。
+
+  ⚠ **本条只是把定义写下来，没有让它被强制**。上面点名的两个 CI 兼容 job **至今
+  都不是 required check**，N-1 fixture 还钉在 `v0.38.0`（当前 `v0.47.0`，落后九个
+  版本）。这两件本次都没修，所以本条不得被读成「migration 兼容性已有闸门把守」。
+  它现在的执行器只有一个：change 模板里的那句话，靠人读。
 - **发版**：CI check 显示名 + release.yml SUBJECT 路径集 = attestation 公开
   API（总则 2）；阶段 4/5/6 收口发版 + 升级演练（总则 1）。
 - **充血判据**（决策 10）：仅 ≥2 处被重复检查的不变量收进聚合；单点校验留

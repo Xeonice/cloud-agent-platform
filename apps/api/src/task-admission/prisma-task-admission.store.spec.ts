@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { TERMINAL_TASK_STATUSES } from '@cap-console/contracts';
 import type { PrismaService } from '@/prisma/prisma.service';
 import {
   buildTaskAdmissionClaimQuery,
@@ -59,17 +60,27 @@ test('claim is one parameterized CTE using DB time and SKIP LOCKED', () => {
   assert.match(sql, /run\."status" IN \('provisioning', 'running', 'deleting'\)/);
   assert.match(sql, /run\."owner_generation" IS NOT NULL/);
   assert.match(sql, /run\."resource_generation" IS NOT NULL/);
-  assert.match(
-    sql,
-    /t\."status"::text IN \(\s*'completed',\s*'failed',\s*'cancelled',\s*'agent_failed_to_start'\s*\)/,
-  );
+  // The terminal statuses used to be spelled into the query text and asserted
+  // here as literals. They are now bound parameters derived from the one
+  // declaration, so the per-fact assertion is RE-EXPRESSED rather than relaxed:
+  // the shape check pins that both comparisons still take exactly four members,
+  // and the value check below pins WHICH four actually reach the database —
+  // which the old text match could not do, since it only proved someone had
+  // typed them.
+  const terminalComparisons = sql.match(/t\."status"::text IN \(\?(?:, ?\?){3}\)/g);
+  assert.equal(terminalComparisons?.length, 2, 'both terminal comparisons are 4-ary');
   assert.match(sql, /WHEN w\."state" = 'queued' THEN w\."attempt"/);
   assert.match(sql, /ELSE w\."attempt" \+ 1/);
   assert.match(sql, /workspace_materialization_deadline_ms/);
   assert.match(sql, /INNER JOIN "tasks" AS t/);
   assert.equal(sql.includes(token), false);
   assert.equal(sql.includes('30000'), false);
-  assert.deepEqual(sqlValues(query), [token, 30_000]);
+  assert.deepEqual(sqlValues(query), [
+    ...TERMINAL_TASK_STATUSES,
+    ...TERMINAL_TASK_STATUSES,
+    token,
+    30_000,
+  ]);
 });
 
 test('a terminal succeeded work row is claimable only for a live generation-fenced cleanup owner', async () => {

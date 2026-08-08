@@ -7,6 +7,7 @@ import {
   type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
   type TaskProvisioningDiagnosticProviderFamily,
+  type TerminalTaskStatus,
 } from '@cap-console/contracts';
 import {
   SandboxCleanupCoordinationPendingError,
@@ -386,7 +387,7 @@ function buildService(
 }
 
 function terminalTaskPrisma(
-  status: 'completed' | 'failed' | 'cancelled' | 'agent_failed_to_start',
+  status: TerminalTaskStatus,
   failureCode: string | null = null,
   lifecycleVersion = 1,
 ): PrismaService {

@@ -12,7 +12,7 @@ import {
 } from '@/task-admission/fenced-task-admission.processor';
 import type { TaskAdmissionCancellationPort } from '@/admission-coordination/task-admission.types';
 import type { PrismaService } from '@/prisma/prisma.service';
-import { IllegalTaskTransitionError } from '@/task-lifecycle/task-lifecycle';
+import { IllegalTaskTransitionError } from '@/task-lifecycle/task-lifecycle.domain';
 import {
   taskProvisioningSummary,
   taskResponseFromRecord,

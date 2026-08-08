@@ -23,6 +23,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { TERMINAL_TASK_STATUSES } from '@cap-console/contracts';
+
 // --- fakes -------------------------------------------------------------------
 
 /**
@@ -98,12 +100,11 @@ function matchesTaskWhere(row, where) {
 }
 
 const UNFINISHED_ADMISSION_STATES = ['accepted', 'queued', 'running', 'retrying'];
-const TERMINAL_TASK_STATUSES = [
-  'completed',
-  'failed',
-  'cancelled',
-  'agent_failed_to_start',
-];
+// The terminal set is imported, not copied. This file used to declare its own
+// `TERMINAL_TASK_STATUSES` with byte-identical members and the SAME NAME as the
+// canonical one — a model that could drift from the vocabulary it models while
+// staying green, and which a first-hit-per-file restatement count that excludes
+// test files cannot see at all.
 
 function isUnfinishedAdmissionState(state) {
   return UNFINISHED_ADMISSION_STATES.includes(state);

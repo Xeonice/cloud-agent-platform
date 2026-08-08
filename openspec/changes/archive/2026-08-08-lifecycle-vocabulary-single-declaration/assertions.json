@@ -1,0 +1,369 @@
+{
+  "version": 1,
+  "change": "lifecycle-vocabulary-single-declaration",
+  "assertions": [
+    {
+      "id": "one-canonical-terminal-declaration",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-terminal-status-vocabulary-has-exactly-one-canonical-declaration"
+      ],
+      "describe": "全树能独立回答『是否终态』的**定义载体**恰好 1 处（contracts 那份 canonical）。四种载体：① 元素恰为四终态的数组/Set 字面量；② 覆盖恰好这四个的等值链；③ case 标签恰为这四个、不含非终态标签的 switch（子集 + default 兜底，加第五个终态会静默落进 default）；④ 恰为这四个的字面量类型联合。单双引号皆认、含测试文件、不认符号名。⚠ **本断言被 verify 连续打脸四轮，每轮都是形状盲区、没有一轮是名字问题**：v1 只 grep `export const`；v2 只认 const/let/var+单引号；v3 只认数组与等值链；v4 漏了类型联合——而 spec 正文本身就把 guardrails.service.ts 的**两处类型联合**算作真复述，所以旧判据与需求正文自相矛盾，是「编译期擦除故不算」这条辩解掩盖了矛盾。**编译期擦除不是豁免理由**：它仍是「谁是终态」的第二处书写，加第五个终态时不更新也不报错。载体③ 按 **switch 花括号配对**切块而非行距——块内注释一长会把全量映射切成假子集（本刀实测踩过）。两类合法测试输入按形态排除而非按路径（路径豁免会腐烂）：`for (… of […])` 迭代对象、Prisma 期望查询的 `in: […]`——改成派生会让期望值与实际值同源，断言就自证了。【base64 内联：脚本含引号/换行/正则反斜杠，走 shell 双引号会被吞掉；本刀不建新闸门脚本（proposal Impact 已裁定）。】",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c 'import base64;exec(base64.b64decode(\"aW1wb3J0IGlvLCBvcywgcmUKVCA9IHsnY29tcGxldGVkJywgJ2ZhaWxlZCcsICdjYW5jZWxsZWQnLCAnYWdlbnRfZmFpbGVkX3RvX3N0YXJ0J30KU1RSID0gcmUuY29tcGlsZShyJ1siXCddKFthLXpfXSspWyJcJ10nKQpBUlIgPSByZS5jb21waWxlKHInXFsoW15cW1xdXSo/KVxdJywgcmUuUykKRVEgPSByZS5jb21waWxlKHInKD86W1x3LiRdKylccypbIT1dPT1ccypbIlwnXShbYS16X10rKVsiXCddJykKQ0FTRSA9IHJlLmNvbXBpbGUocidcYmNhc2VccytbIlwnXShbYS16Xy5dKylbIlwnXVxzKjonKQpVTklPTiA9IHJlLmNvbXBpbGUocicoPzpcfFxzKik/WyJcJ11bYS16X10rWyJcJ10oPzpccypcfFxzKlsiXCddW2Etel9dK1siXCddKSsnKQoKCmRlZiBzd2l0Y2hfYm9kaWVzKHNyYyk6CiAgICAiIiLmr4/kuKogc3dpdGNoIOWdl+eahOato+aWh++8jOaMieiKseaLrOWPt+mFjeWvueWIh+WHuuOAggoKICAgIOaMieihjOi3neiBmuexu+S8muiiq+Wdl+WGheazqOmHiumql++8muazqOmHiuS4gOmVv++8jOWQjOS4gOS4qiBzd2l0Y2gg55qEIGNhc2Ug5bCx6KKr5YiH5oiQ5Lik57uE77yMCiAgICDkuo7mmK/jgIzlm5vkuKrnu4jmgIEgKyDlm5vkuKrpnZ7nu4jmgIHjgI3nmoTlhajph4/mmKDlsITnnIvotbfmnaXlg4/lj6rmnInlm5vkuKrnu4jmgIHnmoTlrZDpm4bmmKDlsITjgIIKICAgICIiIgogICAgb3V0ID0gW10KICAgIGZvciBtIGluIHJlLmZpbmRpdGVyKHInXGJzd2l0Y2hccypcKCcsIHNyYyk6CiAgICAgICAgaSA9IHNyYy5maW5kKCd7JywgbS5lbmQoKSkKICAgICAgICBpZiBpID09IC0xOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIGQgPSAwCiAgICAgICAgZm9yIGogaW4gcmFuZ2UoaSwgbGVuKHNyYykpOgogICAgICAgICAgICBpZiBzcmNbal0gPT0gJ3snOgogICAgICAgICAgICAgICAgZCArPSAxCiAgICAgICAgICAgIGVsaWYgc3JjW2pdID09ICd9JzoKICAgICAgICAgICAgICAgIGQgLT0gMQogICAgICAgICAgICAgICAgaWYgZCA9PSAwOgogICAgICAgICAgICAgICAgICAgIG91dC5hcHBlbmQoc3JjW2k6al0pCiAgICAgICAgICAgICAgICAgICAgYnJlYWsKICAgIHJldHVybiBvdXQKCgpuID0gMApmb3Igcm9vdCBpbiAoJ2FwcHMnLCAncGFja2FnZXMnLCAnc2NyaXB0cycpOgogICAgZm9yIGRwLCBkbiwgZnogaW4gb3Mud2Fsayhyb290KToKICAgICAgICBkbls6XSA9IFt4IGZvciB4IGluIGRuIGlmIHggbm90IGluICgnbm9kZV9tb2R1bGVzJywgJ2Rpc3QnLCAnLnR1cmJvJywgJ2J1aWxkJywgJy52ZXJjZWwnLCAndGVzdC1yZXN1bHRzJywgJ2NvdmVyYWdlJyldCiAgICAgICAgZm9yIGYgaW4gZno6CiAgICAgICAgICAgIGlmIG5vdCBmLmVuZHN3aXRoKCgnLnRzJywgJy50c3gnLCAnLm1qcycpKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIHNyYyA9IGlvLm9wZW4ob3MucGF0aC5qb2luKGRwLCBmKSwgZW5jb2Rpbmc9J3V0Zi04JywgZXJyb3JzPSdpZ25vcmUnKS5yZWFkKCkKICAgICAgICAgICAgaWYgbm90IGFsbChzIGluIHNyYyBmb3IgcyBpbiBUKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgICMg6L295L2TMe+8muaVsOe7hC9TZXQg5a2X6Z2i6YeP77yM5YWD57Sg5oGw5Li65Zub5Liq57uI5oCBCiAgICAgICAgICAgIGZvciBtIGluIEFSUi5maW5kaXRlcihzcmMpOgogICAgICAgICAgICAgICAgYm9keSA9IG0uZ3JvdXAoMSkKICAgICAgICAgICAgICAgIGVsID0gU1RSLmZpbmRhbGwoYm9keSkKICAgICAgICAgICAgICAgIGlmIG5vdCAoZWwgYW5kIGxlbihlbCkgPT0gNCBhbmQgc2V0KGVsKSA9PSBUKToKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgaWYgcmUuc2VhcmNoKHInW0EtWmEtel8kXVtcdyRdKlxzKjonLCBib2R5KToKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgcHJlID0gc3JjW21heCgwLCBtLnN0YXJ0KCkgLSA0MCk6bS5zdGFydCgpXQogICAgICAgICAgICAgICAgIyDlkIjms5XmtYvor5XovpPlhaXkuKTlvaLmgIHvvJpmb3IuLm9mIOeahOi/reS7o+Wvueixoe+8m1ByaXNtYSDmnJ/mnJvmn6Xor6LnmoQgaW46CiAgICAgICAgICAgICAgICBpZiByZS5zZWFyY2gocidcYmZvclxzKlwoW14pXSpcYm9mXHMqJCcsIHByZSk6CiAgICAgICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgICAgIGlmIHJlLnNlYXJjaChyJ1xiaW46XHMqJCcsIHByZSk6CiAgICAgICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgICAgIG4gKz0gMQogICAgICAgICAgICAjIOi9veS9kzLvvJrnrYnlgLzpk77vvIzopobnm5bmgbDlpb3ov5nlm5vkuKoKICAgICAgICAgICAgbHMgPSBzcmMuc3BsaXQoJ1xuJykKICAgICAgICAgICAgZm9yIGkgaW4gcmFuZ2UobGVuKGxzKSk6CiAgICAgICAgICAgICAgICBpZiBzZXQoRVEuZmluZGFsbCgnXG4nLmpvaW4obHNbaTppICsgN10pKSkgPT0gVDoKICAgICAgICAgICAgICAgICAgICBuICs9IDEKICAgICAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICAjIOi9veS9kzPvvJrkuIDkuKogc3dpdGNoIOeahCBjYXNlIOagh+etvuaBsOWlveaYr+Wbm+S4que7iOaAgeS4lOS4jeWQq+mdnue7iOaAgeagh+etvuOAggogICAgICAgICAgICAjIOi/meenjeOAjOe7iOaAgeWtkOmbhiArIGRlZmF1bHQg5YWc5bqV44CN55qE5pig5bCE77yM5Yqg56ys5LqU5Liq57uI5oCB5Lya6Z2Z6buY6JC96L+bIGRlZmF1bHTjgIIKICAgICAgICAgICAgIyDnnJ/Ct+WFqOmHj+aYoOWwhO+8iOaemuS4vuWFqOmDqOaIkOWRmO+8ieWboOWQq+mdnue7iOaAgeagh+etvuiAjOS4jeWRveS4reKAlOKAlOi/meato+aYr+WIpOaNruOAggogICAgICAgICAgICBmb3IgYm9keSBpbiBzd2l0Y2hfYm9kaWVzKHNyYyk6CiAgICAgICAgICAgICAgICBpZiBzZXQoQ0FTRS5maW5kYWxsKGJvZHkpKSA9PSBUOgogICAgICAgICAgICAgICAgICAgIG4gKz0gMQogICAgICAgICAgICAjIOi9veS9kzTvvJrmgbDkuLrlm5vkuKrnu4jmgIHnmoTlrZfpnaLph4/nsbvlnovogZTlkIjjgIIKICAgICAgICAgICAgIyDnvJbor5HmnJ/mk6bpmaTkuI3mmK/osYHlhY3nkIbnlLHigJTigJTlroPku43nhLbmmK/jgIzosIHmmK/nu4jmgIHjgI3nmoTnrKzkuozlpITkuablhpnvvIwKICAgICAgICAgICAgIyDliqDnrKzkupTkuKrnu4jmgIHml7blroPkuI3kvJrmm7TmlrDkuZ/kuI3kvJrmiqXplJnjgILmnKzpnIDmsYLmraPmlofmnKzouqvlsLHmiooKICAgICAgICAgICAgIyBndWFyZHJhaWxzLnNlcnZpY2UudHMg55qE5Lik5aSE57G75Z6L6IGU5ZCI566X5L2c55yf5aSN6L+w77yM5Yik5o2u5b+F6aG75LiO5LmL5LiA6Ie044CCCiAgICAgICAgICAgIGZvciBtIGluIFVOSU9OLmZpbmRpdGVyKHNyYyk6CiAgICAgICAgICAgICAgICBlbCA9IFNUUi5maW5kYWxsKG0uZ3JvdXAoMCkpCiAgICAgICAgICAgICAgICBpZiBsZW4oZWwpID09IDQgYW5kIHNldChlbCkgPT0gVDoKICAgICAgICAgICAgICAgICAgICBuICs9IDEKcHJpbnQobikK\").decode())'"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "no-forwarding-alias-for-terminal-set",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-terminal-status-vocabulary-has-exactly-one-canonical-declaration"
+      ],
+      "describe": "退役的声明没有留下换名转发（re-export 会让两个名字回来，却看起来像修好了）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn 'export {[^}]*TERMINAL_TASK_STATUSES[^}]*}\\|export .* TERMINAL_TASK_STATUSES as ' apps/api/src --include='*.ts' || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "TERMINAL_TASK_STATUSES"
+      }
+    },
+    {
+      "id": "device-login-namesake-untouched",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-terminal-status-vocabulary-has-exactly-one-canonical-declaration"
+      ],
+      "describe": "同名异义的 DeviceLoginStatus 终态集合原封不动（符号名扫描会扫到它）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'const TERMINAL_STATUSES = new Set<DeviceLoginStatus>' apps/api/src/settings/codex-device-login.service.ts"
+      ],
+      "expect": {
+        "stdoutEquals": "1"
+      }
+    },
+    {
+      "id": "restatement-site-count",
+      "requirements": [
+        "task-lifecycle-vocabulary/restatements-of-the-terminal-vocabulary-are-counted-per-site-and-the-convention-s-false-positives-are-named"
+      ],
+      "describe": "复述站点数按口径（四字面量单引号同 8 行窗口共现、非重叠推进、排除三类测试后缀）实测；改动前 15，预测 5",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c \"import io,os;L=[chr(39)+s+chr(39) for s in ('completed','failed','cancelled','agent_failed_to_start')];F=[os.path.join(d,f) for r in ('apps','packages','scripts') for d,_,fz in os.walk(r) if not any(s in d for s in ('node_modules','dist','.turbo')) for f in fz if f.endswith(('.ts','.tsx','.mjs')) and not f.endswith(('.spec.ts','.test.ts','.test.mjs'))];n=0\nfor p in F:\n    ls=io.open(p,encoding='utf-8',errors='ignore').read().split(chr(10));i=0\n    while i<len(ls):\n        if all(x in chr(10).join(ls[i:i+8]) for x in L): n+=1;i+=8\n        else: i+=1\nprint(n)\""
+      ],
+      "expect": {
+        "stdoutEquals": "5"
+      }
+    },
+    {
+      "id": "false-positives-still-enumerate-every-arm",
+      "requirements": [
+        "task-lifecycle-vocabulary/restatements-of-the-terminal-vocabulary-are-counted-per-site-and-the-convention-s-false-positives-are-named"
+      ],
+      "describe": "两处口径假阳性（对整个状态枚举的穷尽 switch）仍逐个列举 pending 与 awaiting_input——被『修』成消费终态集合会去掉编译器强制的穷尽性（合成单行后用 stdoutEquals：spec-assert 的 stdoutMatches 拿**未 trim** 的 stdout 比对，JS 的 $ 不像 Perl 那样容忍结尾换行，多行 ^…$ 会必然不匹配）",
+      "run": [
+        "bash",
+        "-c",
+        "{ grep -c \"case 'awaiting_input'\" apps/api/src/audit/audit-mapping.ts; grep -c \"case 'task.awaiting_input'\" apps/api/src/v1/v1-events.controller.ts; } | tr '\\n' ' ' | sed 's/ *$//'"
+      ],
+      "expect": {
+        "stdoutEquals": "1 1"
+      }
+    },
+    {
+      "id": "guardrails-derives-not-restates",
+      "requirements": [
+        "task-lifecycle-vocabulary/restatements-of-the-terminal-vocabulary-are-counted-per-site-and-the-convention-s-false-positives-are-named"
+      ],
+      "describe": "编排器里五处终态复述全部消失（含本地重声明的 isTerminalTaskStatus）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -n \"function isTerminalTaskStatus\" apps/api/src/guardrails/guardrails.service.ts || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "function isTerminalTaskStatus"
+      }
+    },
+    {
+      "id": "guardrails-keeps-no-second-terminal-predicate",
+      "requirements": [
+        "task-lifecycle-vocabulary/restatements-of-the-terminal-vocabulary-are-counted-per-site-and-the-convention-s-false-positives-are-named"
+      ],
+      "describe": "编排器不再自持第二个终态谓词。⚠ 本条经历两次订正：最初写成「不得 import @/task-lifecycle，否则造出 cross-context finding」——**两处都错**。两者同属 task-execution，且 application→domain 是合法方向（实测闸门四类计数一动不动）。最终形态是各取所有者：**词表**取自 contracts（guardrails:22 早已 import），**谓词**取自领域模块的 isTerminal，全仓只剩一个。",
+      "run": [
+        "bash",
+        "-c",
+        "grep -n 'function isTerminalTaskStatus' apps/api/src/guardrails/guardrails.service.ts || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "function isTerminalTaskStatus"
+      }
+    },
+    {
+      "id": "admission-subset-declared-once",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-admission-transition-subset-is-declared-once-and-consumed-not-restated"
+      ],
+      "describe": "admission 子集不再以 Extract<TaskStatus, 'pending'|'queued'|'running'> 的形式被复述",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rn \"Extract<[[:space:]]*TaskStatus\" apps/api/src --include='*.ts' | grep \"'pending'\" || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "Extract<"
+      }
+    },
+    {
+      "id": "admission-target-vocabulary-derived",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-admission-transition-subset-is-declared-once-and-consumed-not-restated"
+      ],
+      "describe": "admission 目标态词表不再被内联复述；唯一豁免是 guardrails.service.spec.ts——活 spec 按行号钉住它六处反射断言标识符（openspec/specs/guardrails/spec.md:1112-1114），加一行 import 会让那条场景变假",
+      "run": [
+        "bash",
+        "-c",
+        "grep -rln \"Extract<TaskStatus, 'queued' | 'running'>\" apps/api/src --include='*.ts' | grep -v 'guardrails.service.spec.ts' || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "Extract<TaskStatus"
+      }
+    },
+    {
+      "id": "admission-worker-consumer-untouched",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-admission-transition-subset-is-declared-once-and-consumed-not-restated"
+      ],
+      "describe": "已经正确的消费方保持委派，没有被顺手改写",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'canTransition' apps/api/src/task-admission/task-admission.worker.ts"
+      ],
+      "expect": {
+        "stdoutMatches": "^[1-9]"
+      }
+    },
+    {
+      "id": "lifecycle-test-imports-its-subject",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-test-guarding-the-lifecycle-vocabulary-fails-when-the-vocabulary-changes"
+      ],
+      "describe": "守生命周期词表的测试装载了被测模块（原来只 import node:test 与 node:assert，结构上无法失败）。⚠ 原断言只认 ESM `import` 行，而 apps/api 是 CJS、其 dist 只能用 createRequire+require 装载（metrics/task-resource.test.mjs 等既有 .mjs 套件都是这个写法）——断言错在假设机制，不是代码错，故改判据不改代码",
+      "run": [
+        "bash",
+        "-c",
+        "grep -cE \"(^import .*task-lifecycle|require\\(.*task-lifecycle)\" apps/api/src/tasks/task-lifecycle.test.mjs"
+      ],
+      "expect": {
+        "stdoutMatches": "^[1-9]"
+      }
+    },
+    {
+      "id": "lifecycle-test-keeps-no-second-table",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-test-guarding-the-lifecycle-vocabulary-fails-when-the-vocabulary-changes"
+      ],
+      "describe": "测试不再自持邻接表与终态集合副本",
+      "run": [
+        "bash",
+        "-c",
+        "grep -n 'const TERMINAL_STATUSES\\|const ALLOWED_TRANSITIONS' apps/api/src/tasks/task-lifecycle.test.mjs || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "const (TERMINAL_STATUSES|ALLOWED_TRANSITIONS)"
+      }
+    },
+    {
+      "id": "lifecycle-test-runs-green",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-test-guarding-the-lifecycle-vocabulary-fails-when-the-vocabulary-changes"
+      ],
+      "describe": "接线后的测试仍然通过（接线不是把它改成永远绿的另一种方式）",
+      "run": [
+        "node",
+        "--test",
+        "apps/api/src/tasks/task-lifecycle.test.mjs"
+      ],
+      "expect": {
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "layout-gate-green-after-both-rules",
+      "requirements": [
+        "context-layout-report/the-prisma-placement-check-exempts-di-composition-declared-and-narrow",
+        "context-layout-report/the-domain-layer-is-nameable-by-a-declared-suffix-and-naming-it-shrinks-the-unclassified-class",
+        "context-layout-report/a-layout-v2-script-performs-three-check-classes-from-the-contexts-manifest"
+      ],
+      "describe": "两条规则落地且基线同 commit 收缩后，layout v2 无遗留问题（comparator 对低于基线同样判红，所以绿本身就是『基线已收缩』的证据）",
+      "run": [
+        "node",
+        "scripts/context-layout-check-v2.mjs"
+      ],
+      "expect": {
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "prisma-placement-falls-by-exactly-three",
+      "requirements": [
+        "context-layout-report/the-prisma-placement-check-exempts-di-composition-declared-and-narrow",
+        "context-layout-report/a-layout-v2-script-performs-three-check-classes-from-the-contexts-manifest"
+      ],
+      "describe": "prisma-outside-store 从 59 降到 56（豁免只够到那三个 DI 组装文件，不多不少）",
+      "run": [
+        "bash",
+        "-c",
+        "node scripts/context-layout-check-v2.mjs | sed -n 's/^ *prisma-outside-store: //p'"
+      ],
+      "expect": {
+        "stdoutEquals": "56"
+      }
+    },
+    {
+      "id": "unclassified-falls-by-exactly-one",
+      "requirements": [
+        "context-layout-report/the-domain-layer-is-nameable-by-a-declared-suffix-and-naming-it-shrinks-the-unclassified-class"
+      ],
+      "describe": "unclassified-file 从 129 降到 128",
+      "run": [
+        "bash",
+        "-c",
+        "node scripts/context-layout-check-v2.mjs | sed -n 's/^ *unclassified-file: //p'"
+      ],
+      "expect": {
+        "stdoutEquals": "128"
+      }
+    },
+    {
+      "id": "no-other-class-moved",
+      "requirements": [
+        "context-layout-report/the-domain-layer-is-nameable-by-a-declared-suffix-and-naming-it-shrinks-the-unclassified-class",
+        "task-lifecycle-vocabulary/restatements-of-the-terminal-vocabulary-are-counted-per-site-and-the-convention-s-false-positives-are-named"
+      ],
+      "describe": "另外两类逐个不动（cross-context-import 129 / layer-direction 2）——一类降另一类升是交换不是收缩",
+      "run": [
+        "bash",
+        "-c",
+        "node scripts/context-layout-check-v2.mjs | sed -n 's/^ *cross-context-import: //p;s/^ *layer-direction: //p' | tr '\\n' ' ' | sed 's/ *$//'"
+      ],
+      "expect": {
+        "stdoutEquals": "129 2"
+      }
+    },
+    {
+      "id": "exemption-declared-in-manifest-not-script",
+      "requirements": [
+        "context-layout-report/the-prisma-placement-check-exempts-di-composition-declared-and-narrow",
+        "context-layout-report/a-layout-v2-script-performs-three-check-classes-from-the-contexts-manifest"
+      ],
+      "describe": "豁免声明在 manifest 里，脚本是解释器不留第二份副本（脚本里不得出现写死的 module 文件名）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -n 'guardrails.module\\|sandbox.module\\|runtime-models.module' scripts/context-layout-check-v2.mjs || true"
+      ],
+      "expect": {
+        "stdoutAbsent": "module"
+      }
+    },
+    {
+      "id": "retired-baseline-entries-gone",
+      "requirements": [
+        "context-layout-report/the-domain-layer-is-nameable-by-a-declared-suffix-and-naming-it-shrinks-the-unclassified-class",
+        "context-layout-report/the-prisma-placement-check-exempts-di-composition-declared-and-narrow"
+      ],
+      "describe": "四条被规则退役的基线条目在同 commit 删除（3 条 module 文件的 prisma-outside-store + 1 条 unclassified）",
+      "run": [
+        "bash",
+        "-c",
+        "python3 -c \"import json;d=json.load(open('scripts/ratchets/r7.json'));print(len([k for k in d if k.startswith('prisma-outside-store:') and k.endswith('.module.ts')])+len([k for k in d if 'task-lifecycle' in k]))\""
+      ],
+      "expect": {
+        "stdoutEquals": "0"
+      }
+    },
+    {
+      "id": "dependency-budget-unmoved",
+      "requirements": [
+        "task-lifecycle-vocabulary/restatements-of-the-terminal-vocabulary-are-counted-per-site-and-the-convention-s-false-positives-are-named"
+      ],
+      "describe": "改编排器没有增删任何 this.<协作者> 引用（comparator 只比 count，行号位移不算变化）",
+      "run": [
+        "node",
+        "scripts/ratchets/r11-dependency-budget.mjs"
+      ],
+      "expect": {
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "module-composition-edge-still-clean",
+      "requirements": [
+        "context-layout-report/the-prisma-placement-check-exempts-di-composition-declared-and-narrow"
+      ],
+      "describe": "给 composition 开 Prisma 豁免没有顺带放松阶段 4 判据 (d) 钉住的那条模块环",
+      "run": [
+        "node",
+        "scripts/module-composition-cycle-check.mjs"
+      ],
+      "expect": {
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "construction-sites-untouched",
+      "requirements": [
+        "task-lifecycle-vocabulary/the-terminal-status-vocabulary-has-exactly-one-canonical-declaration"
+      ],
+      "describe": "构造签名与位置化构造点一处未动（本刀 Non-Goal）",
+      "run": [
+        "bash",
+        "-c",
+        "node scripts/guardrails-construction-sites.mjs | tr '\\n' ' ' | sed 's/ *$//'"
+      ],
+      "expect": {
+        "stdoutEquals": "20 16 11 10 6 5"
+      }
+    },
+    {
+      "id": "migration-definition-written-down",
+      "requirements": [
+        "task-lifecycle-vocabulary/migration-discipline-is-defined-in-writing-before-it-is-enforced"
+      ],
+      "describe": "additive-only 的定义成文且区分 DDL 与 DML（这条只判『写了』，『写得诚实』留给对抗路径）",
+      "run": [
+        "bash",
+        "-c",
+        "grep -c 'DDL' docs/refactor/04-rules-registry.md"
+      ],
+      "expect": {
+        "stdoutMatches": "^[1-9]"
+      }
+    },
+    {
+      "id": "three-check-classes-still-report",
+      "requirements": [
+        "context-layout-report/a-layout-v2-script-performs-three-check-classes-from-the-contexts-manifest"
+      ],
+      "describe": "MODIFIED 只改第三类的豁免措辞，三类检查本身一个不少——闸门自测对三类红路径 + unclassified 逐个证过（31 项），空扫描仍判失败",
+      "run": [
+        "bash",
+        "-c",
+        "node --test scripts/context-layout-check-v2.test.mjs >/dev/null 2>&1 && node scripts/context-layout-check-v2.mjs | grep -cE '^  (cross-context-import|layer-direction|prisma-outside-store|unclassified-file): '"
+      ],
+      "expect": {
+        "stdoutEquals": "4"
+      }
+    }
+  ]
+}

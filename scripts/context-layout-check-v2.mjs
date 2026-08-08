@@ -425,7 +425,14 @@ export function analyzeLayout({ root = ROOT, manifest = loadManifest(root) } = {
       rel.endsWith(cross.compositionFileSuffix) ||
       compositionRoots.has(rel);
     const isStoreFile = rel.endsWith(prismaRules.storeFileSuffix);
-    const prismaExemptFile = isStoreFile || prismaExempt.has(dir);
+    // The composition exemption reuses `isComposition` ABOVE rather than
+    // recomputing the same predicate: two definitions that agree today are two
+    // definitions that can stop agreeing, and the manifest — not this script —
+    // decides whether the exemption applies at all.
+    const prismaExemptFile =
+      isStoreFile ||
+      prismaExempt.has(dir) ||
+      (prismaRules.exemptComposition === true && isComposition);
 
     for (const edge of collectImports(source)) {
       // (3) Prisma placement — judged on the specifier/symbol, so a Prisma

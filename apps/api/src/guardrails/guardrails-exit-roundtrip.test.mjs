@@ -24,6 +24,8 @@
  * siblings while pinning the documented contract.
  */
 
+import { TERMINAL_TASK_STATUSES } from '@cap-console/contracts';
+
 // ---- spies / fakes ----------------------------------------------------------
 
 class SpyBreaker {
@@ -149,7 +151,7 @@ class GuardrailsHarness {
   // onTerminal now captures the transcript (3.2) BEFORE the stop-only teardown.
   async _transition(taskId, status) {
     this.transitions.push({ taskId, status });
-    if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'agent_failed_to_start') {
+    if (TERMINAL_TASK_STATUSES.includes(status)) {
       // persist-session-transcripts 3.2 — capture BEFORE the stop-only teardown.
       await this._captureTranscript(taskId);
       this.events.push(`teardown:${taskId}`);

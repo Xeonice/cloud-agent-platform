@@ -256,6 +256,39 @@ test('a store file and the declared shared kernel may reach Prisma', () => {
   assert.deepEqual(kinds(found, 'prisma-outside-store'), []);
 });
 
+test('a composition file wiring Prisma is exempt only when the manifest says so', () => {
+  const files = {
+    'tasks/tasks.module.ts':
+      "import { PrismaService } from '@/prisma/prisma.service';\nexport class TasksModule {}\n",
+    'prisma/prisma.service.ts': 'export class PrismaService {}\n',
+  };
+
+  // Undeclared: the exemption does not exist, so the DI factory is reported.
+  // This half is what makes the other half evidence — an assertion that only
+  // ever sees the exemption switched on cannot tell it apart from a check that
+  // stopped looking.
+  assert.equal(kinds(scan(files), 'prisma-outside-store').length, 1);
+
+  const declared = fixtureManifest();
+  declared.prismaPlacement.exemptComposition = true;
+  assert.deepEqual(kinds(scan(files, declared), 'prisma-outside-store'), []);
+});
+
+test('the composition exemption does not cover an ordinary application file', () => {
+  const declared = fixtureManifest();
+  declared.prismaPlacement.exemptComposition = true;
+  const found = scan(
+    {
+      'tasks/tasks.service.ts': "import { PrismaService } from '@/prisma/prisma.service';\n",
+      'prisma/prisma.service.ts': 'export class PrismaService {}\n',
+    },
+    declared,
+  );
+  // Keyed on the IMPORTING file's classification and nothing else: a service
+  // sitting beside an exempt module is still a service.
+  assert.equal(kinds(found, 'prisma-outside-store').length, 1);
+});
+
 // ---------------------------------------------------------------- red path 4
 test('a file matching no layer rule is reported as unclassified, not skipped', () => {
   const found = scan({

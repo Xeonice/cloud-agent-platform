@@ -4,6 +4,7 @@ import type {
 } from '@cap-console/contracts';
 import type { SandboxResourceSnapshot } from '@cap-console/sandbox';
 import type { ProvisioningTaskFailureCode } from '@/task-failure/task-failure';
+import type { AdmissionTargetStatus } from '@/task-lifecycle/task-lifecycle.domain';
 
 export type TaskAdmissionClaimSourceState =
   | 'accepted'
@@ -305,7 +306,7 @@ export interface TaskAdmissionLeaseControls {
    * Returns the lifecycle version every declared target must use.
    */
   beginTaskTransition(
-    nextStatuses: readonly Extract<TaskStatus, 'queued' | 'running'>[],
+    nextStatuses: readonly AdmissionTargetStatus[],
   ): number;
   /** Commit one of the declared successors after its database CAS succeeds. */
   commitTaskTransition(fence: TaskAdmissionTaskFence): void;

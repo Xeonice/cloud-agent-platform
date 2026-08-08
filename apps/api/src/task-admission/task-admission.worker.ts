@@ -3,9 +3,12 @@ import {
   TaskFailureCodeSchema,
   TaskProvisioningStageSchema,
   type TaskProvisioningStage,
-  type TaskStatus,
 } from '@cap-console/contracts';
-import { canTransition, isTerminal } from '@/task-lifecycle/task-lifecycle';
+import {
+  canTransition,
+  isTerminal,
+  type AdmissionTargetStatus,
+} from '@/task-lifecycle/task-lifecycle.domain';
 import type { TaskAdmissionWakePort } from './task-admission-gate';
 import {
   TaskAdmissionClock,
@@ -1118,7 +1121,7 @@ class TaskAdmissionTaskAuthority {
   }
 
   beginTransition(
-    nextStatuses: readonly Extract<TaskStatus, 'queued' | 'running'>[],
+    nextStatuses: readonly AdmissionTargetStatus[],
   ): number {
     if (this.transitionTargets.length > 0) {
       throw new Error('Task admission lifecycle transition is already active');

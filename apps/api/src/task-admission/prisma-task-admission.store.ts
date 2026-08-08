@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  TERMINAL_TASK_STATUSES,
   TaskProvisioningStageSchema,
   TaskStatusSchema,
   type TaskProvisioningStage,
@@ -95,12 +96,7 @@ export function buildTaskAdmissionClaimQuery(
         w."task_id",
         w."state" AS "source_state",
         w."lease_owner" AS "parked_lease_owner",
-        t."status"::text IN (
-          'completed',
-          'failed',
-          'cancelled',
-          'agent_failed_to_start'
-        ) AS "task_terminal"
+        t."status"::text IN (${Prisma.join([...TERMINAL_TASK_STATUSES])}) AS "task_terminal"
       FROM "task_admission_work" AS w
       INNER JOIN "tasks" AS t ON t."id" = w."task_id"
       WHERE
@@ -127,12 +123,7 @@ export function buildTaskAdmissionClaimQuery(
           -- preserves its attempt number and recoverTerminal performs no
           -- provisioning work.
           w."state" = 'succeeded'
-          AND t."status"::text IN (
-            'completed',
-            'failed',
-            'cancelled',
-            'agent_failed_to_start'
-          )
+          AND t."status"::text IN (${Prisma.join([...TERMINAL_TASK_STATUSES])})
           AND EXISTS (
             SELECT 1
             FROM "sandbox_runs" AS run

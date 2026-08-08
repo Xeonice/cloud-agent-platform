@@ -33,6 +33,7 @@ import type {
 import {
   DEFAULT_TASK_RUNTIME,
   TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+  TERMINAL_TASK_STATUSES,
   GitBranchNameSchema,
   RuntimeModelErrorSchema,
   TaskProvisioningStageSchema,
@@ -55,8 +56,11 @@ import { PrismaService } from '@/prisma/prisma.service';
 import {
   IllegalTaskTransitionError,
   assertTransition,
+  isAdmissionOwnedTransition,
   isTerminal,
-} from '@/task-lifecycle/task-lifecycle';
+  type AdmissionEndpointStatus,
+  type AdmissionTargetStatus,
+} from '@/task-lifecycle/task-lifecycle.domain';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
@@ -173,7 +177,7 @@ export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
 export interface DurableAdmissionCapacityRequest {
   readonly taskId: string;
   readonly leaseToken: string;
-  readonly expectedStatus: Extract<TaskStatus, 'pending' | 'queued' | 'running'>;
+  readonly expectedStatus: AdmissionEndpointStatus;
   readonly expectedLifecycleVersion: number;
   /** Process config used only when the shared singleton row does not exist. */
   readonly fallbackMaxConcurrentTasks: number;
@@ -692,14 +696,7 @@ export class TasksService
           {
             state: 'succeeded',
             task: {
-              status: {
-                in: [
-                  'completed',
-                  'failed',
-                  'cancelled',
-                  'agent_failed_to_start',
-                ],
-              },
+              status: { in: [...TERMINAL_TASK_STATUSES] },
               sandboxRuns: {
                 some: {
                   status: { in: ['provisioning', 'running', 'deleting'] },
@@ -742,14 +739,7 @@ export class TasksService
           {
             state: 'succeeded',
             task: {
-              status: {
-                in: [
-                  'completed',
-                  'failed',
-                  'cancelled',
-                  'agent_failed_to_start',
-                ],
-              },
+              status: { in: [...TERMINAL_TASK_STATUSES] },
               sandboxRuns: {
                 some: {
                   status: { in: ['provisioning', 'running', 'deleting'] },
@@ -2305,7 +2295,7 @@ export class TasksService
 
   async transitionForAdmission(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     userId?: string,
     transitionToken = randomUUID(),
   ): Promise<AdmissionTransitionResult> {
@@ -2321,7 +2311,7 @@ export class TasksService
   /** Resolve/retry an ambiguous admission write without changing its winner token. */
   async reconcileAdmissionTransition(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     transitionToken: string,
     userId?: string,
   ): Promise<AdmissionTransitionResult> {
@@ -2337,7 +2327,7 @@ export class TasksService
   /** True only while this exact running-CAS winner may start provider work. */
   async isAdmissionTransitionCurrent(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     transitionToken: string,
     lifecycleVersion?: number,
   ): Promise<boolean> {
@@ -2391,7 +2381,7 @@ export class TasksService
 
   private async performAdmissionTransition(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     userId: string | undefined,
     transitionToken: string,
     resolvingIndeterminate: boolean,
@@ -2437,14 +2427,11 @@ export class TasksService
       }
       if (current === next) return 'already-transitioned';
 
-      // Admission owns only pending -> queued/running and queued -> running. A
-      // later lifecycle state means another actor has already superseded this
-      // attempt; it must never be moved backward or provisioned again.
-      const eligible =
-        next === 'queued'
-          ? current === 'pending'
-          : current === 'pending' || current === 'queued';
-      if (!eligible) {
+      // Which transitions admission owns is declared once, in the lifecycle
+      // module, and consumed here. It used to be restated in this comment and
+      // recomputed just below; a sentence and an expression cannot disagree
+      // loudly, so they disagreed silently.
+      if (!isAdmissionOwnedTransition(current, next)) {
         return this.observeAdmissionSupersession(id, transitionToken, current);
       }
       assertTransition(current, next);

@@ -20,7 +20,6 @@ import {
   DomainEventSchema,
   type DomainEvent,
   type DomainEventType,
-  type TaskStatus,
 } from '@cap-console/contracts';
 import type { ModuleRef } from '@nestjs/core';
 import type { SessionCredentialsService } from '@/creds/session-credentials.service';
@@ -34,6 +33,7 @@ import {
 import { domainEventBusBindings } from '@/domain-events/domain-events.module';
 import { evaluateDomainEventPublishing } from '@/domain-events/domain-event-publishing-cutover.port';
 import { GuardrailsService, type GuardrailsConfig } from './guardrails.service';
+import type { AdmissionTargetStatus } from '@/task-lifecycle/task-lifecycle.domain';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
@@ -112,7 +112,7 @@ function assertAllParse(published: readonly DomainEvent[]): void {
 
 type Transition = (
   taskId: string,
-  next: Extract<TaskStatus, 'queued' | 'running'>,
+  next: AdmissionTargetStatus,
   userId?: string,
   transitionToken?: string,
 ) => Promise<AdmissionTransitionResult>;

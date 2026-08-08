@@ -529,13 +529,6 @@
     ],
     "change": "阶段 5 燃尽（四核心域 store 化）"
   },
-  "prisma-outside-store:apps/api/src/guardrails/guardrails.module.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/guardrails/guardrails.module.ts:12 reaches Prisma outside a store file"
-    ],
-    "change": "阶段 5 燃尽（四核心域 store 化）"
-  },
   "prisma-outside-store:apps/api/src/guardrails/guardrails.service.ts": {
     "count": 1,
     "samples": [
@@ -649,13 +642,6 @@
     ],
     "change": "阶段 5 燃尽（四核心域 store 化）"
   },
-  "prisma-outside-store:apps/api/src/runtime-models/runtime-models.module.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/runtime-models/runtime-models.module.ts:3 reaches Prisma outside a store file"
-    ],
-    "change": "阶段 5 燃尽（四核心域 store 化）"
-  },
   "prisma-outside-store:apps/api/src/sandbox-environments/sandbox-environments.controller.ts": {
     "count": 1,
     "samples": [
@@ -697,13 +683,6 @@
     "samples": [
       "apps/api/src/sandbox/sandbox-run-owner.service.ts:45 reaches Prisma outside a store file",
       "apps/api/src/sandbox/sandbox-run-owner.service.ts:47 reaches Prisma outside a store file"
-    ],
-    "change": "阶段 5 燃尽（四核心域 store 化）"
-  },
-  "prisma-outside-store:apps/api/src/sandbox/sandbox.module.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/sandbox/sandbox.module.ts:44 reaches Prisma outside a store file"
     ],
     "change": "阶段 5 燃尽（四核心域 store 化）"
   },
@@ -1583,13 +1562,6 @@
     "count": 1,
     "samples": [
       "apps/api/src/task-failure/task-failure.ts matches no file→layer rule"
-    ],
-    "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
-  },
-  "unclassified-file:apps/api/src/task-lifecycle/task-lifecycle.ts": {
-    "count": 1,
-    "samples": [
-      "apps/api/src/task-lifecycle/task-lifecycle.ts matches no file→layer rule"
     ],
     "change": "阶段 6 归拢（按角色命名，或在 contexts-manifest.json 补层声明）"
   },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
+import { isTerminal } from '@/task-lifecycle/task-lifecycle.domain';
 import type {
   TaskProvisioningStage,
   TaskStatus,
@@ -378,7 +379,7 @@ class MatrixStore extends TaskAdmissionStore {
     work.attempt =
       sourceState === 'queued' || sourceState === 'parked'
         ? work.attempt
-        : sourceState === 'running' && isTerminalTaskStatus(task.status)
+        : sourceState === 'running' && isTerminal(task.status)
           ? Math.max(work.attempt, 1)
           : work.attempt + 1;
     work.parkedLeaseOwner = null;
@@ -779,14 +780,6 @@ function preparedTask(): PreparedTaskCreate {
   } as PreparedTaskCreate;
 }
 
-function isTerminalTaskStatus(status: TaskStatus): boolean {
-  return (
-    status === 'completed' ||
-    status === 'failed' ||
-    status === 'cancelled' ||
-    status === 'agent_failed_to_start'
-  );
-}
 
 function realProvisionLookup(): ProvisionLookup {
   return {

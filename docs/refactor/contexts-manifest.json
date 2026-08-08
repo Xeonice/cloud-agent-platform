@@ -5,38 +5,100 @@
   "scopeAlias": "@/",
   "layers": {
     "$comment": "上下文内部层序。import 只允许从左往右：interface→application→domain/store。domain 不得 import 任何层；store 只被 application import；Prisma 只允许出现在 store 层文件（*.store.ts）。",
-    "order": ["interface", "application", "domain", "store"],
+    "order": [
+      "interface",
+      "application",
+      "domain",
+      "store"
+    ],
     "allowedImports": {
       "$comment": "上面那句散文的机器可读编码，零新增语义（enforce-boundaries-from-manifest）：同层恒合法；左→右单向；『store 只被 application import』故 interface→store 缺席；『domain 不得 import 任何层』故 domain 只剩同层；store 最右无下游故只剩同层。层方向只判同上下文内部的 import，跨上下文由 crossContextRules 判定。",
-      "interface": ["interface", "application", "domain"],
-      "application": ["application", "domain", "store"],
-      "domain": ["domain"],
-      "store": ["store"]
+      "interface": [
+        "interface",
+        "application",
+        "domain"
+      ],
+      "application": [
+        "application",
+        "domain",
+        "store"
+      ],
+      "domain": [
+        "domain"
+      ],
+      "store": [
+        "store"
+      ]
     },
     "fileClassification": {
       "$comment": "文件→层判定规则的唯一声明（enforce-boundaries-from-manifest）——脚本是纯解释器，不得留第二份副本。按 rules 顺序取首个命中的文件名后缀；命中不了的文件报 unclassified，绝不静默跳过。composition 是 DI 组装伪层（沿用 layout v1 的 *.module.ts 豁免），不出现在 order 里也不参与层方向判定。",
       "unclassifiedLayer": "unclassified",
       "compositionLayer": "composition",
       "rules": [
-        { "suffix": ".module.ts", "layer": "composition", "why": "Nest DI 组装，沿用 layout v1 的 composition exemption" },
-        { "suffix": "/main.ts", "layer": "composition", "why": "Nest bootstrap 组合根" },
-        { "suffix": ".controller.ts", "layer": "interface" },
-        { "suffix": ".gateway.ts", "layer": "interface" },
-        { "suffix": ".resolver.ts", "layer": "interface" },
-        { "suffix": ".guard.ts", "layer": "interface" },
-        { "suffix": ".filter.ts", "layer": "interface" },
-        { "suffix": ".pipe.ts", "layer": "interface" },
-        { "suffix": ".middleware.ts", "layer": "interface" },
-        { "suffix": ".service.ts", "layer": "application" },
-        { "suffix": ".port.ts", "layer": "domain" },
-        { "suffix": ".store.ts", "layer": "store" }
+        {
+          "suffix": ".module.ts",
+          "layer": "composition",
+          "why": "Nest DI 组装，沿用 layout v1 的 composition exemption"
+        },
+        {
+          "suffix": "/main.ts",
+          "layer": "composition",
+          "why": "Nest bootstrap 组合根"
+        },
+        {
+          "suffix": ".controller.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".gateway.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".resolver.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".guard.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".filter.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".pipe.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".middleware.ts",
+          "layer": "interface"
+        },
+        {
+          "suffix": ".service.ts",
+          "layer": "application"
+        },
+        {
+          "suffix": ".port.ts",
+          "layer": "domain"
+        },
+        {
+          "suffix": ".domain.ts",
+          "layer": "domain",
+          "why": "纯领域模块（lifecycle-vocabulary-single-declaration）。解释器只按路径后缀匹配（context-layout-check-v2.mjs 的 classifyLayer 用 probe.endsWith），后缀可跨路径段但仍锚在路径末尾，所以『某目录下的所有文件』写不出来——加规则种类属于改机制、会动 context-layout-report 的分类需求，加规则行只是改数据。代价是后续每个纯领域文件必须把该后缀写进文件名，忘了就报 unclassified：那是期望中的响声。"
+        },
+        {
+          "suffix": ".store.ts",
+          "layer": "store"
+        }
       ]
     }
   },
   "contexts": {
     "task-execution": {
       "type": "core",
-      "aggregates": ["Task"],
+      "aggregates": [
+        "Task"
+      ],
       "directories": [
         "tasks",
         "task-admission",
@@ -59,7 +121,10 @@
     },
     "sandbox-provisioning": {
       "type": "core",
-      "aggregates": ["SandboxRun", "SandboxEnvironment"],
+      "aggregates": [
+        "SandboxRun",
+        "SandboxEnvironment"
+      ],
       "directories": [
         "sandbox",
         "sandbox-environments",
@@ -73,19 +138,31 @@
     "agent-runtime": {
       "type": "core",
       "aggregates": [],
-      "directories": ["agent-runtime", "runtimes", "runtime-models"],
+      "directories": [
+        "agent-runtime",
+        "runtimes",
+        "runtime-models"
+      ],
       "notes": {
         "$comment": "无聚合——纯策略对象（policy/mechanism），现状已正确，不做充血改造"
       }
     },
     "delivery": {
       "type": "core",
-      "aggregates": ["Repo"],
-      "directories": ["forge", "repos", "repo-store"]
+      "aggregates": [
+        "Repo"
+      ],
+      "directories": [
+        "forge",
+        "repos",
+        "repo-store"
+      ]
     },
     "identity-access": {
       "type": "supporting",
-      "aggregates": ["User"],
+      "aggregates": [
+        "User"
+      ],
       "directories": [
         "auth",
         "auth-otp",
@@ -163,20 +240,38 @@
       "$comment": "上面 allowed 散文的机器可读编码，零新增语义（enforce-boundaries-from-manifest）。『领域事件订阅』的槽位由 domainEventSubscription 兑现（add-domain-event-bus，阶段4事件总线落地）——它是纯归因，不放行任何形态：订阅者 import 总线依旧只经 portFileSuffix 合法，本块从不扩大合法集。",
       "portFileSuffix": ".port.ts",
       "compositionFileSuffix": ".module.ts",
-      "compositionRootFiles": ["main.ts", "app.module.ts"],
-      "sharedKernelDirectories": ["prisma", "crypto", "observability"],
+      "compositionRootFiles": [
+        "main.ts",
+        "app.module.ts"
+      ],
+      "sharedKernelDirectories": [
+        "prisma",
+        "crypto",
+        "observability"
+      ],
       "domainEventSubscription": {
         "$comment": "『领域事件订阅』散文的机器可读编码——**纯归因，零新增放行语义**。声明总线目录与其 port 文件，闸门据此把一条跨上下文 import 判读为『领域事件订阅』（而不是笼统的 port import），并在订阅者绕开 port 直接 import 总线实现时点名这个形态。合法性仍然只由 portFileSuffix / compositionFileSuffix / sharedKernelDirectories 决定：busPortFiles 的每一项都必须以 portFileSuffix 结尾，闸门会断言这一点——一旦某个写法需要新的放行语义，那就是落位形态错了，回 design D13 重议而不是放宽本块。",
         "busDirectory": "domain-events",
-        "busPortFiles": ["domain-events/domain-event-bus.port.ts"]
+        "busPortFiles": [
+          "domain-events/domain-event-bus.port.ts"
+        ]
       }
     }
   },
   "prismaPlacement": {
     "$comment": "『Prisma 只允许出现在 store 层文件』的机器可读编码（enforce-boundaries-from-manifest）：符号命中即算一处，store 文件与共享内核目录豁免。",
     "storeFileSuffix": ".store.ts",
-    "symbols": ["@prisma/client", "PrismaService"],
-    "exemptDirectories": ["prisma", "crypto", "observability"]
+    "symbols": [
+      "@prisma/client",
+      "PrismaService"
+    ],
+    "exemptDirectories": [
+      "prisma",
+      "crypto",
+      "observability"
+    ],
+    "exemptComposition": true,
+    "exemptCompositionWhy": "DI 组装伪层豁免（lifecycle-vocabulary-single-declaration，用户决策 D4）。三条 finding 是 Nest useFactory 把 PrismaService 交给它构造的东西——组装根接线数据库客户端是框架的装配模型，不是层次违规，搬走只会产生把同一处接线藏起来的间接层。判据钉在**导入方文件的分类**上，与它构造什么、位于哪个目录无关；复用 crossContextRules 已经算好的同一个 isComposition，两个豁免因此不会各自漂移。放宽它需要在一个 change 里裁定。"
   },
   "pendingDecisions": []
 }

@@ -208,9 +208,23 @@ export function replayPresentationState(
       return "failed";
     case "agent_failed_to_start":
       return "no-start";
-    default:
-      // Non-terminal statuses have no replay state; callers gate on
-      // TERMINAL_TASK_STATUSES first. Default keeps the function total.
+
+    // Non-terminal statuses have no replay state; callers gate on
+    // {@link isReplayableStatus} first, so these arms are unreachable in
+    // practice and return the same placeholder the removed `default` returned.
+    //
+    // They are ENUMERATED rather than caught by a `default` on purpose. With a
+    // default, this switch named exactly the four terminal statuses and swallowed
+    // everything else — which made it a second, hand-written statement of WHICH
+    // statuses are terminal, three lines above an `isReplayableStatus` that
+    // derives the same fact from `TERMINAL_TASK_STATUSES`. Worse, a fifth terminal
+    // status added later would have fallen into the default and been answered
+    // `"completed"` silently. Enumerating every member instead makes the compiler
+    // refuse the next status until someone decides its arm here.
+    case "pending":
+    case "queued":
+    case "running":
+    case "awaiting_input":
       return "completed";
   }
 }

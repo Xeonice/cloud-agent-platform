@@ -20,11 +20,13 @@ import type {
 import {
   SANDBOX_PROVIDER_FAMILIES,
   TERMINAL_TASK_STATUSES,
+  type TerminalTaskStatus,
 } from '@cap-console/contracts';
 import {
   DOMAIN_EVENT_BUS,
   type DomainEventBusPort,
 } from '@/domain-events/domain-event-bus.port';
+import { isTerminal } from '@/task-lifecycle/task-lifecycle.domain';
 import {
   AdmissionTransitionIndeterminateError,
   TASK_OPERATIONS,
@@ -169,11 +171,7 @@ interface DurableTerminalCleanupOptions {
 }
 
 interface DurableTerminalTaskSnapshot {
-  readonly status:
-    | 'completed'
-    | 'failed'
-    | 'cancelled'
-    | 'agent_failed_to_start';
+  readonly status: TerminalTaskStatus;
   readonly failureCode: string | null;
 }
 
@@ -982,10 +980,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     const taskId = claim.taskId;
     if (
       claim.sourceState === 'succeeded' ||
-      claim.taskStatus === 'completed' ||
-      claim.taskStatus === 'failed' ||
-      claim.taskStatus === 'cancelled' ||
-      claim.taskStatus === 'agent_failed_to_start'
+      isTerminal(claim.taskStatus)
     ) {
       // Succeeded Work is reopened only for recoverTerminal. Guard against a
       // misbound processor or forged in-memory context before capacity,
@@ -2853,7 +2848,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           select: { status: true },
         })
       )?.status as TaskStatus | undefined;
-      return status !== undefined && isTerminalTaskStatus(status)
+      return status !== undefined && isTerminal(status)
         ? status
         : undefined;
     } catch {
@@ -3256,11 +3251,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async requireTerminalTaskSnapshot(
     context: TaskAdmissionProcessorContext,
   ): Promise<{
-    readonly status:
-      | 'completed'
-      | 'failed'
-      | 'cancelled'
-      | 'agent_failed_to_start';
+    readonly status: TerminalTaskStatus;
     readonly failureCode: string | null;
   }> {
     const taskId = context.claim.taskId;
@@ -3296,10 +3287,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       !task ||
       task.status !== context.claim.taskStatus ||
       task.lifecycleVersion !== context.claim.taskLifecycleVersion ||
-      (task.status !== 'completed' &&
-        task.status !== 'failed' &&
-        task.status !== 'cancelled' &&
-        task.status !== 'agent_failed_to_start')
+      !isTerminal(task.status)
     ) {
       throw new TaskAdmissionCoordinationError(
         'checkpoint',
@@ -3612,12 +3600,4 @@ function isTaskAdmissionControlSignal(error: unknown): boolean {
 
 
 
-function isTerminalTaskStatus(status: TaskStatus): boolean {
-  return (
-    status === 'completed' ||
-    status === 'failed' ||
-    status === 'cancelled' ||
-    status === 'agent_failed_to_start'
-  );
-}
 

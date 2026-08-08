@@ -9,6 +9,7 @@ import {
   type TestInfo,
 } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { TERMINAL_TASK_STATUSES as CANONICAL_TERMINAL_TASK_STATUSES } from "@cap-console/contracts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -145,12 +146,12 @@ const ADMIN_PASSWORD = requiredValue("E2E_ADMIN_PASSWORD");
 const ADMIN_NEW_PASSWORD = requiredValue("E2E_ADMIN_NEW_PASSWORD");
 const WALL_CLOCK_MODE = process.env.E2E_WALL_CLOCK === "1";
 
-const TERMINAL_TASK_STATUSES = new Set<TaskWire["status"]>([
-  "completed",
-  "failed",
-  "cancelled",
-  "agent_failed_to_start",
-]);
+// Derived, not copied: this used to be a Set literal carrying the SAME NAME as
+// the canonical declaration in `@cap-console/contracts`, which is a copy that can
+// drift from the vocabulary it names while every assertion here stays green.
+const TERMINAL_TASK_STATUSES = new Set<TaskWire["status"]>(
+  CANONICAL_TERMINAL_TASK_STATUSES as readonly TaskWire["status"][],
+);
 
 let failureScheduleId: string | null = null;
 let failureTaskId: string | null = null;

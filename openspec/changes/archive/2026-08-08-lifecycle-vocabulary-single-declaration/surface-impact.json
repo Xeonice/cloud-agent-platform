@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "change": "lifecycle-vocabulary-single-declaration",
+  "intent": "contracts",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "derived",
+      "operationIds": [],
+      "reason": "本刀改动 packages/contracts/src/task.ts —— **仅新增一个由既有 canonical 数组派生的终态类型导出**（`TerminalTaskStatus`），不改任何 zod schema、不动 `TaskStatusSchema`、不动 `TERMINAL_TASK_STATUSES` 的成员。取值域一个字节没变，故 runtimeWireBehavior=unchanged。\\n\\n那为什么不是 unchanged 而是 derived？因为 scripts/public-surface-files.mjs:5 把 packages/contracts/src/** 整体归为 contracts，scripts/public-surface-adversarial.mjs:46 又把 contracts 展开成 publicV1/mcp/openapi/apiPlayground——**改了契约源码却声明 unchanged 就是 undeclared-impact**，上一刀 retire-legacy-inline-admission 正是在这里被实跑抓出来订正过一次。这条判据不是推理出来的，是有先例的。operationIds 为空是**准确的**而不是偷懒：没有任何 operation 的 schema 因此改变，改的是同一批源文件里一个纯类型导出。\\n\\n⚠ apply 期必须实跑 `node scripts/public-surface-adversarial.mjs verify` 复核本声明。**声明不算证明**——本仓已经有过「仍返 201」这类只写在 proposal/surface-impact 里、四轮 verify 全未覆盖、最后由 CI 推翻的先例。\\n\\n为什么这个类型加在 contracts 而不是 api 侧。⚠ **最初记的理由是错的，此处订正而非悄悄替换**：原写「guardrails 与 task-lifecycle 分属不同 context，从 api 侧导出会造出新的 cross-context-import」。**两者同属 context `task-execution`**（contexts-manifest.json 把 tasks / task-operations / task-lifecycle / guardrails 列在一起），跨 context 分支根本不会进入；层方向在目标未分类时显式 defer（context-layout-check-v2.mjs:485），5.1 之后是 application→domain 合法。那个 import 一条 finding 都不会产生。**真正的理由**：终态集合是 contracts 拥有的词表，由它派生的类型就该与它同处。把类型声明在 apps/api 再 import，等于把一个 contracts 拥有的词表的**第二个名字**放进消费方——正是本刀 1.2 刚删掉的那个形状，「它是算出来的而不是敲出来的」并不让它少混淆一分。这是本刀唯一一处主动扩大公开面的地方，理由记在这里。\\n\\n【为什么 protocolDifferences 里躺着 8 条而 operationIds 是空的】openspec-metadata.mjs:1169 的规则是：publicV1/mcp 只要带了 scope，就视为**选中注册表里所有现存 operation**（selectsAllExisting），于是注册表声明的每一条 REST↔MCP 差异都必须在这里逐条转录，verify 期再与PUBLIC_V1_OPERATIONS 双向对账。本刀没有任何 operation 受影响，但 derived 状态又必须给出 scope 或operationIds 二者之一，而 operationIds 若填了任何一个 id 就是**假声称**。所以这 8 条是机制成本，不是本刀改了它们——它们逐字来自注册表，谁都不许在这里改写措辞去迁就实现。归档的 enforce-api-mcp-development-parity 同样转录了 12 条，这是本仓既有惯例。",
+      "scope": "packages/contracts/src/task.ts —— 新增一个由 TERMINAL_TASK_STATUSES 派生的终态类型导出（可加性）。零 operation 的 schema 因此改变，故 operationIds 为空；scope 是被改动的源文件本身。；**另改 packages/contracts/src/session-history.ts**（verify 第三轮反驳）：`replayPresentationState` 由「四个终态 case + default 兜底」改为**穷尽枚举全部 8 个成员**。非终态各臂返回值与原 default 逐字节相同——8 个输入实测输出全等，**运行时行为零变化**；签名、导出名、返回类型 `ReplayPresentationState` 均不变，无 schema 改动。变的是加第九个状态时它**编译失败而不是静默返回 `\"completed\"`**。"
+    },
+    "mcp": {
+      "status": "derived",
+      "operationIds": [],
+      "reason": "同源于 publicV1：MCP 侧的工具投影派生自同一批 contracts 源文件。工具集、名称、入参与出参投影全不变——新增的是一个类型别名，运行时不可观察。",
+      "toolIds": [],
+      "scope": "同 publicV1 的同一个源文件。工具集与入出参投影不变，无 tool 受影响，故 toolIds 为空。；**另改 packages/contracts/src/session-history.ts**（verify 第三轮反驳）：`replayPresentationState` 由「四个终态 case + default 兜底」改为**穷尽枚举全部 8 个成员**。非终态各臂返回值与原 default 逐字节相同——8 个输入实测输出全等，**运行时行为零变化**；签名、导出名、返回类型 `ReplayPresentationState` 均不变，无 schema 改动。变的是加第九个状态时它**编译失败而不是静默返回 `\"completed\"`**。"
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [],
+      "reason": "操作注册表条目不增不减，任何 operation 的 schema 也不变。derived 反映的是「源文件被改」这一事实本身，不是形态变化。",
+      "scope": "同 publicV1 的同一个源文件。注册表条目与 operation schema 均不变。；**另改 packages/contracts/src/session-history.ts**（verify 第三轮反驳）：`replayPresentationState` 由「四个终态 case + default 兜底」改为**穷尽枚举全部 8 个成员**。非终态各臂返回值与原 default 逐字节相同——8 个输入实测输出全等，**运行时行为零变化**；签名、导出名、返回类型 `ReplayPresentationState` 均不变，无 schema 改动。变的是加第九个状态时它**编译失败而不是静默返回 `\"completed\"`**。"
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": [],
+      "reason": "Playground 渲染的操作目录不增不减。列 derived 的理由与上面三面同源：它的响应形态派生自被改动的 contracts 源码目录，声明 unchanged 会被对抗脚本判为 undeclared-impact。",
+      "scope": "同 publicV1 的同一个源文件。Playground 的操作目录与渲染形态均不变。；**另改 packages/contracts/src/session-history.ts**（verify 第三轮反驳）：`replayPresentationState` 由「四个终态 case + default 兜底」改为**穷尽枚举全部 8 个成员**。非终态各臂返回值与原 default 逐字节相同——8 个输入实测输出全等，**运行时行为零变化**；签名、导出名、返回类型 `ReplayPresentationState` 均不变，无 schema 改动。变的是加第九个状态时它**编译失败而不是静默返回 `\"completed\"`**。"
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "阶段 5 第一刀（词表层）。四件事：(1) 终态词表收敛为一份 canonical——删 apps/api 侧第二份声明，9 处真复述改为消费 contracts 的 canonical〔站点口径：改动前 15 站点 / 7 文件，**整合树实测 5 站点 / 4 文件**〕；(2) admission 转换子集从「一条散文注释 + 两处 Extract<> 类型复述」收敛为一个导出谓词，已正确委派的消费方不动；(3) contexts-manifest.json 两条规则——domain 后缀分类规则（unclassified-file 129 → 128，实测）与 prismaPlacement 的 composition 豁免（prisma-outside-store 59 → 56，实测恰好那三个 DI 工厂文件），r7 基线同 commit 删 4 条；(4) migration 纪律的定义与 change 模板条款成文。另修一个**结构上无法失败的测试**：apps/api/src/tasks/task-lifecycle.test.mjs 原本不 import 被测模块、自持一份邻接表，改真模块它照样全绿。",
+      "reason": "两处数字口径必须与数字同现，否则会重演本 epic 已付过三次代价的「一处为真、别处为假」：复述面按**站点**计（四个终态字面量以单引号形式在同一 8 行窗口共现、非重叠推进、排除 *.spec.ts/*.test.ts/*.test.mjs），**不是**按文件计——按文件只记首处会把 guardrails.service.ts 里的另外 4 处全藏起来（7 vs 15）。研究简报原写的 12 是错的，订正留档。\\n\\n本刀**不做**的三件，写在这里免得被当成遗漏：不动 ALLOWED_TRANSITIONS（它本来就是单点声明）；不建新闸门脚本（度量寄生在既有 layout v2 / ratchet 上）；不燃尽 prisma-outside-store 剩余 56 条（那是刀 2–7 的事）。migration 条款只是**定义成文**——它命名的两个 CI 兼容 job 至今都不是 required check，N-1 fixture 还钉在九个 release 之前，本刀不修这两件，也因此不得被读成「migration 兼容性已被强制」。"
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument; each MCP tool call is already a distinct invocation."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP preserves the historical text task handle while structuredContent remains the canonical task."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata keeps its asynchronous-polling guidance and names Idempotency-Key as an unmapped REST-only header rather than claiming MCP accepts it."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    },
+    {
+      "operation": "runtimeModels.query",
+      "kind": "rate-limit-policy",
+      "detail": "REST applies a dedicated per-principal catalog throttle while MCP remains subject to the MCP transport limiter; both retain the shared catalog-service capacity controls."
+    },
+    {
+      "operation": "tasks.transcript",
+      "kind": "mcp-output-schema-relaxation",
+      "detail": "The MCP SDK high-level registrar accepts only a root object output schema, so the advertised fields derive from the canonical SessionHistory union while every structured result is still validated against that union."
+    },
+    {
+      "operation": "tasks.events",
+      "kind": "mcp-exclusion",
+      "detail": "MCP tools use request/response transport; lifecycle SSE is REST-only."
+    },
+    {
+      "operation": "schedules.delete",
+      "kind": "success-projection",
+      "detail": "REST returns 204 without a body; MCP requires a structured tool result."
+    }
+  ],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}

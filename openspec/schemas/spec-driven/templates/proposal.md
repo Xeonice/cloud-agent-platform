@@ -21,3 +21,15 @@
 ## Impact
 
 <!-- Affected code, APIs, dependencies, systems -->
+
+<!-- MIGRATIONS. If this change adds a Prisma migration, say which side of the
+     additive-only definition it lands on (docs/refactor/04-rules-registry.md §E):
+
+       - DDL-additive — no DROP COLUMN, no DROP TABLE, no SET NOT NULL on an
+         existing column, so N-1 code still boots against the new schema; or
+       - DML, with the irreversibility declared IN THE MIGRATION FILE ITSELF,
+         where the operator running it will read it.
+
+     Delete this comment if the change carries no migration. Answering it is the
+     only enforcement this rule has: both CI compatibility jobs it names are
+     non-required today. -->

@@ -25,6 +25,10 @@ import type {
   ProvisioningTaskFailureCode,
   RuntimeTaskFailureCode,
 } from '@/task-failure/task-failure';
+import type {
+  AdmissionEndpointStatus,
+  AdmissionTargetStatus,
+} from '@/task-lifecycle/task-lifecycle.domain';
 
 /** Outcome of an admission-gated status transition. */
 export type AdmissionTransitionResult =
@@ -39,7 +43,7 @@ export type AdmissionTransitionResult =
 export class AdmissionTransitionIndeterminateError extends Error {
   constructor(
     readonly taskId: string,
-    readonly next: Extract<TaskStatus, 'queued' | 'running'>,
+    readonly next: AdmissionTargetStatus,
     readonly transitionToken: string,
     readonly cause?: unknown,
   ) {
@@ -51,7 +55,7 @@ export class AdmissionTransitionIndeterminateError extends Error {
 export interface DurableAdmissionCapacityRequest {
   readonly taskId: string;
   readonly leaseToken: string;
-  readonly expectedStatus: Extract<TaskStatus, 'pending' | 'queued' | 'running'>;
+  readonly expectedStatus: AdmissionEndpointStatus;
   readonly expectedLifecycleVersion: number;
   /** Process config used only when the shared singleton row does not exist. */
   readonly fallbackMaxConcurrentTasks: number;
@@ -90,19 +94,19 @@ export interface TaskOperationsPort {
   ): Promise<TaskResponse>;
   transitionForAdmission(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     userId?: string,
     transitionToken?: string,
   ): Promise<AdmissionTransitionResult>;
   reconcileAdmissionTransition(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     transitionToken: string,
     userId?: string,
   ): Promise<AdmissionTransitionResult>;
   isAdmissionTransitionCurrent(
     id: string,
-    next: Extract<TaskStatus, 'queued' | 'running'>,
+    next: AdmissionTargetStatus,
     transitionToken: string,
     lifecycleVersion?: number,
   ): Promise<boolean>;

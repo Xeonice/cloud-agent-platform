@@ -46,6 +46,19 @@ export const TERMINAL_TASK_STATUSES = [
   'agent_failed_to_start',
 ] as const satisfies readonly TaskStatus[];
 
+/**
+ * A status drawn from {@link TERMINAL_TASK_STATUSES}, derived rather than
+ * written out.
+ *
+ * It lives here, beside the set, for the reason this package states as a rule:
+ * one `as const` declaration, everything else derived. A type for a vocabulary
+ * this package owns, declared in a consumer instead, is a second NAME for that
+ * vocabulary living where the vocabulary does not — the same shape as the
+ * duplicate terminal-status declaration `apps/api` carried until this change,
+ * and no less confusing for being computed rather than typed out.
+ */
+export type TerminalTaskStatus = (typeof TERMINAL_TASK_STATUSES)[number];
+
 // ---------------------------------------------------------------------------
 // Agent-runtime selector (add-claude-code-runtime)
 // ---------------------------------------------------------------------------
